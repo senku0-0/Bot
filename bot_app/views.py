@@ -20,9 +20,10 @@ ZENDESK_EMAIL = os.getenv("ZENDESK_EMAIL")
 ZENDESK_API_TOKEN = os.getenv("ZENDESK_API_TOKEN")
 
 # Sunshine Credentials
-SUNSHINE_APP_ID = os.getenv("SUNSHINE_APP_ID")
-SUNSHINE_API_KEY_ID = os.getenv("SUNSHINE_API_KEY_ID")
-SUNSHINE_API_KEY_SECRET = os.getenv("SUNSHINE_API_KEY_SECRET")
+SUNSHINE_APP_ID = os.getenv("SUNSHINE_APP_ID", "").strip()
+SUNSHINE_API_KEY_ID = os.getenv("SUNSHINE_API_KEY_ID", "").strip()
+SUNSHINE_API_KEY_SECRET = os.getenv("SUNSHINE_API_KEY_SECRET", "").strip()
+SUNSHINE_API_BASE_URL = os.getenv("SUNSHINE_API_BASE_URL", "https://api.smooch.io").strip()
 
 # Index route (frontend entry point)
 @csrf_exempt
@@ -72,7 +73,9 @@ def init_conversation(request):
 
     try:
         # Create an App User
-        url = f"https://api.smooch.io/v2/apps/{SUNSHINE_APP_ID}/appusers"
+        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/appusers"
+        print(f"Calling Sunshine API: {url}") # Debug log
+        
         # We can optionally pass a userId if we have one, otherwise Sunshine generates one
         response = requests.post(url, json={}, auth=get_sunshine_auth())
         
@@ -86,7 +89,7 @@ def init_conversation(request):
         # Create a Conversation (or get existing)
         # Note: Sunshine v2 automatically creates a conversation when a message is sent, 
         # but we can explicitly create one to get the ID upfront.
-        conv_url = f"https://api.smooch.io/v2/apps/{SUNSHINE_APP_ID}/appusers/{app_user_id}/conversations"
+        conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/appusers/{app_user_id}/conversations"
         conv_response = requests.post(conv_url, json={}, auth=get_sunshine_auth())
         
         if conv_response.status_code != 201 and conv_response.status_code != 200:
@@ -119,7 +122,7 @@ def send_message_to_sunshine(request):
         if not all([app_user_id, conversation_id, text]):
             return JsonResponse({"error": "Missing required fields"}, status=400)
 
-        url = f"https://api.smooch.io/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
         payload = {
             "author": {
                 "type": "user",
