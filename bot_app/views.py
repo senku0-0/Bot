@@ -68,7 +68,7 @@ def init_conversation(request):
         return JsonResponse({"error": "Method not allowed"}, status=405)
     
     # Create an App User
-    url = f"https://api.app.smooch.io/v2/apps/{SUNSHINE_APP_ID}/appusers"
+    url = f"https://api.smooch.io/v2/apps/{SUNSHINE_APP_ID}/appusers"
     # We can optionally pass a userId if we have one, otherwise Sunshine generates one
     response = requests.post(url, json={}, auth=get_sunshine_auth())
     
@@ -81,7 +81,7 @@ def init_conversation(request):
     # Create a Conversation (or get existing)
     # Note: Sunshine v2 automatically creates a conversation when a message is sent, 
     # but we can explicitly create one to get the ID upfront.
-    conv_url = f"https://api.app.smooch.io/v2/apps/{SUNSHINE_APP_ID}/appusers/{app_user_id}/conversations"
+    conv_url = f"https://api.smooch.io/v2/apps/{SUNSHINE_APP_ID}/appusers/{app_user_id}/conversations"
     conv_response = requests.post(conv_url, json={}, auth=get_sunshine_auth())
     
     if conv_response.status_code != 201 and conv_response.status_code != 200:
@@ -110,7 +110,7 @@ def send_message_to_sunshine(request):
         if not all([app_user_id, conversation_id, text]):
             return JsonResponse({"error": "Missing required fields"}, status=400)
 
-        url = f"https://api.app.smooch.io/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+        url = f"https://api.smooch.io/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
         payload = {
             "author": {
                 "type": "user",
