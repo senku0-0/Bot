@@ -10,12 +10,33 @@ document.addEventListener('DOMContentLoaded', function() {
 
     let isChatOpen = false;
     let awaitingFeedback = false;
+    let appUserId = null;
+    let conversationId = null;
 
     // Predefined troubleshooting steps and options
     let troubleshootingSteps = {};
     let mainOptions = [];
     let appRelatedOptions = [];
     let deleteAccountReasons = [];
+
+    // Initialize Chat Session (Get IDs from Backend)
+    function initializeChatSession() {
+        fetch('/api/chat/init', { method: 'POST' })
+            .then(response => response.json())
+            .then(data => {
+                if (data.appUserId && data.conversationId) {
+                    appUserId = data.appUserId;
+                    conversationId = data.conversationId;
+                    console.log("Chat initialized:", appUserId, conversationId);
+                } else {
+                    console.error("Failed to initialize chat session", data);
+                }
+            })
+            .catch(error => console.error('Error initializing chat:', error));
+    }
+
+    // Call initialization on load
+    initializeChatSession();
 
     // Fetch issues from JSON file
     const issuesUrl = window.issuesUrl || 'static/js/issues.json'; // Fallback for non-Django envs
@@ -28,6 +49,29 @@ document.addEventListener('DOMContentLoaded', function() {
             deleteAccountReasons = data.deleteAccountReasons;
         })
         .catch(error => console.error('Error loading issues:', error));
+
+    // Helper: Send Message to Backend (Sunshine)
+    function sendToSunshine(text) {
+        if (!appUserId || !conversationId) {
+            console.error("Cannot send message: Chat not initialized");
+            return;
+        }
+
+        fetch('/api/chat/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                appUserId: appUserId,
+                conversationId: conversationId,
+                text: text
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log("Message sent to Sunshine:", data);
+        })
+        .catch(error => console.error('Error sending message:', error));
+    }
 
     // Toggle Chat
     function toggleChat() {
@@ -143,6 +187,10 @@ document.addEventListener('DOMContentLoaded', function() {
     // Handle Agent Connect
     function handleAgentConnect(option) {
         appendMessage(option, 'user-message');
+        
+        // Send intent to Sunshine
+        sendToSunshine("Connect to Agent");
+
         setTimeout(() => {
             appendMessage("Connecting you to a human agent... Please wait while we transfer your chat.", 'bot-message');
         }, 500);
@@ -154,19 +202,19 @@ document.addEventListener('DOMContentLoaded', function() {
         if (messageText === "") return;
 
         appendMessage(messageText, 'user-message');
+        
+        // Send user text to Sunshine
+        sendToSunshine(messageText);
+
         chatInput.value = '';
         chatInputArea.style.display = 'none';
 
         setTimeout(() => {
-            const botResponses = [
-                "I understand. Based on your description, it sounds like a configuration issue. Please try resetting your preferences.",
-                "That sounds unusual. Could you try reinstalling the application to see if that resolves the glitch?",
-                "I see. This might be related to a recent server update. Please try again in 10 minutes."
-            ];
-            const randomResponse = botResponses[Math.floor(Math.random() * botResponses.length)];
-            appendMessage(randomResponse, 'bot-message');
+            // Since we are escalating to Sunshine/Zendesk, we can show a confirmation
+            appendMessage("Your issue has been forwarded to our support team. An agent will review it shortly.", 'bot-message');
             
-            askForFeedback();
+            // Optional: Still ask for feedback or just end here
+            // askForFeedback(); 
         }, 1500);
     }
 
@@ -308,7 +356,20 @@ document.addEventListener('DOMContentLoaded', function() {
         });
         
         deleteBtn.addEventListener('click', function() {
-            // No action as requested
+            let reasonText = selectedReason;
+            if (selectedReason === "Others") {
+                reasonText += ": " + otherInput.value.trim();
+            }
+            
+            // Send to Sunshine
+            sendToSunshine("Delete Account Request: " + reasonText);
+            
+            modal.remove();
+            appendMessage("Delete Account Request", 'user-message');
+            
+            setTimeout(() => {
+                appendMessage("Your request has been submitted. Our team will contact you shortly.", 'bot-message');
+            }, 500);
         });
     }
 
