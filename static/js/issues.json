@@ -1,0 +1,26 @@
+{
+    "troubleshooting": {
+        "Location Not Found or Inaccurate": "There could be multiple reasons why the location is coming inaccurate. Please try the following -\n\nCheck Location Settings: Ensure GPS / Location is turned ON\n\nEnable App Permissions: Go to your device Settings → Apps → Namma Yatri → Permissions → Location Make sure it's set to Allow all the time or While using the app.\n\nTurn Location Off & On: Switch off GPS, wait a few seconds, then turn it back on.\n\nCheck for App & OS Updates: Update the Namma Yatri app and your phone's operating system to the latest version.\n\nRestart Your Device: A restart helps refresh location services",
+        "Unable to Login": "There could be multiple reasons why you are unable to login. Please try the following —\n\nCheck Internet Connection: Ensure you have a stable Wi-Fi or mobile data connection.\n\nClear Cache and Data: Go to your device settings, clear the app's cache and data, and try logging in again.\n\nCheck for App Updates: Make sure you are using the latest version of the app. Update it via the App Store or Google Play Store if needed.",
+        "My App is Not Responding": "There could be multiple reasons why the app isn't responding. Please try the following —\n\nCheck Internet Connection: Ensure that you have a stable internet connection (Wi-Fi or mobile data).\n\nRestart the App: Close the app completely and restart it.\n\nClear Cache: Go to your phone's settings, find the Namma Yatri app, and clear its cache.\n\nUpdate the App: Check the app store for any available updates and install the latest version.\n\nReboot the Device: Restart your device to refresh all system processes."
+    },
+    "mainOptions": [
+        "App Related Issues",
+        "Ride Related Issues",
+        "Delete Account"
+    ],
+    "appRelatedOptions": [
+        "Location Not Found or Inaccurate",
+        "Unable to Login",
+        "My App is Not Responding",
+        "Others"
+    ],
+    "deleteAccountReasons": [
+        "Moving out of town",
+        "App experience issues",
+        "Change of phone number",
+        "Not getting rides",
+        "Not required as of now",
+        "Others"
+    ]
+}

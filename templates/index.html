@@ -1,0 +1,83 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Bot Widget</title>
+    <link rel="stylesheet" href="{% static 'css/chat-widget.css' %}">
+    <style>
+        /* Basic page styling */
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f4f9;
+            margin: 0;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: #555;
+        }
+
+        .welcome-text {
+            text-align: center;
+        }
+
+        h1 {
+            margin-bottom: 0.5rem;
+            color: #333;
+        }
+
+        p {
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="welcome-text">
+        <h1>Welcome to the Chat Bot Demo</h1>
+        <p>Click the chat icon in the bottom right corner to interact.</p>
+    </div>
+
+    <!-- Chat Widget Container -->
+    <div class="chat-widget">
+        <!-- Chat Box (Hidden by default) -->
+        <div class="chat-box">
+            <!-- Header -->
+            <div class="chat-header">
+                <span>Yatri Bandhu</span>
+                <button class="chat-close-btn" aria-label="Close chat">✖</button>
+            </div>
+            
+            <!-- Messages Area -->
+            <div class="chat-messages">
+                <!-- Default Welcome Message -->
+                <div class="message bot-message">
+                    Hello! 👋 How can I help you today?
+                </div>
+            </div>
+            
+            <!-- Input Area -->
+            <div class="chat-input">
+                <input type="text" id="chat-input-field" placeholder="Type a message..." aria-label="Type a message">
+                <button id="chat-send-btn" aria-label="Send message">
+                    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+
+        <!-- Toggle Button -->
+        <button class="chat-toggle-btn" aria-label="Open chat">💬</button>
+    </div>
+
+    <script>
+        window.issuesUrl = "{% static 'js/issues.json' %}";
+    </script>
+    <script src="{% static 'js/chat-widget.js' %}"></script>
+</body>
+</html>
+</body>
+</html>
