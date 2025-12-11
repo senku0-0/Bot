@@ -309,6 +309,9 @@ def escalate_to_agent(request):
 # Webhook endpoint
 @csrf_exempt
 def webhook_message(request):
+    # DEBUG: Log all headers to see what is coming in
+    logger.info(f"Webhook Headers: {dict(request.headers)}")
+
     sig = request.headers.get("X-Hub-Signature")
     body = request.body
 
