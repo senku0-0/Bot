@@ -178,23 +178,36 @@ def init_conversation(request):
              logger.error(f"Could not retrieve appUserId. Response: {response.text}")
              return JsonResponse({"error": "Failed to retrieve user ID"}, status=500)
 
-        # 3. Check for existing conversations first (to avoid Multi-convo error)
+        # 3. Check for existing conversations (Robust Logic)
         conversation_id = None
-        list_conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/users/{app_user_id}/conversations"
         
-        try:
-            list_response = requests.get(list_conv_url, headers=headers)
-            if list_response.status_code == 200:
-                conversations = list_response.json().get("conversations", [])
-                if conversations:
-                    # Use the most recent conversation
-                    conversation_id = conversations[0].get("id")
-                    logger.info(f"Found existing conversation: {conversation_id}")
-        except Exception as e:
-            logger.warning(f"Failed to list conversations: {e}")
+        def fetch_conversation(target_id):
+            """Helper to list conversations for a given user ID (internal or external)."""
+            try:
+                l_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/users/{target_id}/conversations"
+                logger.info(f"Checking conversations for: {target_id}")
+                l_resp = requests.get(l_url, headers=headers)
+                if l_resp.status_code == 200:
+                    convs = l_resp.json().get("conversations", [])
+                    if convs:
+                        # Return the most recently active conversation
+                        return convs[0].get("id")
+                else:
+                    logger.warning(f"List conversations failed for {target_id}: {l_resp.status_code} - {l_resp.text}")
+            except Exception as ex:
+                logger.warning(f"Exception listing conversations for {target_id}: {ex}")
+            return None
+
+        # Try fetching with Internal ID first
+        if app_user_id:
+            conversation_id = fetch_conversation(app_user_id)
+
+        # If not found, try fetching with External ID (user_id)
+        if not conversation_id and user_id:
+            conversation_id = fetch_conversation(user_id)
 
         if not conversation_id:
-            # Create a Conversation if none found
+            # Create a Conversation if absolutely none found
             conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations"
             conv_payload = {
                 "type": "personal",
@@ -202,13 +215,14 @@ def init_conversation(request):
             }
             conv_response = requests.post(conv_url, json=conv_payload, headers=headers)
             
-            if conv_response.status_code not in [200, 201]:
+            if conv_response.status_code in [200, 201]:
+                conv_data = conv_response.json()
+                conversation_id = conv_data.get("conversation", {}).get("id")
+                logger.info(f"Conversation created: {conversation_id}")
+            else:
+                # If creation fails, log it but don't crash yet if we can't help it
                 logger.error(f"Sunshine API Error (Create Conversation): {conv_response.status_code} - {conv_response.text}")
                 return JsonResponse({"error": "Failed to create conversation", "details": conv_response.text}, status=500)
-
-            conv_data = conv_response.json()
-            conversation_id = conv_data.get("conversation", {}).get("id")
-            logger.info(f"Conversation created: {conversation_id}")
 
         return JsonResponse({
             "appUserId": app_user_id,
