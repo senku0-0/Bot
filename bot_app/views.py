@@ -159,7 +159,24 @@ def init_conversation(request):
         user_data = response.json()
         # v2 response structure: {"user": {"id": "..."}}
         app_user_id = user_data.get("user", {}).get("id")
+        
+        # Fallback: If user already exists (409), the response might not contain the user object directly in the same format
+        # We might need to fetch the user by externalId if the create response didn't give it to us.
+        if not app_user_id and response.status_code == 409:
+             # Try to fetch the user by externalId
+             get_user_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/users/{user_id}" 
+             # Note: v2 API usually allows fetching by userId (externalId)
+             
+             logger.info(f"User exists, fetching details for: {user_id}")
+             get_response = requests.get(get_user_url, headers=headers)
+             if get_response.status_code == 200:
+                 app_user_id = get_response.json().get("user", {}).get("id")
+        
         logger.info(f"User created/found: {app_user_id}")
+
+        if not app_user_id:
+             logger.error(f"Could not retrieve appUserId. Response: {response.text}")
+             return JsonResponse({"error": "Failed to retrieve user ID"}, status=500)
 
         # Create a Conversation
         conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations"
