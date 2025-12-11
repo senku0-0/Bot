@@ -77,8 +77,19 @@ document.addEventListener('DOMContentLoaded', function() {
                         chatInputArea.style.display = 'flex';
                     }
                     
-                    // REMOVED: The heuristic check for session end. 
-                    // We now rely strictly on the "System" message to end the session.
+                    // Failsafe: If integration explicitly switches back to 'bot', end the session
+                    // This handles cases where the webhook might be delayed or missed
+                    if (isAgentConnected && activeIntegration && activeIntegration.name === 'bot') {
+                         isAgentConnected = false;
+                         chatInputArea.style.display = 'none';
+                         chatHeaderTitle.textContent = "Yatri Bandhu";
+                         agentJoinAnnounced = false;
+                         
+                         // Only show options if we haven't just processed a system message that did it
+                         // We'll let the message loop handle the UI update if the message exists, 
+                         // but if no message arrives, we force the state change here.
+                         // We won't force showMainOptions() here to avoid double-rendering if the message comes later.
+                    }
                 }
 
                 if (data.messages) {
@@ -95,8 +106,11 @@ document.addEventListener('DOMContentLoaded', function() {
                                 // Extract sender name for agents
                                 const senderName = isUser ? null : (msg.author.displayName || 'Agent');
                                 
-                                // Check for System End Session Message
-                                if (senderName === 'System' && msg.content.text.includes("ended the session")) {
+                                // Check for System End Session Message (From Backend OR Sunshine Auto-message)
+                                const text = msg.content.text.toLowerCase();
+                                if ((senderName === 'System' || text.includes("messaging session ended")) && 
+                                    (text.includes("ended the session") || text.includes("messaging session ended"))) {
+                                    
                                     isAgentConnected = false;
                                     chatInputArea.style.display = 'none';
                                     chatHeaderTitle.textContent = "Yatri Bandhu";
