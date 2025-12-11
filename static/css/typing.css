@@ -1,0 +1,43 @@
+
+/* Typing Indicator / Loading Dots */
+.loading-message {
+    background-color: transparent !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+}
+
+.typing-indicator {
+    display: flex;
+    align-items: center;
+    padding: 12px 16px;
+    background-color: #e9ecef; /* Match bot message bg */
+    border-radius: 15px 15px 15px 0;
+    width: fit-content;
+    margin-bottom: 5px;
+}
+
+.typing-dot {
+    width: 8px;
+    height: 8px;
+    margin: 0 3px;
+    background-color: #666;
+    border-radius: 50%;
+    animation: typing 1.4s infinite ease-in-out both;
+}
+
+.typing-dot:nth-child(1) {
+    animation-delay: -0.32s;
+}
+
+.typing-dot:nth-child(2) {
+    animation-delay: -0.16s;
+}
+
+@keyframes typing {
+    0%, 80%, 100% {
+        transform: scale(0);
+    }
+    40% {
+        transform: scale(1);
+    }
+}

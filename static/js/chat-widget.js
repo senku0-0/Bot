@@ -148,6 +148,18 @@ document.addEventListener('DOMContentLoaded', function() {
                                 const text = msg.content.text;
                                 const lowerText = text.toLowerCase();
 
+                                // Remove loading indicator if agent speaks
+                                if (!isUser && senderName !== 'System') {
+                                    removeLoadingIndicator();
+                                }
+
+                                // HIDE AUTO-GENERATED ESCALATION MESSAGE
+                                // We send this to Zendesk to create the ticket, but we don't want to show it to the user again.
+                                if (isUser && text.startsWith("Connecting to agent. Reason:")) {
+                                    displayedMessageIds.add(msg.id);
+                                    return; 
+                                }
+
                                 // DETECT AGENT ACTIVITY VIA MESSAGES (Fallback)
                                 // If we see a message from a human agent, confirm activity immediately.
                                 if (!isUser && senderName !== 'System' && !hasConfirmedAgentActivity) {
@@ -163,6 +175,11 @@ document.addEventListener('DOMContentLoaded', function() {
                                     (senderName === 'System') || 
                                     (lowerText.includes("messaging session ended")) ||
                                     (lowerText.includes("the agent has ended the session"));
+
+                                // Check for Agent Join Message
+                                if (lowerText.includes("will help you from here on out")) {
+                                    removeLoadingIndicator();
+                                }
 
                                 if (isEndSessionMessage) {
                                     appendMessage(text, 'system-message', null);
@@ -447,11 +464,40 @@ document.addEventListener('DOMContentLoaded', function() {
         localStorage.setItem('chat_agentJoinAnnounced', 'false');
 
         setTimeout(() => {
-            appendMessage("Connecting you to a human agent... Please wait while we transfer your chat.", 'bot-message');
+            // Show loading indicator instead of text
+            showLoadingIndicator();
+            
             // Show input field for live chat
             chatInputArea.style.display = 'flex';
             chatInput.focus();
         }, 500);
+    }
+
+    // Helper: Show Loading Indicator
+    function showLoadingIndicator() {
+        if (document.getElementById('agent-loading-indicator')) return;
+
+        const loaderDiv = document.createElement('div');
+        loaderDiv.id = 'agent-loading-indicator';
+        loaderDiv.classList.add('message', 'bot-message', 'loading-message');
+        // Inline styles for the dots to ensure they work even if CSS file isn't cached/updated immediately
+        loaderDiv.innerHTML = `
+            <div class="typing-indicator">
+                <div class="typing-dot"></div>
+                <div class="typing-dot"></div>
+                <div class="typing-dot"></div>
+            </div>
+        `;
+        messagesContainer.appendChild(loaderDiv);
+        scrollToBottom();
+    }
+
+    // Helper: Remove Loading Indicator
+    function removeLoadingIndicator() {
+        const loader = document.getElementById('agent-loading-indicator');
+        if (loader) {
+            loader.remove();
+        }
     }
 
     // Send Message (For "OTHERS" flow and Live Agent)

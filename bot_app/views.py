@@ -376,7 +376,7 @@ def escalate_to_agent(request):
                 },
                 "content": {
                     "type": "text",
-                    "text": f"I would like to speak to an agent. Reason: {reason}"
+                    "text": f"Connecting to agent. Reason: {reason}"
                 }
             }
             logger.info(f"Sending trigger message for ticket creation: {msg_url}")
@@ -452,11 +452,42 @@ def webhook_message(request):
             logger.info("Control released by switchboard integration (Agent ended chat).")
             handle_agent_end_session(evt)
 
-        # 3. Handle other events (Log for now)
-        elif trigger in ["conversation:read", "conversation:typing", "participant:join"]:
+        # 3. Handle Participant Join (Agent Joined)
+        elif trigger == "participant:join":
+            handle_participant_join(evt)
+
+        # 4. Handle other events (Log for now)
+        elif trigger in ["conversation:read", "conversation:typing"]:
             logger.debug(f"Received {trigger} - No action taken.")
 
     return JsonResponse({"status": "received"})
+
+def handle_participant_join(event_data):
+    """Notify user when an agent joins the conversation."""
+    conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
+    if not conversation_id:
+        return
+
+    participants = event_data.get("participants", [])
+    for p in participants:
+        # Check if the participant is a business user (Agent)
+        if p.get("type") == "business":
+            agent_name = p.get("displayName", "An agent")
+            logger.info(f"Agent {agent_name} joined conversation {conversation_id}")
+            
+            # Send a system message to notify the user
+            try:
+                headers = get_sunshine_headers()
+                if headers:
+                    url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+                    payload = {
+                        "author": {"type": "business", "displayName": "System"},
+                        "content": {"type": "text", "text": f"{agent_name} will help you from here on out."}
+                    }
+                    requests.post(url, json=payload, headers=headers)
+            except Exception as e:
+                logger.error(f"Failed to send agent join notification: {e}")
+
 
 def process_message_event(event_data):
     """Handle incoming user messages."""
