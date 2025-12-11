@@ -105,8 +105,20 @@ document.addEventListener('DOMContentLoaded', function() {
                         }
                     }
                     
-                    // REMOVED FAILSAFE: It was causing premature session ends when users were in queue.
-                    // We will now rely ONLY on explicit "Session Ended" messages.
+                    // 2. Graceful End Session Check (Status Based)
+                    // If we THINK we are connected, but the status is NOT active...
+                    if (isAgentConnected && !isAgentActive) {
+                        // Check how long we have been waiting/connected
+                        const timeSinceRequest = Date.now() - lastAgentRequestTime;
+                        
+                        // If it's been more than 30 seconds since we requested the agent,
+                        // and the status is STILL (or became) inactive, then the session is truly over.
+                        // This 30s buffer prevents premature closing during the initial handover.
+                        if (timeSinceRequest > 30000) {
+                             console.log("Session ended detected via Switchboard status (Grace period over).");
+                             endSession();
+                        }
+                    }
                 }
 
                 if (data.messages) {
@@ -125,32 +137,19 @@ document.addEventListener('DOMContentLoaded', function() {
                                 const text = msg.content.text;
                                 const lowerText = text.toLowerCase();
 
-                                // ROBUST END SESSION CHECK
+                                // Check for System End Session Message (Text based)
+                                // We just display it here. The logic to CLOSE the session is handled AFTER the loop
+                                // by checking if the *last* message is an end-session message.
                                 const isEndSessionMessage = 
                                     (senderName === 'System') || 
                                     (lowerText.includes("messaging session ended")) ||
                                     (lowerText.includes("the agent has ended the session"));
 
                                 if (isEndSessionMessage) {
-                                    const msgTime = new Date(msg.received).getTime();
-                                    const isOldMessage = msgTime < lastAgentRequestTime;
-
-                                    // Only process if it's a NEW end session message
-                                    if (!isOldMessage) {
-                                        if (isAgentConnected) {
-                                            endSession();
-                                        }
-                                        appendMessage(text, 'system-message', null);
-                                        displayedMessageIds.add(msg.id);
-                                        hasNewMessages = true;
-                                        return; 
-                                    } else {
-                                        // Old message: Just display, don't change state
-                                        appendMessage(text, 'system-message', null);
-                                        displayedMessageIds.add(msg.id);
-                                        hasNewMessages = true;
-                                        return;
-                                    }
+                                    appendMessage(text, 'system-message', null);
+                                    displayedMessageIds.add(msg.id);
+                                    hasNewMessages = true;
+                                    return; 
                                 }
 
                                 // Agent Join Announcement
@@ -178,13 +177,6 @@ document.addEventListener('DOMContentLoaded', function() {
                             // Handle Non-Text System Messages (e.g. Activities)
                             else if (msg.source && msg.source.type === 'system') {
                                 const text = "Messaging session ended"; 
-                                const msgTime = new Date(msg.received).getTime();
-                                const isOldMessage = msgTime < lastAgentRequestTime;
-
-                                if (!isOldMessage && isAgentConnected) {
-                                    endSession();
-                                }
-
                                 appendMessage(text, 'system-message', null);
                                 displayedMessageIds.add(msg.id);
                                 hasNewMessages = true;
@@ -194,6 +186,29 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                     if (hasNewMessages) {
                         scrollToBottom();
+                    }
+
+                    // CHECK IF SESSION SHOULD END (Message Based)
+                    // If the VERY LAST message in the conversation is an "End Session" message,
+                    // and we are currently connected, then we should close the session.
+                    if (sortedMessages.length > 0 && isAgentConnected) {
+                        const lastMsg = sortedMessages[sortedMessages.length - 1];
+                        let isLastMsgEndSession = false;
+
+                        if (lastMsg.content && lastMsg.content.type === 'text') {
+                            const senderName = (lastMsg.author.type === 'user') ? null : (lastMsg.author.displayName || 'Agent');
+                            const text = lastMsg.content.text.toLowerCase();
+                            isLastMsgEndSession = (senderName === 'System') || 
+                                                  (text.includes("messaging session ended")) ||
+                                                  (text.includes("the agent has ended the session"));
+                        } else if (lastMsg.source && lastMsg.source.type === 'system') {
+                            isLastMsgEndSession = true;
+                        }
+
+                        if (isLastMsgEndSession) {
+                            console.log("Last message is End Session. Closing chat.");
+                            endSession();
+                        }
                     }
                 }
             })
