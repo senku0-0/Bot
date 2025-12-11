@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from django.http import JsonResponse, HttpResponseForbidden
 from django.views.decorators.csrf import csrf_exempt
-import json, hmac, hashlib, os, base64, logging, sys
+import json, hmac, hashlib, os, base64, logging, sys, uuid
 from dotenv import load_dotenv
 import requests
 from requests.auth import HTTPBasicAuth
@@ -106,6 +106,14 @@ def init_conversation(request):
         return JsonResponse({"error": "Server configuration error: SUNSHINE_APP_ID not set"}, status=500)
 
     try:
+        # Define URL and Headers first
+        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/users"
+        logger.info(f"Calling Sunshine API: {url}") 
+        
+        headers = get_sunshine_headers()
+        if not headers:
+             return JsonResponse({"error": "Server configuration error"}, status=500)
+
         # Try to get userId from request if available (optional)
         user_id = None
         try:
@@ -115,19 +123,18 @@ def init_conversation(request):
         except Exception:
             pass # Ignore body parsing errors, proceed as new guest
 
-        # Create a User (v2 endpoint)
-        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/users"
-        logger.info(f"Calling Sunshine API: {url}") 
-        
-        headers = get_sunshine_headers()
-        if not headers:
-             return JsonResponse({"error": "Server configuration error"}, status=500)
+        # If no user_id provided, generate a unique one for this guest session
+        if not user_id:
+            user_id = str(uuid.uuid4())
+            logger.info(f"Generated new Guest ID: {user_id}")
+        else:
+            logger.info(f"Using existing userId: {user_id}")
 
-        # Create payload
-        user_payload = {"profile": {"givenName": "Guest"}}
-        if user_id:
-            user_payload["userId"] = user_id
-            logger.info(f"Initializing for existing userId: {user_id}")
+        # Create User Payload (v2 uses 'externalId')
+        user_payload = {
+            "externalId": user_id,
+            "profile": {"givenName": "Guest"}
+        }
 
         # Create/Get user
         response = requests.post(url, json=user_payload, headers=headers)
