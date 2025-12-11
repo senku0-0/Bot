@@ -1,3 +1,5 @@
+// messaging session ended
+
 document.addEventListener('DOMContentLoaded', function() {
     const chatWidget = document.querySelector('.chat-widget');
     const chatBox = document.querySelector('.chat-box');
@@ -128,6 +130,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     // Re-enabled as per user request.
                     // SAFETY CHECK: Only close if activeIntegration is explicitly defined (not missing from response)
                     // If activeIntegration is undefined, it might be a partial API response, so we ignore it.
+                    /*
                     if (activeIntegration !== undefined && isAgentConnected && hasConfirmedAgentActivity && !isAgentActive) {
                          console.log("Session ended detected via Switchboard status (Agent Solved/Left).");
                          
@@ -136,6 +139,7 @@ document.addEventListener('DOMContentLoaded', function() {
                          
                          endSession();
                     }
+                    */
                 }
 
                 if (data.messages) {
@@ -183,19 +187,31 @@ document.addEventListener('DOMContentLoaded', function() {
                                     (lowerText.includes("the agent has ended the session"));
 
                                 // Check for Agent Join Message
+                                // We use 'agentJoinAnnounced' to prevent duplicate "Connected" messages 
+                                // if the backend sends them multiple times (e.g. on every read receipt).
                                 if (lowerText.includes(" connected") && senderName === 'System') {
                                     removeLoadingIndicator();
                                     
-                                    // Extract Agent Name and Update Header
-                                    // Expected format: "Name connected"
-                                    const namePart = text.split(" connected")[0];
-                                    if (namePart && namePart !== "An agent") {
-                                        chatHeaderTitle.textContent = namePart;
-                                        chatHeaderTitle.style.fontSize = '1.1rem';
+                                    if (!agentJoinAnnounced) {
+                                        // Extract Agent Name and Update Header
+                                        const namePart = text.split(" connected")[0];
+                                        if (namePart && namePart !== "An agent") {
+                                            chatHeaderTitle.textContent = namePart;
+                                            chatHeaderTitle.style.fontSize = '1.1rem';
+                                        }
+                                        
+                                        // Render as System Message
+                                        appendMessage(text, 'system-message', null);
+                                        
+                                        // Mark as announced
+                                        agentJoinAnnounced = true;
+                                        localStorage.setItem('chat_agentJoinAnnounced', 'true');
+                                        
+                                        isAgentConnected = true; 
+                                        localStorage.setItem('chat_isAgentConnected', 'true');
+                                        chatInputArea.style.display = 'flex';
                                     }
                                     
-                                    // Render as System Message
-                                    appendMessage(text, 'system-message', null);
                                     displayedMessageIds.add(msg.id);
                                     hasNewMessages = true;
                                     return;

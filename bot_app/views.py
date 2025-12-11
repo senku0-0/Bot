@@ -456,11 +456,60 @@ def webhook_message(request):
         elif trigger == "participant:join":
             handle_participant_join(evt)
 
-        # 4. Handle other events (Log for now)
-        elif trigger in ["conversation:read", "conversation:typing"]:
+        # 4. Handle Conversation Read (Agent Opened Ticket)
+        elif trigger == "conversation:read":
+            handle_conversation_read(evt)
+
+        # 5. Handle other events (Log for now)
+        elif trigger in ["conversation:typing"]:
             logger.debug(f"Received {trigger} - No action taken.")
 
     return JsonResponse({"status": "received"})
+
+def handle_conversation_read(event_data):
+    """Notify user when an agent reads the conversation (opens ticket)."""
+    conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
+    if not conversation_id:
+        return
+
+    # Identify if the reader is an agent
+    # We compare the reader's userId with the appUser's userId.
+    # If they are different, it's likely an agent.
+    
+    app_user = event_data.get("appUser", {})
+    app_user_id = app_user.get("_id") or app_user.get("id")
+    
+    # 'userId' is usually at the top level for conversation:read
+    reader_id = event_data.get("userId")
+    
+    # If userId is missing, check 'source' or 'author' (structure varies by version)
+    if not reader_id:
+        reader_id = event_data.get("source", {}).get("from", {}).get("id")
+
+    # If we found a reader, and it's NOT the user, assume it's an agent
+    if reader_id and app_user_id and reader_id != app_user_id:
+        # Try to get agent name if possible (often not in read payload, so use generic or fetch)
+        # For speed, we'll use "An agent" or try to infer. 
+        # If the payload has 'role' == 'business', that's even better.
+        
+        is_business = event_data.get("role") == "business"
+        
+        if is_business or reader_id != app_user_id:
+            agent_name = "An agent" # 'read' events rarely contain the display name
+            logger.info(f"Agent (ID: {reader_id}) read conversation {conversation_id}")
+            
+            # Send system message
+            try:
+                headers = get_sunshine_headers()
+                if headers:
+                    url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+                    payload = {
+                        "author": {"type": "business", "displayName": "System"},
+                        "content": {"type": "text", "text": f"{agent_name} connected"}
+                    }
+                    requests.post(url, json=payload, headers=headers)
+            except Exception as e:
+                logger.error(f"Failed to send agent read notification: {e}")
 
 def handle_participant_join(event_data):
     """Notify user when an agent joins the conversation."""
