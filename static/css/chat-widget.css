@@ -180,6 +180,20 @@ p {
     background: linear-gradient(135deg, #007bff, #0062cc);
 }
 
+/* System Message (Centered, Gray) */
+.system-message {
+    align-self: center;
+    background-color: transparent;
+    color: #888;
+    font-size: 0.85rem;
+    padding: 5px 10px;
+    border: none;
+    box-shadow: none;
+    text-align: center;
+    margin: 10px 0;
+    font-style: italic;
+}
+
 /* Options Container */
 .options-container {
     display: flex;

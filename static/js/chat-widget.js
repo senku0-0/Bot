@@ -102,6 +102,11 @@ document.addEventListener('DOMContentLoaded', function() {
                                     chatHeaderTitle.textContent = "Yatri Bandhu";
                                     agentJoinAnnounced = false;
                                     sessionEndedNow = true;
+                                    
+                                    // Display as system message
+                                    appendMessage(msg.content.text, 'system-message', null);
+                                    displayedMessageIds.add(msg.id);
+                                    return; // Skip default append
                                 }
 
                                 // Agent Join Announcement
