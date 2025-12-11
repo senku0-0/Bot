@@ -76,26 +76,16 @@ document.addEventListener('DOMContentLoaded', function() {
                         isAgentConnected = true;
                         chatInputArea.style.display = 'flex';
                     }
-
-                    // Detect Session End
-                    // If we were connected, but now the agent integration is no longer active (released or switched)
-                    let sessionEndedNow = false;
-                    if (isAgentConnected && !isAgentActive) {
-                         // We rely on the backend to send the "Session Ended" message via webhook
-                         // So we don't append a local message here to avoid duplicates.
-                         
-                         isAgentConnected = false;
-                         chatInputArea.style.display = 'none';
-                         chatHeaderTitle.textContent = "Yatri Bandhu"; // Reset header
-                         agentJoinAnnounced = false; // Reset for next time
-                         sessionEndedNow = true;
-                    }
+                    
+                    // REMOVED: The heuristic check for session end. 
+                    // We now rely strictly on the "System" message to end the session.
                 }
 
                 if (data.messages) {
                     // Sort messages by date (oldest first)
                     const sortedMessages = data.messages.sort((a, b) => new Date(a.received) - new Date(b.received));
                     let hasNewMessages = false;
+                    let sessionEndedNow = false;
 
                     sortedMessages.forEach(msg => {
                         // Check if message is already displayed
@@ -105,6 +95,15 @@ document.addEventListener('DOMContentLoaded', function() {
                                 // Extract sender name for agents
                                 const senderName = isUser ? null : (msg.author.displayName || 'Agent');
                                 
+                                // Check for System End Session Message
+                                if (senderName === 'System' && msg.content.text.includes("ended the session")) {
+                                    isAgentConnected = false;
+                                    chatInputArea.style.display = 'none';
+                                    chatHeaderTitle.textContent = "Yatri Bandhu";
+                                    agentJoinAnnounced = false;
+                                    sessionEndedNow = true;
+                                }
+
                                 // Agent Join Announcement
                                 if (!isUser && !agentJoinAnnounced && senderName !== 'System') {
                                     const nameToUse = senderName || "An agent";
