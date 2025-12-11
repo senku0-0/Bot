@@ -20,6 +20,7 @@ document.addEventListener('DOMContentLoaded', function() {
     let isAgentConnected = localStorage.getItem('chat_isAgentConnected') === 'true'; 
     let lastAgentRequestTime = parseInt(localStorage.getItem('chat_lastAgentRequestTime') || '0');
     let agentJoinAnnounced = localStorage.getItem('chat_agentJoinAnnounced') === 'true';
+    let hasConfirmedAgentActivity = localStorage.getItem('chat_hasConfirmedAgentActivity') === 'true';
 
     // Predefined troubleshooting steps and options
     let troubleshootingSteps = {};
@@ -72,10 +73,12 @@ document.addEventListener('DOMContentLoaded', function() {
         console.log("Ending session and cleaning up...");
         isAgentConnected = false;
         agentJoinAnnounced = false;
+        hasConfirmedAgentActivity = false;
         
         // Clear Persistence
         localStorage.removeItem('chat_isAgentConnected');
         localStorage.removeItem('chat_agentJoinAnnounced');
+        localStorage.removeItem('chat_hasConfirmedAgentActivity');
         // We do NOT clear lastAgentRequestTime immediately to prevent race conditions with old messages
         
         // UI Updates
@@ -103,21 +106,19 @@ document.addEventListener('DOMContentLoaded', function() {
                             localStorage.setItem('chat_isAgentConnected', 'true');
                             chatInputArea.style.display = 'flex';
                         }
+                        // Mark that we have confirmed the agent is active at least once
+                        if (!hasConfirmedAgentActivity) {
+                            hasConfirmedAgentActivity = true;
+                            localStorage.setItem('chat_hasConfirmedAgentActivity', 'true');
+                        }
                     }
                     
-                    // 2. Graceful End Session Check (Status Based)
-                    // If we THINK we are connected, but the status is NOT active...
-                    if (isAgentConnected && !isAgentActive) {
-                        // Check how long we have been waiting/connected
-                        const timeSinceRequest = Date.now() - lastAgentRequestTime;
-                        
-                        // If it's been more than 30 seconds since we requested the agent,
-                        // and the status is STILL (or became) inactive, then the session is truly over.
-                        // This 30s buffer prevents premature closing during the initial handover.
-                        if (timeSinceRequest > 30000) {
-                             console.log("Session ended detected via Switchboard status (Grace period over).");
-                             endSession();
-                        }
+                    // 2. Status-Based Closing (Solved Ticket Detection)
+                    // ONLY close if we previously confirmed the agent was active, and now they are NOT.
+                    // This avoids closing during the initial "Connecting..." phase (queue).
+                    if (isAgentConnected && hasConfirmedAgentActivity && !isAgentActive) {
+                         console.log("Session ended detected via Switchboard status (Agent Solved/Left).");
+                         endSession();
                     }
                 }
 
