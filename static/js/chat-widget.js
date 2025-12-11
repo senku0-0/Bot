@@ -105,12 +105,8 @@ document.addEventListener('DOMContentLoaded', function() {
                         }
                     }
                     
-                    // 2. Failsafe: If we think we are connected, but Switchboard says NO
-                    // Only trigger if enough time has passed since request (10s) to avoid race conditions
-                    if (isAgentConnected && !isAgentActive && (Date.now() - lastAgentRequestTime > 10000)) {
-                         console.log("Session ended detected via Switchboard status.");
-                         endSession();
-                    }
+                    // REMOVED FAILSAFE: It was causing premature session ends when users were in queue.
+                    // We will now rely ONLY on explicit "Session Ended" messages.
                 }
 
                 if (data.messages) {
@@ -205,7 +201,12 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // Poll for new messages every 5 seconds
-    setInterval(fetchMessages, 5000);
+    // Optimization: Only poll if chat is open OR if we are waiting for/connected to an agent
+    setInterval(() => {
+        if (isChatOpen || isAgentConnected) {
+            fetchMessages();
+        }
+    }, 5000);
 
     // Call initialization on load
     initializeChatSession();
