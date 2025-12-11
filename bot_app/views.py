@@ -1,10 +1,17 @@
 from django.shortcuts import render
 from django.http import JsonResponse, HttpResponseForbidden
 from django.views.decorators.csrf import csrf_exempt
-import json, hmac, hashlib, os
+import json, hmac, hashlib, os, base64, logging, sys
 from dotenv import load_dotenv
 import requests
 from requests.auth import HTTPBasicAuth
+
+# Configure Logging to Console
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+logger.addHandler(handler)
 
 # Load environment variables from .env
 load_dotenv()
@@ -59,8 +66,29 @@ def create_zendesk_ticket(subject, description):
 
 # --- Sunshine API Helpers ---
 
-def get_sunshine_auth():
-    return HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+def get_sunshine_headers():
+    """
+    Returns the headers required for Sunshine Conversations API calls.
+    Uses Basic Auth with base64 encoding.
+    """
+    # Try global variables first, then fallback to other common names
+    key_id = SUNSHINE_API_KEY_ID or os.getenv("SUNSHINE_KEY_ID")
+    secret = SUNSHINE_API_KEY_SECRET or os.getenv("SUNSHINE_SECRET")
+    
+    if not key_id or not secret:
+        logger.error("SUNSHINE_API_KEY_ID (or SUNSHINE_KEY_ID) or SECRET is missing in .env")
+        return None
+
+    # Manual Basic Auth Header Construction
+    auth_str = f"{key_id}:{secret}"
+    auth_bytes = auth_str.encode('utf-8')
+    auth_base64 = base64.b64encode(auth_bytes).decode('utf-8')
+
+    return {
+        "Authorization": f"Basic {auth_base64}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
 
 @csrf_exempt
 def init_conversation(request):
@@ -69,23 +97,44 @@ def init_conversation(request):
         return JsonResponse({"error": "Method not allowed"}, status=405)
     
     if not SUNSHINE_APP_ID:
+        logger.error("SUNSHINE_APP_ID not set")
         return JsonResponse({"error": "Server configuration error: SUNSHINE_APP_ID not set"}, status=500)
 
     try:
+        # Try to get userId from request if available (optional)
+        user_id = None
+        try:
+            if request.body:
+                data = json.loads(request.body)
+                user_id = data.get("userId")
+        except Exception:
+            pass # Ignore body parsing errors, proceed as new guest
+
         # Create a User (v2 endpoint)
         url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/users"
-        print(f"Calling Sunshine API: {url}") 
+        logger.info(f"Calling Sunshine API: {url}") 
         
-        # Create a new user with a default profile
-        response = requests.post(url, json={"profile": {"givenName": "Guest"}}, auth=get_sunshine_auth())
+        headers = get_sunshine_headers()
+        if not headers:
+             return JsonResponse({"error": "Server configuration error"}, status=500)
+
+        # Create payload
+        user_payload = {"profile": {"givenName": "Guest"}}
+        if user_id:
+            user_payload["userId"] = user_id
+            logger.info(f"Initializing for existing userId: {user_id}")
+
+        # Create/Get user
+        response = requests.post(url, json=user_payload, headers=headers)
         
-        if response.status_code != 201 and response.status_code != 200:
-            print(f"Sunshine API Error (Create User): {response.status_code} - {response.text}")
+        if response.status_code not in [200, 201, 409]: # 409 = Conflict (User already exists), which is fine if we sent a userId
+            logger.error(f"Sunshine API Error (Create User): {response.status_code} - {response.text}")
             return JsonResponse({"error": "Failed to create user", "details": response.text}, status=500)
 
         user_data = response.json()
         # v2 response structure: {"user": {"id": "..."}}
         app_user_id = user_data.get("user", {}).get("id")
+        logger.info(f"User created/found: {app_user_id}")
 
         # Create a Conversation
         conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations"
@@ -93,22 +142,23 @@ def init_conversation(request):
             "type": "personal",
             "participants": [{"userId": app_user_id}]
         }
-        conv_response = requests.post(conv_url, json=conv_payload, auth=get_sunshine_auth())
+        conv_response = requests.post(conv_url, json=conv_payload, headers=headers)
         
-        if conv_response.status_code != 201 and conv_response.status_code != 200:
-            print(f"Sunshine API Error (Create Conversation): {conv_response.status_code} - {conv_response.text}")
+        if conv_response.status_code not in [200, 201]:
+            logger.error(f"Sunshine API Error (Create Conversation): {conv_response.status_code} - {conv_response.text}")
             return JsonResponse({"error": "Failed to create conversation", "details": conv_response.text}, status=500)
 
         conv_data = conv_response.json()
         # v2 response structure: {"conversation": {"id": "..."}}
         conversation_id = conv_data.get("conversation", {}).get("id")
+        logger.info(f"Conversation created: {conversation_id}")
 
         return JsonResponse({
             "appUserId": app_user_id,
             "conversationId": conversation_id
         })
     except Exception as e:
-        print(f"Exception in init_conversation: {str(e)}")
+        logger.exception(f"Exception in init_conversation: {str(e)}")
         return JsonResponse({"error": "Internal Server Error", "details": str(e)}, status=500)
 
 @csrf_exempt
@@ -138,19 +188,66 @@ def send_message_to_sunshine(request):
             }
         }
         
-        response = requests.post(url, json=payload, auth=get_sunshine_auth())
+        headers = get_sunshine_headers()
+        if not headers:
+             return JsonResponse({"error": "Server configuration error"}, status=500)
+
+        logger.info(f"Sending message to Sunshine: {url}")
+        response = requests.post(url, json=payload, headers=headers)
         
         if response.status_code == 201:
+            logger.info("Message sent successfully")
             return JsonResponse({"status": "sent", "data": response.json()})
         else:
-            print(f"Sunshine API Error (Send Message): {response.status_code} - {response.text}")
+            logger.error(f"Sunshine API Error (Send Message): {response.status_code} - {response.text}")
             return JsonResponse({"error": "Failed to send message", "details": response.text}, status=500)
 
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
     except Exception as e:
-        print(f"Exception in send_message_to_sunshine: {str(e)}")
+        logger.exception(f"Exception in send_message_to_sunshine: {str(e)}")
         return JsonResponse({"error": "Internal Server Error", "details": str(e)}, status=500)
+
+
+@csrf_exempt
+def escalate_to_agent(request):
+    """Escalates the conversation to the next switchboard integration (e.g., Agent Workspace)."""
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        conversation_id = data.get("conversationId")
+        
+        if not conversation_id:
+            return JsonResponse({"error": "Missing conversationId"}, status=400)
+
+        app_id = os.getenv("SUNSHINE_APP_ID")
+        headers = get_sunshine_headers()
+        if not headers:
+             return JsonResponse({"error": "Server configuration error"}, status=500)
+
+        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/passControl"
+        
+        # "next" passes control to the configured next integration (usually Agent Workspace)
+        payload = {
+            "switchboardIntegration": "next", 
+            "metadata": {"dataCapture.systemField.tags": "escalated_from_bot"}
+        }
+
+        logger.info(f"Escalating conversation {conversation_id} to next integration")
+        response = requests.post(url, json=payload, headers=headers)
+
+        if response.status_code == 200:
+            logger.info("Conversation escalated successfully.")
+            return JsonResponse({"status": "escalated"})
+        else:
+            logger.error(f"Failed to escalate conversation: {response.status_code} - {response.text}")
+            return JsonResponse({"error": "Failed to escalate", "details": response.text}, status=500)
+
+    except Exception as e:
+        logger.exception("Exception in escalate_to_agent")
+        return JsonResponse({"error": str(e)}, status=500)
 
 
 # Webhook endpoint
@@ -161,12 +258,14 @@ def webhook_message(request):
 
     # Verify signature
     if not verify_signature(body, sig):
+        logger.warning("Invalid webhook signature")
         return HttpResponseForbidden("Invalid signature")
 
     # Parse event safely
     try:
         event = json.loads(body)
     except json.JSONDecodeError:
+        logger.error("Invalid JSON in webhook")
         return HttpResponseForbidden("Invalid JSON")
 
     conversation_id = event.get("conversation", {}).get("_id")
@@ -174,16 +273,19 @@ def webhook_message(request):
     messages = event.get("messages", [])
     text = messages[0].get("text") if messages else None
 
-    print(f"Webhook received: {conversation_id}, {app_user_id}, {text}")
+    logger.info(f"Webhook received: {conversation_id}, {app_user_id}, {text}")
 
     # ✅ Create Zendesk ticket if message exists
     ticket_response = None
     if text:
-        ticket_response = create_zendesk_ticket(
-            subject=f"Conversation {conversation_id}",
-            description=f"User {app_user_id} said: {text}"
-        )
-        print("Zendesk ticket created:", ticket_response)
+        try:
+            ticket_response = create_zendesk_ticket(
+                subject=f"Conversation {conversation_id}",
+                description=f"User {app_user_id} said: {text}"
+            )
+            logger.info(f"Zendesk ticket created: {ticket_response}")
+        except Exception as e:
+            logger.error(f"Failed to create Zendesk ticket: {e}")
 
     return JsonResponse({
         "status": "ok",
