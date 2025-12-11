@@ -15,7 +15,11 @@ document.addEventListener('DOMContentLoaded', function() {
     let conversationId = null;
     let lastContext = "General Inquiry"; // Track user context for escalation
     let displayedMessageIds = new Set(); // Track displayed messages to prevent duplicates/reloading
-    let isAgentConnected = false; // Track if connected to human agent
+    
+    // State Management with Persistence
+    let isAgentConnected = localStorage.getItem('chat_isAgentConnected') === 'true'; 
+    let lastAgentRequestTime = parseInt(localStorage.getItem('chat_lastAgentRequestTime') || '0');
+    let agentJoinAnnounced = localStorage.getItem('chat_agentJoinAnnounced') === 'true';
 
     // Predefined troubleshooting steps and options
     let troubleshootingSteps = {};
@@ -47,6 +51,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
                     console.log("Chat initialized:", appUserId, conversationId);
                     
+                    // Restore UI state if agent was connected
+                    if (isAgentConnected) {
+                        chatInputArea.style.display = 'flex';
+                        chatHeaderTitle.textContent = "Agent"; // Or keep generic if name unknown
+                    }
+
                     // Fetch previous messages
                     fetchMessages();
                 } else {
@@ -56,7 +66,23 @@ document.addEventListener('DOMContentLoaded', function() {
             .catch(error => console.error('Error initializing chat:', error));
     }
 
-    let agentJoinAnnounced = false; // Track if we've announced the agent joining
+    // Fetch previous messages
+    // Helper: End Session Cleanup
+    function endSession() {
+        console.log("Ending session and cleaning up...");
+        isAgentConnected = false;
+        agentJoinAnnounced = false;
+        
+        // Clear Persistence
+        localStorage.removeItem('chat_isAgentConnected');
+        localStorage.removeItem('chat_agentJoinAnnounced');
+        // We do NOT clear lastAgentRequestTime immediately to prevent race conditions with old messages
+        
+        // UI Updates
+        chatInputArea.style.display = 'none';
+        chatHeaderTitle.textContent = "Yatri Bandhu";
+        showMainOptions();
+    }
 
     // Fetch previous messages
     function fetchMessages() {
@@ -66,28 +92,24 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(response => response.json())
             .then(data => {
                 // Check Conversation Status (Active Switchboard Integration)
-                // Only proceed if we successfully fetched conversation details (has an ID)
                 if (data.conversation && data.conversation.id) {
                     const activeIntegration = data.conversation.activeSwitchboardIntegration;
                     const isAgentActive = activeIntegration && (activeIntegration.name === 'next' || activeIntegration.name === 'zendesk');
 
-                    // Ensure we stay in agent mode if integration is active
+                    // 1. Sync State: If Switchboard says Agent is Active, we must be connected
                     if (isAgentActive) {
-                        isAgentConnected = true;
-                        chatInputArea.style.display = 'flex';
+                        if (!isAgentConnected) {
+                            isAgentConnected = true;
+                            localStorage.setItem('chat_isAgentConnected', 'true');
+                            chatInputArea.style.display = 'flex';
+                        }
                     }
                     
-                    // Failsafe: If we were connected to an agent, but now the integration is gone (null) or 'bot'
-                    // This means the session has definitely ended.
-                    if (isAgentConnected && !isAgentActive) {
+                    // 2. Failsafe: If we think we are connected, but Switchboard says NO
+                    // Only trigger if enough time has passed since request (10s) to avoid race conditions
+                    if (isAgentConnected && !isAgentActive && (Date.now() - lastAgentRequestTime > 10000)) {
                          console.log("Session ended detected via Switchboard status.");
-                         isAgentConnected = false;
-                         chatInputArea.style.display = 'none';
-                         chatHeaderTitle.textContent = "Yatri Bandhu";
-                         agentJoinAnnounced = false;
-                         
-                         // Force show options immediately
-                         showMainOptions();
+                         endSession();
                     }
                 }
 
@@ -108,26 +130,31 @@ document.addEventListener('DOMContentLoaded', function() {
                                 const lowerText = text.toLowerCase();
 
                                 // ROBUST END SESSION CHECK
-                                // Check for "System" sender OR specific keywords in the text
                                 const isEndSessionMessage = 
                                     (senderName === 'System') || 
                                     (lowerText.includes("messaging session ended")) ||
                                     (lowerText.includes("the agent has ended the session"));
 
                                 if (isEndSessionMessage) {
-                                    // Ensure UI is updated
-                                    if (isAgentConnected) {
-                                        isAgentConnected = false;
-                                        chatInputArea.style.display = 'none';
-                                        chatHeaderTitle.textContent = "Yatri Bandhu";
-                                        agentJoinAnnounced = false;
-                                        showMainOptions();
+                                    const msgTime = new Date(msg.received).getTime();
+                                    const isOldMessage = msgTime < lastAgentRequestTime;
+
+                                    // Only process if it's a NEW end session message
+                                    if (!isOldMessage) {
+                                        if (isAgentConnected) {
+                                            endSession();
+                                        }
+                                        appendMessage(text, 'system-message', null);
+                                        displayedMessageIds.add(msg.id);
+                                        hasNewMessages = true;
+                                        return; 
+                                    } else {
+                                        // Old message: Just display, don't change state
+                                        appendMessage(text, 'system-message', null);
+                                        displayedMessageIds.add(msg.id);
+                                        hasNewMessages = true;
+                                        return;
                                     }
-                                    
-                                    appendMessage(text, 'system-message', null);
-                                    displayedMessageIds.add(msg.id);
-                                    hasNewMessages = true;
-                                    return; 
                                 }
 
                                 // Agent Join Announcement
@@ -135,7 +162,10 @@ document.addEventListener('DOMContentLoaded', function() {
                                     const nameToUse = senderName || "An agent";
                                     appendMessage(`${nameToUse} will help you from here on out.`, 'bot-message'); 
                                     agentJoinAnnounced = true;
+                                    localStorage.setItem('chat_agentJoinAnnounced', 'true');
+                                    
                                     isAgentConnected = true; 
+                                    localStorage.setItem('chat_isAgentConnected', 'true');
                                     chatInputArea.style.display = 'flex'; 
                                 }
 
@@ -151,16 +181,12 @@ document.addEventListener('DOMContentLoaded', function() {
                             }
                             // Handle Non-Text System Messages (e.g. Activities)
                             else if (msg.source && msg.source.type === 'system') {
-                                // Sometimes "Messaging session ended" comes as a system activity
-                                // We display it as a system message
                                 const text = "Messaging session ended"; 
-                                
-                                if (isAgentConnected) {
-                                    isAgentConnected = false;
-                                    chatInputArea.style.display = 'none';
-                                    chatHeaderTitle.textContent = "Yatri Bandhu";
-                                    agentJoinAnnounced = false;
-                                    showMainOptions();
+                                const msgTime = new Date(msg.received).getTime();
+                                const isOldMessage = msgTime < lastAgentRequestTime;
+
+                                if (!isOldMessage && isAgentConnected) {
+                                    endSession();
                                 }
 
                                 appendMessage(text, 'system-message', null);
@@ -369,7 +395,14 @@ document.addEventListener('DOMContentLoaded', function() {
         // Escalate to Sunshine/Zendesk with context
         escalateToAgent(lastContext);
         
-        isAgentConnected = true; // Set flag to keep input open
+        isAgentConnected = true; 
+        lastAgentRequestTime = Date.now(); 
+        agentJoinAnnounced = false;
+
+        // Persist State
+        localStorage.setItem('chat_isAgentConnected', 'true');
+        localStorage.setItem('chat_lastAgentRequestTime', lastAgentRequestTime.toString());
+        localStorage.setItem('chat_agentJoinAnnounced', 'false');
 
         setTimeout(() => {
             appendMessage("Connecting you to a human agent... Please wait while we transfer your chat.", 'bot-message');
