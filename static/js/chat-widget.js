@@ -125,14 +125,11 @@ document.addEventListener('DOMContentLoaded', function() {
                     }
                     
                     // 2. Status-Based Closing (Solved Ticket Detection)
-                    // REMOVED: User requested no auto-close based on status. 
-                    // We only close on explicit "Session Ended" message.
-                    /*
+                    // Re-enabled as per user request.
                     if (isAgentConnected && hasConfirmedAgentActivity && !isAgentActive) {
                          console.log("Session ended detected via Switchboard status (Agent Solved/Left).");
                          endSession();
                     }
-                    */
                 }
 
                 if (data.messages) {
@@ -180,16 +177,22 @@ document.addEventListener('DOMContentLoaded', function() {
                                     (lowerText.includes("the agent has ended the session"));
 
                                 // Check for Agent Join Message
-                                if (lowerText.includes("will help you from here on out")) {
+                                if (lowerText.includes(" connected") && senderName === 'System') {
                                     removeLoadingIndicator();
                                     
                                     // Extract Agent Name and Update Header
-                                    // Expected format: "Name will help you..."
-                                    const namePart = text.split(" will help you")[0];
+                                    // Expected format: "Name connected"
+                                    const namePart = text.split(" connected")[0];
                                     if (namePart && namePart !== "An agent") {
                                         chatHeaderTitle.textContent = namePart;
                                         chatHeaderTitle.style.fontSize = '1.1rem';
                                     }
+                                    
+                                    // Render as System Message
+                                    appendMessage(text, 'system-message', null);
+                                    displayedMessageIds.add(msg.id);
+                                    hasNewMessages = true;
+                                    return;
                                 }
 
                                 if (isEndSessionMessage) {
@@ -199,10 +202,11 @@ document.addEventListener('DOMContentLoaded', function() {
                                     return; 
                                 }
 
-                                // Agent Join Announcement
+                                // Agent Join Announcement (Fallback if webhook delayed)
                                 if (!isUser && !agentJoinAnnounced && senderName !== 'System') {
                                     const nameToUse = senderName || "An agent";
-                                    appendMessage(`${nameToUse} will help you from here on out.`, 'bot-message'); 
+                                    // Use system-message style for consistency
+                                    appendMessage(`${nameToUse} connected`, 'system-message'); 
                                     agentJoinAnnounced = true;
                                     localStorage.setItem('chat_agentJoinAnnounced', 'true');
                                     
@@ -269,13 +273,13 @@ document.addEventListener('DOMContentLoaded', function() {
             .catch(error => console.error('Error fetching messages:', error));
     }
 
-    // Poll for new messages every 5 seconds
+    // Poll for new messages every 1 second (1000ms)
     // Optimization: Only poll if chat is open OR if we are waiting for/connected to an agent
     setInterval(() => {
         if (isChatOpen || isAgentConnected) {
             fetchMessages();
         }
-    }, 5000);
+    }, 1000);
 
     // Call initialization on load
     initializeChatSession();

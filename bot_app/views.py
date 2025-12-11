@@ -482,7 +482,7 @@ def handle_participant_join(event_data):
                     url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
                     payload = {
                         "author": {"type": "business", "displayName": "System"},
-                        "content": {"type": "text", "text": f"{agent_name} will help you from here on out."}
+                        "content": {"type": "text", "text": f"{agent_name} connected"}
                     }
                     requests.post(url, json=payload, headers=headers)
             except Exception as e:
