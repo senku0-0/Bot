@@ -424,29 +424,87 @@ def webhook_message(request):
         logger.error("Invalid JSON in webhook")
         return HttpResponseForbidden("Invalid JSON")
 
-    conversation_id = event.get("conversation", {}).get("_id")
-    app_user_id = event.get("appUser", {}).get("_id")
-    messages = event.get("messages", [])
-    text = messages[0].get("text") if messages else None
+    # Handle Sunshine v2 "events" array structure if present
+    events_list = event.get("events", [])
+    if not events_list and "trigger" in event:
+        # Handle legacy/flattened structure where the body IS the event
+        events_list = [event]
+    elif not events_list and "messages" in event:
+        # Handle the specific case where it might be just a message payload (fallback)
+        events_list = [event]
+        event["trigger"] = "conversation:message"
 
-    logger.info(f"Webhook received: {conversation_id}, {app_user_id}, {text}")
+    for evt in events_list:
+        trigger = evt.get("trigger") or evt.get("type") # v1 uses trigger, v2 uses type
+        
+        logger.info(f"Processing Webhook Event: {trigger}")
 
-    # ✅ Create Zendesk ticket if message exists
-    ticket_response = None
+        # 1. Handle Messages
+        if trigger == "conversation:message":
+            process_message_event(evt)
+        
+        # 2. Handle Switchboard Events (Agent Control)
+        elif trigger == "switchboard:passControl":
+            logger.info("Control passed to switchboard integration.")
+            # You could update local DB state here
+            
+        elif trigger == "switchboard:releaseControl":
+            logger.info("Control released by switchboard integration (Agent ended chat).")
+            handle_agent_end_session(evt)
+
+        # 3. Handle other events (Log for now)
+        elif trigger in ["conversation:read", "conversation:typing", "participant:join"]:
+            logger.debug(f"Received {trigger} - No action taken.")
+
+    return JsonResponse({"status": "received"})
+
+def process_message_event(event_data):
+    """Handle incoming user messages."""
+    conversation = event_data.get("conversation", {})
+    conversation_id = conversation.get("_id") or conversation.get("id")
+    app_user = event_data.get("appUser", {})
+    app_user_id = app_user.get("_id") or app_user.get("id")
+    
+    # Check who is currently in control
+    sb_integration = conversation.get("activeSwitchboardIntegration", {})
+    current_integration_name = sb_integration.get("name")
+
+    # If the Agent (next/zendesk) is in control, DO NOT create a ticket.
+    # Zendesk will handle the message automatically.
+    if current_integration_name in ["next", "zendesk"]:
+        logger.info(f"Ignoring message from {app_user_id} because Agent is in control.")
+        return
+
+    messages = event_data.get("messages", [])
+    if not messages:
+        return
+
+    text = messages[0].get("text")
     if text:
+        logger.info(f"Creating Ticket for message: {text}")
         try:
-            ticket_response = create_zendesk_ticket(
+            create_zendesk_ticket(
                 subject=f"Conversation {conversation_id}",
                 description=f"User {app_user_id} said: {text}"
             )
-            logger.info(f"Zendesk ticket created: {ticket_response}")
         except Exception as e:
-            logger.error(f"Failed to create Zendesk ticket: {e}")
+            logger.error(f"Failed to create ticket: {e}")
 
-    return JsonResponse({
-        "status": "ok",
-        "conversation_id": conversation_id,
-        "app_user_id": app_user_id,
-        "text": text,
-        "zendesk_ticket": ticket_response
-    })
+def handle_agent_end_session(event_data):
+    """Send a system message when agent ends the chat."""
+    conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
+    if not conversation_id:
+        return
+
+    # Send a message to the user confirming the session has ended
+    try:
+        headers = get_sunshine_headers()
+        if headers:
+            url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+            payload = {
+                "author": {"type": "business", "displayName": "System"},
+                "content": {"type": "text", "text": "The agent has ended the session. Type a message to start a new ticket."}
+            }
+            requests.post(url, json=payload, headers=headers)
+    except Exception as e:
+        logger.error(f"Failed to send end-session message: {e}")

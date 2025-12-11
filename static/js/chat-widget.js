@@ -66,20 +66,30 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(response => response.json())
             .then(data => {
                 // Check Conversation Status (Active Switchboard Integration)
-                // If integration is NOT 'next' (agent) and we were connected, maybe session ended?
-                // Note: 'next' is the keyword often used for the primary business integration (Zendesk)
-                const activeIntegration = data.conversation && data.conversation.activeSwitchboardIntegration;
-                const isAgentActive = activeIntegration && (activeIntegration.name === 'next' || activeIntegration.name === 'zendesk');
+                // Only proceed if we successfully fetched conversation details (has an ID)
+                if (data.conversation && data.conversation.id) {
+                    const activeIntegration = data.conversation.activeSwitchboardIntegration;
+                    const isAgentActive = activeIntegration && (activeIntegration.name === 'next' || activeIntegration.name === 'zendesk');
 
-                // Detect Session End (If we were connected, but now integration is gone or changed back to bot)
-                // This is heuristic; sometimes integration stays 'next' even after solve.
-                // But if it explicitly goes to null or 'bot', we can assume end.
-                if (isAgentConnected && !isAgentActive && activeIntegration && activeIntegration.name !== 'next') {
-                     appendMessage("The agent has ended the session. If you need more help, please refresh or select an option.", "bot-message");
-                     isAgentConnected = false;
-                     chatInputArea.style.display = 'none';
-                     chatHeaderTitle.textContent = "Yatri Bandhu"; // Reset header
-                     agentJoinAnnounced = false; // Reset for next time
+                    // Ensure we stay in agent mode if integration is active
+                    if (isAgentActive) {
+                        isAgentConnected = true;
+                        chatInputArea.style.display = 'flex';
+                    }
+
+                    // Detect Session End
+                    // If we were connected, but now the agent integration is no longer active (released or switched)
+                    let sessionEndedNow = false;
+                    if (isAgentConnected && !isAgentActive) {
+                         // We rely on the backend to send the "Session Ended" message via webhook
+                         // So we don't append a local message here to avoid duplicates.
+                         
+                         isAgentConnected = false;
+                         chatInputArea.style.display = 'none';
+                         chatHeaderTitle.textContent = "Yatri Bandhu"; // Reset header
+                         agentJoinAnnounced = false; // Reset for next time
+                         sessionEndedNow = true;
+                    }
                 }
 
                 if (data.messages) {
@@ -96,16 +106,16 @@ document.addEventListener('DOMContentLoaded', function() {
                                 const senderName = isUser ? null : (msg.author.displayName || 'Agent');
                                 
                                 // Agent Join Announcement
-                                if (!isUser && !agentJoinAnnounced) {
+                                if (!isUser && !agentJoinAnnounced && senderName !== 'System') {
                                     const nameToUse = senderName || "An agent";
-                                    appendMessage(`${nameToUse} will help you from here on out.`, 'bot-message'); // Using bot-message style for system notification
+                                    appendMessage(`${nameToUse} will help you from here on out.`, 'bot-message'); 
                                     agentJoinAnnounced = true;
-                                    isAgentConnected = true; // Ensure we are in agent mode
-                                    chatInputArea.style.display = 'flex'; // Ensure input is open
+                                    isAgentConnected = true; 
+                                    chatInputArea.style.display = 'flex'; 
                                 }
 
-                                // Update header with agent name if connected
-                                if (!isUser && senderName && senderName !== 'Agent') {
+                                // Update header with agent name if connected (Ignore System messages)
+                                if (!isUser && senderName && senderName !== 'Agent' && senderName !== 'System') {
                                     chatHeaderTitle.textContent = senderName;
                                     chatHeaderTitle.style.fontSize = '1.1rem'; 
                                 }
@@ -120,6 +130,11 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                     if (hasNewMessages) {
                         scrollToBottom();
+                    }
+
+                    // Show options AFTER messages are processed if session just ended
+                    if (sessionEndedNow) {
+                        showMainOptions();
                     }
                 }
             })
