@@ -126,8 +126,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                     // 2. Status-Based Closing (Solved Ticket Detection)
                     // Re-enabled as per user request.
-                    if (isAgentConnected && hasConfirmedAgentActivity && !isAgentActive) {
+                    // SAFETY CHECK: Only close if activeIntegration is explicitly defined (not missing from response)
+                    // If activeIntegration is undefined, it might be a partial API response, so we ignore it.
+                    if (activeIntegration !== undefined && isAgentConnected && hasConfirmedAgentActivity && !isAgentActive) {
                          console.log("Session ended detected via Switchboard status (Agent Solved/Left).");
+                         
+                         // FIX: Inform the user visually before closing
+                         appendMessage("Messaging session ended", 'system-message');
+                         
                          endSession();
                     }
                 }

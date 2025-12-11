@@ -469,6 +469,11 @@ def handle_participant_join(event_data):
         return
 
     participants = event_data.get("participants", [])
+    # Support for singular 'participant' payload (common in some webhook versions)
+    single_participant = event_data.get("participant")
+    if single_participant:
+        participants.append(single_participant)
+
     for p in participants:
         # Check if the participant is a business user (Agent)
         if p.get("type") == "business":
