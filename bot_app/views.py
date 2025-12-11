@@ -257,8 +257,18 @@ def get_conversation_messages(request):
         
         response = requests.get(url, headers=headers)
         
+        # Also fetch conversation details to check active switchboard integration (Agent status)
+        conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}"
+        conv_response = requests.get(conv_url, headers=headers)
+        conversation_data = {}
+        if conv_response.status_code == 200:
+            conversation_data = conv_response.json().get("conversation", {})
+
         if response.status_code == 200:
-            return JsonResponse(response.json())
+            data = response.json()
+            # Merge conversation data into response
+            data['conversation'] = conversation_data
+            return JsonResponse(data)
         else:
             logger.error(f"Failed to fetch messages: {response.status_code} - {response.text}")
             return JsonResponse({"error": "Failed to fetch messages"}, status=response.status_code)

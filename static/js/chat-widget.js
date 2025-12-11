@@ -56,6 +56,8 @@ document.addEventListener('DOMContentLoaded', function() {
             .catch(error => console.error('Error initializing chat:', error));
     }
 
+    let agentJoinAnnounced = false; // Track if we've announced the agent joining
+
     // Fetch previous messages
     function fetchMessages() {
         if (!conversationId) return;
@@ -63,6 +65,23 @@ document.addEventListener('DOMContentLoaded', function() {
         fetch(`/api/chat/messages?conversationId=${conversationId}`)
             .then(response => response.json())
             .then(data => {
+                // Check Conversation Status (Active Switchboard Integration)
+                // If integration is NOT 'next' (agent) and we were connected, maybe session ended?
+                // Note: 'next' is the keyword often used for the primary business integration (Zendesk)
+                const activeIntegration = data.conversation && data.conversation.activeSwitchboardIntegration;
+                const isAgentActive = activeIntegration && (activeIntegration.name === 'next' || activeIntegration.name === 'zendesk');
+
+                // Detect Session End (If we were connected, but now integration is gone or changed back to bot)
+                // This is heuristic; sometimes integration stays 'next' even after solve.
+                // But if it explicitly goes to null or 'bot', we can assume end.
+                if (isAgentConnected && !isAgentActive && activeIntegration && activeIntegration.name !== 'next') {
+                     appendMessage("The agent has ended the session. If you need more help, please refresh or select an option.", "bot-message");
+                     isAgentConnected = false;
+                     chatInputArea.style.display = 'none';
+                     chatHeaderTitle.textContent = "Yatri Bandhu"; // Reset header
+                     agentJoinAnnounced = false; // Reset for next time
+                }
+
                 if (data.messages) {
                     // Sort messages by date (oldest first)
                     const sortedMessages = data.messages.sort((a, b) => new Date(a.received) - new Date(b.received));
@@ -76,13 +95,23 @@ document.addEventListener('DOMContentLoaded', function() {
                                 // Extract sender name for agents
                                 const senderName = isUser ? null : (msg.author.displayName || 'Agent');
                                 
+                                // Agent Join Announcement
+                                if (!isUser && !agentJoinAnnounced) {
+                                    const nameToUse = senderName || "An agent";
+                                    appendMessage(`${nameToUse} will help you from here on out.`, 'bot-message'); // Using bot-message style for system notification
+                                    agentJoinAnnounced = true;
+                                    isAgentConnected = true; // Ensure we are in agent mode
+                                    chatInputArea.style.display = 'flex'; // Ensure input is open
+                                }
+
                                 // Update header with agent name if connected
                                 if (!isUser && senderName && senderName !== 'Agent') {
                                     chatHeaderTitle.textContent = senderName;
-                                    chatHeaderTitle.style.fontSize = '1.1rem'; // Make it slightly prominent
+                                    chatHeaderTitle.style.fontSize = '1.1rem'; 
                                 }
 
-                                appendMessage(msg.content.text, isUser ? 'user-message' : 'bot-message', senderName);
+                                // Pass null for senderName so it doesn't appear above the message bubble
+                                appendMessage(msg.content.text, isUser ? 'user-message' : 'bot-message', null);
                                 displayedMessageIds.add(msg.id);
                                 hasNewMessages = true;
                             }
