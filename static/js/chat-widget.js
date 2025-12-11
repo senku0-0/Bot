@@ -86,6 +86,9 @@ document.addEventListener('DOMContentLoaded', function() {
         // UI Updates
         chatInputArea.style.display = 'none';
         chatHeaderTitle.textContent = "Yatri Bandhu";
+        
+        // Show "What can I help you with?" message before options
+        appendMessage("What can I help you with?", 'bot-message');
         showMainOptions();
     }
 
