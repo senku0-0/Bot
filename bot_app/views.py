@@ -72,32 +72,36 @@ def init_conversation(request):
         return JsonResponse({"error": "Server configuration error: SUNSHINE_APP_ID not set"}, status=500)
 
     try:
-        # Create an App User
-        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/appusers"
-        print(f"Calling Sunshine API: {url}") # Debug log
+        # Create a User (v2 endpoint)
+        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/users"
+        print(f"Calling Sunshine API: {url}") 
         
-        # We can optionally pass a userId if we have one, otherwise Sunshine generates one
-        response = requests.post(url, json={}, auth=get_sunshine_auth())
+        # Create a new user with a default profile
+        response = requests.post(url, json={"profile": {"givenName": "Guest"}}, auth=get_sunshine_auth())
         
         if response.status_code != 201 and response.status_code != 200:
             print(f"Sunshine API Error (Create User): {response.status_code} - {response.text}")
             return JsonResponse({"error": "Failed to create user", "details": response.text}, status=500)
 
         user_data = response.json()
-        app_user_id = user_data.get("appUser", {}).get("_id")
+        # v2 response structure: {"user": {"id": "..."}}
+        app_user_id = user_data.get("user", {}).get("id")
 
-        # Create a Conversation (or get existing)
-        # Note: Sunshine v2 automatically creates a conversation when a message is sent, 
-        # but we can explicitly create one to get the ID upfront.
-        conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/appusers/{app_user_id}/conversations"
-        conv_response = requests.post(conv_url, json={}, auth=get_sunshine_auth())
+        # Create a Conversation
+        conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations"
+        conv_payload = {
+            "type": "personal",
+            "participants": [{"userId": app_user_id}]
+        }
+        conv_response = requests.post(conv_url, json=conv_payload, auth=get_sunshine_auth())
         
         if conv_response.status_code != 201 and conv_response.status_code != 200:
             print(f"Sunshine API Error (Create Conversation): {conv_response.status_code} - {conv_response.text}")
             return JsonResponse({"error": "Failed to create conversation", "details": conv_response.text}, status=500)
 
         conv_data = conv_response.json()
-        conversation_id = conv_data.get("conversation", {}).get("_id")
+        # v2 response structure: {"conversation": {"id": "..."}}
+        conversation_id = conv_data.get("conversation", {}).get("id")
 
         return JsonResponse({
             "appUserId": app_user_id,
