@@ -77,18 +77,17 @@ document.addEventListener('DOMContentLoaded', function() {
                         chatInputArea.style.display = 'flex';
                     }
                     
-                    // Failsafe: If integration explicitly switches back to 'bot', end the session
-                    // This handles cases where the webhook might be delayed or missed
-                    if (isAgentConnected && activeIntegration && activeIntegration.name === 'bot') {
+                    // Failsafe: If we were connected to an agent, but now the integration is gone (null) or 'bot'
+                    // This means the session has definitely ended.
+                    if (isAgentConnected && !isAgentActive) {
+                         console.log("Session ended detected via Switchboard status.");
                          isAgentConnected = false;
                          chatInputArea.style.display = 'none';
                          chatHeaderTitle.textContent = "Yatri Bandhu";
                          agentJoinAnnounced = false;
                          
-                         // Only show options if we haven't just processed a system message that did it
-                         // We'll let the message loop handle the UI update if the message exists, 
-                         // but if no message arrives, we force the state change here.
-                         // We won't force showMainOptions() here to avoid double-rendering if the message comes later.
+                         // Force show options immediately
+                         showMainOptions();
                     }
                 }
 
@@ -96,31 +95,39 @@ document.addEventListener('DOMContentLoaded', function() {
                     // Sort messages by date (oldest first)
                     const sortedMessages = data.messages.sort((a, b) => new Date(a.received) - new Date(b.received));
                     let hasNewMessages = false;
-                    let sessionEndedNow = false;
 
                     sortedMessages.forEach(msg => {
                         // Check if message is already displayed
                         if (!displayedMessageIds.has(msg.id)) {
+                            
+                            // Handle Text Messages
                             if (msg.content && msg.content.type === 'text') {
                                 const isUser = msg.author.type === 'user'; 
-                                // Extract sender name for agents
                                 const senderName = isUser ? null : (msg.author.displayName || 'Agent');
-                                
-                                // Check for System End Session Message (From Backend OR Sunshine Auto-message)
-                                const text = msg.content.text.toLowerCase();
-                                if ((senderName === 'System' || text.includes("messaging session ended")) && 
-                                    (text.includes("ended the session") || text.includes("messaging session ended"))) {
+                                const text = msg.content.text;
+                                const lowerText = text.toLowerCase();
+
+                                // ROBUST END SESSION CHECK
+                                // Check for "System" sender OR specific keywords in the text
+                                const isEndSessionMessage = 
+                                    (senderName === 'System') || 
+                                    (lowerText.includes("messaging session ended")) ||
+                                    (lowerText.includes("the agent has ended the session"));
+
+                                if (isEndSessionMessage) {
+                                    // Ensure UI is updated
+                                    if (isAgentConnected) {
+                                        isAgentConnected = false;
+                                        chatInputArea.style.display = 'none';
+                                        chatHeaderTitle.textContent = "Yatri Bandhu";
+                                        agentJoinAnnounced = false;
+                                        showMainOptions();
+                                    }
                                     
-                                    isAgentConnected = false;
-                                    chatInputArea.style.display = 'none';
-                                    chatHeaderTitle.textContent = "Yatri Bandhu";
-                                    agentJoinAnnounced = false;
-                                    sessionEndedNow = true;
-                                    
-                                    // Display as system message
-                                    appendMessage(msg.content.text, 'system-message', null);
+                                    appendMessage(text, 'system-message', null);
                                     displayedMessageIds.add(msg.id);
-                                    return; // Skip default append
+                                    hasNewMessages = true;
+                                    return; 
                                 }
 
                                 // Agent Join Announcement
@@ -132,14 +139,31 @@ document.addEventListener('DOMContentLoaded', function() {
                                     chatInputArea.style.display = 'flex'; 
                                 }
 
-                                // Update header with agent name if connected (Ignore System messages)
+                                // Update header
                                 if (!isUser && senderName && senderName !== 'Agent' && senderName !== 'System') {
                                     chatHeaderTitle.textContent = senderName;
                                     chatHeaderTitle.style.fontSize = '1.1rem'; 
                                 }
 
-                                // Pass null for senderName so it doesn't appear above the message bubble
-                                appendMessage(msg.content.text, isUser ? 'user-message' : 'bot-message', null);
+                                appendMessage(text, isUser ? 'user-message' : 'bot-message', null);
+                                displayedMessageIds.add(msg.id);
+                                hasNewMessages = true;
+                            }
+                            // Handle Non-Text System Messages (e.g. Activities)
+                            else if (msg.source && msg.source.type === 'system') {
+                                // Sometimes "Messaging session ended" comes as a system activity
+                                // We display it as a system message
+                                const text = "Messaging session ended"; 
+                                
+                                if (isAgentConnected) {
+                                    isAgentConnected = false;
+                                    chatInputArea.style.display = 'none';
+                                    chatHeaderTitle.textContent = "Yatri Bandhu";
+                                    agentJoinAnnounced = false;
+                                    showMainOptions();
+                                }
+
+                                appendMessage(text, 'system-message', null);
                                 displayedMessageIds.add(msg.id);
                                 hasNewMessages = true;
                             }
@@ -148,11 +172,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                     if (hasNewMessages) {
                         scrollToBottom();
-                    }
-
-                    // Show options AFTER messages are processed if session just ended
-                    if (sessionEndedNow) {
-                        showMainOptions();
                     }
                 }
             })
