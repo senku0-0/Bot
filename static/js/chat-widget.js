@@ -125,11 +125,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     }
                     
                     // 2. Status-Based Closing (Solved Ticket Detection)
-                    // ONLY close if we previously confirmed the agent was active, and now they are NOT.
+                    // REMOVED: User requested no auto-close based on status. 
+                    // We only close on explicit "Session Ended" message.
+                    /*
                     if (isAgentConnected && hasConfirmedAgentActivity && !isAgentActive) {
                          console.log("Session ended detected via Switchboard status (Agent Solved/Left).");
                          endSession();
                     }
+                    */
                 }
 
                 if (data.messages) {
@@ -179,6 +182,14 @@ document.addEventListener('DOMContentLoaded', function() {
                                 // Check for Agent Join Message
                                 if (lowerText.includes("will help you from here on out")) {
                                     removeLoadingIndicator();
+                                    
+                                    // Extract Agent Name and Update Header
+                                    // Expected format: "Name will help you..."
+                                    const namePart = text.split(" will help you")[0];
+                                    if (namePart && namePart !== "An agent") {
+                                        chatHeaderTitle.textContent = namePart;
+                                        chatHeaderTitle.style.fontSize = '1.1rem';
+                                    }
                                 }
 
                                 if (isEndSessionMessage) {
