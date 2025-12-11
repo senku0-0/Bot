@@ -339,7 +339,8 @@ def escalate_to_agent(request):
         if not conversation_id:
             return JsonResponse({"error": "Missing conversationId"}, status=400)
 
-        app_id = os.getenv("SUNSHINE_APP_ID")
+        # Use global SUNSHINE_APP_ID
+        app_id = SUNSHINE_APP_ID
         headers = get_sunshine_headers()
         if not headers:
              return JsonResponse({"error": "Server configuration error"}, status=500)
@@ -366,7 +367,8 @@ def escalate_to_agent(request):
             return JsonResponse({"status": "escalated"})
         else:
             logger.error(f"Failed to escalate conversation: {response.status_code} - {response.text}")
-            return JsonResponse({"error": "Failed to escalate", "details": response.text}, status=500)
+            # Return the actual error from Sunshine to the frontend for better debugging
+            return JsonResponse({"error": "Failed to escalate", "details": response.text}, status=response.status_code)
 
     except Exception as e:
         logger.exception("Exception in escalate_to_agent")
