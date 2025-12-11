@@ -178,22 +178,37 @@ def init_conversation(request):
              logger.error(f"Could not retrieve appUserId. Response: {response.text}")
              return JsonResponse({"error": "Failed to retrieve user ID"}, status=500)
 
-        # Create a Conversation
-        conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations"
-        conv_payload = {
-            "type": "personal",
-            "participants": [{"userId": app_user_id}]
-        }
-        conv_response = requests.post(conv_url, json=conv_payload, headers=headers)
+        # 3. Check for existing conversations first (to avoid Multi-convo error)
+        conversation_id = None
+        list_conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/users/{app_user_id}/conversations"
         
-        if conv_response.status_code not in [200, 201]:
-            logger.error(f"Sunshine API Error (Create Conversation): {conv_response.status_code} - {conv_response.text}")
-            return JsonResponse({"error": "Failed to create conversation", "details": conv_response.text}, status=500)
+        try:
+            list_response = requests.get(list_conv_url, headers=headers)
+            if list_response.status_code == 200:
+                conversations = list_response.json().get("conversations", [])
+                if conversations:
+                    # Use the most recent conversation
+                    conversation_id = conversations[0].get("id")
+                    logger.info(f"Found existing conversation: {conversation_id}")
+        except Exception as e:
+            logger.warning(f"Failed to list conversations: {e}")
 
-        conv_data = conv_response.json()
-        # v2 response structure: {"conversation": {"id": "..."}}
-        conversation_id = conv_data.get("conversation", {}).get("id")
-        logger.info(f"Conversation created: {conversation_id}")
+        if not conversation_id:
+            # Create a Conversation if none found
+            conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations"
+            conv_payload = {
+                "type": "personal",
+                "participants": [{"userId": app_user_id}]
+            }
+            conv_response = requests.post(conv_url, json=conv_payload, headers=headers)
+            
+            if conv_response.status_code not in [200, 201]:
+                logger.error(f"Sunshine API Error (Create Conversation): {conv_response.status_code} - {conv_response.text}")
+                return JsonResponse({"error": "Failed to create conversation", "details": conv_response.text}, status=500)
+
+            conv_data = conv_response.json()
+            conversation_id = conv_data.get("conversation", {}).get("id")
+            logger.info(f"Conversation created: {conversation_id}")
 
         return JsonResponse({
             "appUserId": app_user_id,
