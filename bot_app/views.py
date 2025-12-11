@@ -14,7 +14,9 @@ handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s -
 logger.addHandler(handler)
 
 # Load environment variables from .env
-load_dotenv()
+env_loaded = load_dotenv()
+if not env_loaded:
+    logger.warning("load_dotenv() did not find a .env file (This is normal if using system env vars)")
 
 # Sunshine secret for webhook verification
 SECRET = os.getenv("SUNSHINE_WEBHOOK_SIGNING_SECRET")
@@ -76,6 +78,9 @@ def get_sunshine_headers():
     secret = SUNSHINE_API_KEY_SECRET or os.getenv("SUNSHINE_SECRET")
     
     if not key_id or not secret:
+        # DEBUGGING: Log available keys to help user find the mismatch
+        available_keys = ", ".join([k for k in os.environ.keys() if "SUNSHINE" in k or "ZENDESK" in k])
+        logger.error(f"Missing Auth. Available env vars with SUNSHINE/ZENDESK: {available_keys}")
         logger.error("SUNSHINE_API_KEY_ID (or SUNSHINE_KEY_ID) or SECRET is missing in .env")
         return None
 
