@@ -42,11 +42,24 @@ def index(request):
 # Verify Sunshine webhook signature
 def verify_signature(payload, signature):
     if not signature:
+        logger.warning("Webhook signature missing")
         return False
     if signature.startswith("sha256="):
         signature = signature.split("=", 1)[1]
+    
+    # Debugging: Ensure SECRET is loaded
+    if not SECRET:
+        logger.error("SUNSHINE_WEBHOOK_SIGNING_SECRET is missing or empty!")
+        return False
+        
     calc = hmac.new(SECRET.encode(), payload, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(calc, signature)
+    
+    # Debugging: Log mismatch (be careful not to log full secrets in production, but helpful here)
+    if not hmac.compare_digest(calc, signature):
+        logger.warning(f"Signature mismatch. Calculated: {calc[:10]}... Received: {signature[:10]}...")
+        return False
+        
+    return True
 
 # Create Zendesk ticket
 def create_zendesk_ticket(subject, description):
@@ -167,11 +180,42 @@ def init_conversation(request):
 
         return JsonResponse({
             "appUserId": app_user_id,
-            "conversationId": conversation_id
+            "conversationId": conversation_id,
+            "externalId": user_id # Return the externalId (UUID) so frontend can save it
         })
     except Exception as e:
         logger.exception(f"Exception in init_conversation: {str(e)}")
         return JsonResponse({"error": "Internal Server Error", "details": str(e)}, status=500)
+
+@csrf_exempt
+def get_conversation_messages(request):
+    """Fetch messages for a conversation."""
+    if request.method != "GET":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    conversation_id = request.GET.get("conversationId")
+    if not conversation_id:
+        return JsonResponse({"error": "Missing conversationId"}, status=400)
+
+    try:
+        headers = get_sunshine_headers()
+        if not headers:
+             return JsonResponse({"error": "Server configuration error"}, status=500)
+
+        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+        logger.info(f"Fetching messages: {url}")
+        
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200:
+            return JsonResponse(response.json())
+        else:
+            logger.error(f"Failed to fetch messages: {response.status_code} - {response.text}")
+            return JsonResponse({"error": "Failed to fetch messages"}, status=response.status_code)
+
+    except Exception as e:
+        logger.exception("Exception in get_conversation_messages")
+        return JsonResponse({"error": str(e)}, status=500)
 
 @csrf_exempt
 def send_message_to_sunshine(request):

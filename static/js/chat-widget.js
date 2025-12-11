@@ -21,18 +21,69 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Initialize Chat Session (Get IDs from Backend)
     function initializeChatSession() {
-        fetch('/api/chat/init', { method: 'POST' })
+        // Check localStorage for existing user ID
+        const storedUserId = localStorage.getItem('chat_user_id');
+        const payload = storedUserId ? { userId: storedUserId } : {};
+
+        fetch('/api/chat/init', { 
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
             .then(response => response.json())
             .then(data => {
                 if (data.appUserId && data.conversationId) {
                     appUserId = data.appUserId;
                     conversationId = data.conversationId;
+                    
+                    // Save externalId (if returned) or appUserId to localStorage
+                    if (data.externalId) {
+                        localStorage.setItem('chat_user_id', data.externalId);
+                    }
+
                     console.log("Chat initialized:", appUserId, conversationId);
+                    
+                    // Fetch previous messages
+                    fetchMessages();
                 } else {
                     console.error("Failed to initialize chat session", data);
                 }
             })
             .catch(error => console.error('Error initializing chat:', error));
+    }
+
+    // Fetch previous messages
+    function fetchMessages() {
+        if (!conversationId) return;
+
+        fetch(`/api/chat/messages?conversationId=${conversationId}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.messages) {
+                    // Clear existing messages (optional, but good practice)
+                    // messagesContainer.innerHTML = ''; 
+                    
+                    // Sort messages by date (oldest first)
+                    const sortedMessages = data.messages.sort((a, b) => new Date(a.received) - new Date(b.received));
+
+                    sortedMessages.forEach(msg => {
+                        if (msg.content && msg.content.type === 'text') {
+                            const isUser = msg.author.type === 'user'; // 'user' is the end-user, 'business' is the bot/agent
+                            addMessageToUI(msg.content.text, isUser ? 'user-message' : 'bot-message');
+                        }
+                    });
+                }
+            })
+            .catch(error => console.error('Error fetching messages:', error));
+    }
+
+    // Helper to add message to UI (extracted from existing logic if possible, or created new)
+    function addMessageToUI(text, className) {
+        const messageDiv = document.createElement('div');
+        messageDiv.classList.add('message', className);
+        messageDiv.textContent = text;
+        messagesContainer.appendChild(messageDiv);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
 
     // Call initialization on load
