@@ -324,6 +324,7 @@ def escalate_to_agent(request):
     try:
         data = json.loads(request.body)
         conversation_id = data.get("conversationId")
+        reason = data.get("reason", "User requested agent support") # Get reason from frontend
         
         if not conversation_id:
             return JsonResponse({"error": "Missing conversationId"}, status=400)
@@ -336,9 +337,15 @@ def escalate_to_agent(request):
         url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/passControl"
         
         # "next" passes control to the configured next integration (usually Agent Workspace)
+        # We can pass metadata to give the agent context
         payload = {
             "switchboardIntegration": "next", 
-            "metadata": {"dataCapture.systemField.tags": "escalated_from_bot"}
+            "metadata": {
+                "dataCapture.systemField.tags": "escalated_from_bot",
+                "dataCapture.systemField.requester.name": "Guest User", 
+                # Pass the reason as the ticket description
+                "dataCapture.ticketField.description": f"Escalation Reason: {reason}" 
+            }
         }
 
         logger.info(f"Escalating conversation {conversation_id} to next integration")

@@ -12,6 +12,7 @@ document.addEventListener('DOMContentLoaded', function() {
     let awaitingFeedback = false;
     let appUserId = null;
     let conversationId = null;
+    let lastContext = "General Inquiry"; // Track user context for escalation
 
     // Predefined troubleshooting steps and options
     let troubleshootingSteps = {};
@@ -60,15 +61,17 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(response => response.json())
             .then(data => {
                 if (data.messages) {
-                    // Clear existing messages (optional, but good practice)
-                    // messagesContainer.innerHTML = ''; 
-                    
                     // Sort messages by date (oldest first)
                     const sortedMessages = data.messages.sort((a, b) => new Date(a.received) - new Date(b.received));
 
+                    // Clear container to prevent duplicates (simple approach)
+                    // A better approach would be to check IDs, but this ensures sync
+                    messagesContainer.innerHTML = ''; 
+
                     sortedMessages.forEach(msg => {
                         if (msg.content && msg.content.type === 'text') {
-                            const isUser = msg.author.type === 'user'; // 'user' is the end-user, 'business' is the bot/agent
+                            const isUser = msg.author.type === 'user'; 
+                            // 'business' type is the agent/bot
                             addMessageToUI(msg.content.text, isUser ? 'user-message' : 'bot-message');
                         }
                     });
@@ -76,6 +79,9 @@ document.addEventListener('DOMContentLoaded', function() {
             })
             .catch(error => console.error('Error fetching messages:', error));
     }
+
+    // Poll for new messages every 5 seconds
+    setInterval(fetchMessages, 5000);
 
     // Helper to add message to UI (extracted from existing logic if possible, or created new)
     function addMessageToUI(text, className) {
@@ -159,6 +165,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Handle Main Option Click (Level 1)
     function handleMainOptionClick(option) {
         appendMessage(option, 'user-message');
+        lastContext = option; // Update context
         
         if (option === "App Related Issues") {
             setTimeout(() => {
@@ -190,6 +197,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Handle App Related Option Click (Level 2)
     function handleAppRelatedOptionClick(option) {
         appendMessage(option, 'user-message');
+        lastContext = option; // Update context
 
         if (option === "Others") {
             appendMessage("Please describe your issue below.", 'bot-message');
@@ -235,12 +243,36 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    // Helper: Escalate to Agent
+    function escalateToAgent(reason) {
+        if (!conversationId) {
+            console.error("Cannot escalate: Chat not initialized");
+            return;
+        }
+        
+        console.log("Escalating to agent with reason:", reason);
+
+        fetch('/api/chat/escalate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                conversationId: conversationId,
+                reason: reason || lastContext
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log("Escalation successful:", data);
+        })
+        .catch(error => console.error('Error escalating chat:', error));
+    }
+
     // Handle Agent Connect
     function handleAgentConnect(option) {
         appendMessage(option, 'user-message');
         
-        // Send intent to Sunshine
-        sendToSunshine("Connect to Agent");
+        // Escalate to Sunshine/Zendesk with context
+        escalateToAgent(lastContext);
 
         setTimeout(() => {
             appendMessage("Connecting you to a human agent... Please wait while we transfer your chat.", 'bot-message');
