@@ -184,9 +184,13 @@ def init_conversation(request):
         def fetch_conversation(target_id):
             """Helper to list conversations for a given user ID (internal or external)."""
             try:
-                l_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/users/{target_id}/conversations"
-                logger.info(f"Checking conversations for: {target_id}")
-                l_resp = requests.get(l_url, headers=headers)
+                # Correct v2 Endpoint: /v2/apps/{appId}/conversations?filter[userId]={userId}
+                l_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations"
+                params = {"filter[userId]": target_id}
+                
+                logger.info(f"Checking conversations for: {target_id} using filter")
+                l_resp = requests.get(l_url, headers=headers, params=params)
+                
                 if l_resp.status_code == 200:
                     convs = l_resp.json().get("conversations", [])
                     if convs:
