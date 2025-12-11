@@ -334,7 +334,8 @@ def escalate_to_agent(request):
     try:
         data = json.loads(request.body)
         conversation_id = data.get("conversationId")
-        reason = data.get("reason", "User requested agent support") # Get reason from frontend
+        app_user_id = data.get("appUserId")
+        reason = data.get("reason", "User requested agent support") 
         
         if not conversation_id:
             return JsonResponse({"error": "Missing conversationId"}, status=400)
@@ -345,30 +346,43 @@ def escalate_to_agent(request):
         if not headers:
              return JsonResponse({"error": "Server configuration error"}, status=500)
 
-        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/passControl"
+        # 1. Pass Control to Zendesk ("next")
+        pass_control_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/passControl"
         
-        # "next" passes control to the configured next integration (usually Agent Workspace)
-        # We can pass metadata to give the agent context
-        payload = {
+        pass_control_payload = {
             "switchboardIntegration": "next", 
             "metadata": {
                 "dataCapture.systemField.tags": "escalated_from_bot",
                 "dataCapture.systemField.requester.name": "Guest User", 
-                # Pass the reason as the ticket description
                 "dataCapture.ticketField.description": f"Escalation Reason: {reason}" 
             }
         }
 
         logger.info(f"Escalating conversation {conversation_id} to next integration")
-        response = requests.post(url, json=payload, headers=headers)
+        pc_response = requests.post(pass_control_url, json=pass_control_payload, headers=headers)
 
-        if response.status_code == 200:
-            logger.info("Conversation escalated successfully.")
-            return JsonResponse({"status": "escalated"})
-        else:
-            logger.error(f"Failed to escalate conversation: {response.status_code} - {response.text}")
-            # Return the actual error from Sunshine to the frontend for better debugging
-            return JsonResponse({"error": "Failed to escalate", "details": response.text}, status=response.status_code)
+        if pc_response.status_code != 200:
+            logger.error(f"Failed to escalate conversation: {pc_response.status_code} - {pc_response.text}")
+            return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
+
+        # 2. Send a message on behalf of the user to trigger ticket creation
+        # Only do this if we have the appUserId
+        if app_user_id:
+            msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/messages"
+            msg_payload = {
+                "author": {
+                    "type": "user",
+                    "userId": app_user_id 
+                },
+                "content": {
+                    "type": "text",
+                    "text": f"I would like to speak to an agent. Reason: {reason}"
+                }
+            }
+            logger.info(f"Sending trigger message for ticket creation: {msg_url}")
+            requests.post(msg_url, json=msg_payload, headers=headers)
+
+        return JsonResponse({"status": "escalated"})
 
     except Exception as e:
         logger.exception("Exception in escalate_to_agent")

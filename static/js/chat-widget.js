@@ -299,6 +299,7 @@ document.addEventListener('DOMContentLoaded', function() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 conversationId: conversationId,
+                appUserId: appUserId, // Send appUserId so backend can send a message on user's behalf
                 reason: reason || lastContext
             })
         })
