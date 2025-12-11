@@ -7,12 +7,15 @@ document.addEventListener('DOMContentLoaded', function() {
     const chatInput = document.querySelector('#chat-input-field');
     const sendBtn = document.querySelector('#chat-send-btn');
     const messagesContainer = document.querySelector('.chat-messages');
+    const chatHeaderTitle = document.querySelector('.chat-header span');
 
     let isChatOpen = false;
     let awaitingFeedback = false;
     let appUserId = null;
     let conversationId = null;
     let lastContext = "General Inquiry"; // Track user context for escalation
+    let displayedMessageIds = new Set(); // Track displayed messages to prevent duplicates/reloading
+    let isAgentConnected = false; // Track if connected to human agent
 
     // Predefined troubleshooting steps and options
     let troubleshootingSteps = {};
@@ -63,18 +66,32 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (data.messages) {
                     // Sort messages by date (oldest first)
                     const sortedMessages = data.messages.sort((a, b) => new Date(a.received) - new Date(b.received));
-
-                    // Clear container to prevent duplicates (simple approach)
-                    // A better approach would be to check IDs, but this ensures sync
-                    messagesContainer.innerHTML = ''; 
+                    let hasNewMessages = false;
 
                     sortedMessages.forEach(msg => {
-                        if (msg.content && msg.content.type === 'text') {
-                            const isUser = msg.author.type === 'user'; 
-                            // 'business' type is the agent/bot
-                            addMessageToUI(msg.content.text, isUser ? 'user-message' : 'bot-message');
+                        // Check if message is already displayed
+                        if (!displayedMessageIds.has(msg.id)) {
+                            if (msg.content && msg.content.type === 'text') {
+                                const isUser = msg.author.type === 'user'; 
+                                // Extract sender name for agents
+                                const senderName = isUser ? null : (msg.author.displayName || 'Agent');
+                                
+                                // Update header with agent name if connected
+                                if (!isUser && senderName && senderName !== 'Agent') {
+                                    chatHeaderTitle.textContent = senderName;
+                                    chatHeaderTitle.style.fontSize = '1.1rem'; // Make it slightly prominent
+                                }
+
+                                appendMessage(msg.content.text, isUser ? 'user-message' : 'bot-message', senderName);
+                                displayedMessageIds.add(msg.id);
+                                hasNewMessages = true;
+                            }
                         }
                     });
+                    
+                    if (hasNewMessages) {
+                        scrollToBottom();
+                    }
                 }
             })
             .catch(error => console.error('Error fetching messages:', error));
@@ -82,15 +99,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Poll for new messages every 5 seconds
     setInterval(fetchMessages, 5000);
-
-    // Helper to add message to UI (extracted from existing logic if possible, or created new)
-    function addMessageToUI(text, className) {
-        const messageDiv = document.createElement('div');
-        messageDiv.classList.add('message', className);
-        messageDiv.textContent = text;
-        messagesContainer.appendChild(messageDiv);
-        messagesContainer.scrollTop = messagesContainer.scrollHeight;
-    }
 
     // Call initialization on load
     initializeChatSession();
@@ -126,6 +134,11 @@ document.addEventListener('DOMContentLoaded', function() {
         .then(response => response.json())
         .then(data => {
             console.log("Message sent to Sunshine:", data);
+            // Optimistically add the message ID to displayed set to prevent duplication by poller
+            if (data.data && data.data.messages && data.data.messages.length > 0) {
+                const msgId = data.data.messages[0].id;
+                displayedMessageIds.add(msgId);
+            }
         })
         .catch(error => console.error('Error sending message:', error));
     }
@@ -273,13 +286,18 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Escalate to Sunshine/Zendesk with context
         escalateToAgent(lastContext);
+        
+        isAgentConnected = true; // Set flag to keep input open
 
         setTimeout(() => {
             appendMessage("Connecting you to a human agent... Please wait while we transfer your chat.", 'bot-message');
+            // Show input field for live chat
+            chatInputArea.style.display = 'flex';
+            chatInput.focus();
         }, 500);
     }
 
-    // Send Message (For "OTHERS" flow)
+    // Send Message (For "OTHERS" flow and Live Agent)
     function sendMessage() {
         const messageText = chatInput.value.trim();
         if (messageText === "") return;
@@ -290,19 +308,34 @@ document.addEventListener('DOMContentLoaded', function() {
         sendToSunshine(messageText);
 
         chatInput.value = '';
-        chatInputArea.style.display = 'none';
+        
+        // If connected to agent, keep input open. Otherwise (ticket mode), close it.
+        if (!isAgentConnected) {
+            chatInputArea.style.display = 'none';
 
-        setTimeout(() => {
-            // Since we are escalating to Sunshine/Zendesk, we can show a confirmation
-            appendMessage("Your issue has been forwarded to our support team. An agent will review it shortly.", 'bot-message');
-            
-            // Optional: Still ask for feedback or just end here
-            // askForFeedback(); 
-        }, 1500);
+            setTimeout(() => {
+                // Since we are escalating to Sunshine/Zendesk, we can show a confirmation
+                appendMessage("Your issue has been forwarded to our support team. An agent will review it shortly.", 'bot-message');
+                
+                // Optional: Still ask for feedback or just end here
+                // askForFeedback(); 
+            }, 1500);
+        }
     }
 
     // Append Message to UI
-    function appendMessage(text, className) {
+    function appendMessage(text, className, senderName = null) {
+        // If senderName is provided (for agents), add a label
+        if (senderName && className === 'bot-message') {
+            const nameDiv = document.createElement('div');
+            nameDiv.textContent = senderName;
+            nameDiv.style.fontSize = '0.75rem';
+            nameDiv.style.color = '#666';
+            nameDiv.style.marginBottom = '2px';
+            nameDiv.style.marginLeft = '5px';
+            messagesContainer.appendChild(nameDiv);
+        }
+
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', className);
         
