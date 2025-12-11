@@ -97,7 +97,18 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Check Conversation Status (Active Switchboard Integration)
                 if (data.conversation && data.conversation.id) {
                     const activeIntegration = data.conversation.activeSwitchboardIntegration;
-                    const isAgentActive = activeIntegration && (activeIntegration.name === 'next' || activeIntegration.name === 'zendesk');
+                    
+                    // Debugging: Log the integration status to help troubleshoot
+                    if (activeIntegration) {
+                        // console.log("Active Integration:", activeIntegration.name, activeIntegration.integrationType);
+                    }
+
+                    // Check if Agent is Active (Broader check)
+                    const isAgentActive = activeIntegration && (
+                        activeIntegration.name === 'next' || 
+                        activeIntegration.name === 'zendesk' || 
+                        activeIntegration.integrationType === 'zendesk'
+                    );
 
                     // 1. Sync State: If Switchboard says Agent is Active, we must be connected
                     if (isAgentActive) {
@@ -115,7 +126,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                     // 2. Status-Based Closing (Solved Ticket Detection)
                     // ONLY close if we previously confirmed the agent was active, and now they are NOT.
-                    // This avoids closing during the initial "Connecting..." phase (queue).
                     if (isAgentConnected && hasConfirmedAgentActivity && !isAgentActive) {
                          console.log("Session ended detected via Switchboard status (Agent Solved/Left).");
                          endSession();
@@ -137,6 +147,14 @@ document.addEventListener('DOMContentLoaded', function() {
                                 const senderName = isUser ? null : (msg.author.displayName || 'Agent');
                                 const text = msg.content.text;
                                 const lowerText = text.toLowerCase();
+
+                                // DETECT AGENT ACTIVITY VIA MESSAGES (Fallback)
+                                // If we see a message from a human agent, confirm activity immediately.
+                                if (!isUser && senderName !== 'System' && !hasConfirmedAgentActivity) {
+                                     console.log("Agent activity detected via message. Arming auto-close.");
+                                     hasConfirmedAgentActivity = true;
+                                     localStorage.setItem('chat_hasConfirmedAgentActivity', 'true');
+                                }
 
                                 // Check for System End Session Message (Text based)
                                 // We just display it here. The logic to CLOSE the session is handled AFTER the loop
@@ -206,7 +224,14 @@ document.addEventListener('DOMContentLoaded', function() {
                             isLastMsgEndSession = true;
                         }
 
-                        if (isLastMsgEndSession) {
+                        // Safety Check: Ensure this message is not from BEFORE we requested the agent.
+                        // This handles the edge case where the user connects, but the backend fails to send the trigger message,
+                        // leaving an OLD "End Session" message as the last one.
+                        // We use a 5-second buffer to account for clock skew.
+                        const msgTime = new Date(lastMsg.received).getTime();
+                        const isTrulyOld = msgTime < (lastAgentRequestTime - 5000);
+
+                        if (isLastMsgEndSession && !isTrulyOld) {
                             console.log("Last message is End Session. Closing chat.");
                             endSession();
                         }
