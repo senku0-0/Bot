@@ -519,13 +519,15 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const loaderDiv = document.createElement('div');
         loaderDiv.id = 'agent-loading-indicator';
-        loaderDiv.classList.add('message', 'bot-message', 'loading-message');
-        // Inline styles for the dots to ensure they work even if CSS file isn't cached/updated immediately
+        // Use system-message to avoid bubble styling
+        loaderDiv.classList.add('message', 'system-message');
+        
         loaderDiv.innerHTML = `
-            <div class="typing-indicator">
-                <div class="typing-dot"></div>
-                <div class="typing-dot"></div>
-                <div class="typing-dot"></div>
+            Please hang on
+            <div class="typing-indicator-inline">
+                <div class="typing-dot-small"></div>
+                <div class="typing-dot-small"></div>
+                <div class="typing-dot-small"></div>
             </div>
         `;
         messagesContainer.appendChild(loaderDiv);
