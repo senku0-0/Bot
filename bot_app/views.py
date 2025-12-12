@@ -1,7 +1,8 @@
 from django.shortcuts import render
-from django.http import JsonResponse, HttpResponseForbidden
+from django.http import JsonResponse, HttpResponseForbidden, HttpRequest, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 import json, hmac, hashlib, os, base64, logging, sys, uuid
+from typing import Optional, Dict, Any, Union, List
 from dotenv import load_dotenv
 import requests
 from requests.auth import HTTPBasicAuth
@@ -36,11 +37,30 @@ SUNSHINE_API_BASE_URL = os.getenv("SUNSHINE_API_BASE_URL", "https://api.smooch.i
 
 # Index route (frontend entry point)
 @csrf_exempt
-def index(request):
+def index(request: HttpRequest) -> HttpResponse:
+    """
+    Render the chat widget frontend.
+
+    Args:
+        request (HttpRequest): The incoming HTTP request.
+
+    Returns:
+        HttpResponse: The rendered HTML page.
+    """
     return render(request, 'index.html')
 
 # Verify Sunshine webhook signature
-def verify_signature(payload, signature):
+def verify_signature(payload: bytes, signature: str) -> bool:
+    """
+    Verify the Sunshine webhook signature to ensure authenticity.
+
+    Args:
+        payload (bytes): The raw body of the request.
+        signature (str): The signature header from the request.
+
+    Returns:
+        bool: True if the signature is valid, False otherwise.
+    """
     if not signature:
         logger.warning("Webhook signature missing")
         return False
@@ -62,7 +82,17 @@ def verify_signature(payload, signature):
     return True
 
 # Create Zendesk ticket
-def create_zendesk_ticket(subject, description):
+def create_zendesk_ticket(subject: str, description: str) -> Dict[str, Any]:
+    """
+    Create a new ticket in Zendesk.
+
+    Args:
+        subject (str): The subject of the ticket.
+        description (str): The body/description of the ticket.
+
+    Returns:
+        Dict[str, Any]: The JSON response from the Zendesk API.
+    """
     url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets.json"
     headers = {"Content-Type": "application/json"}
     data = {
@@ -81,10 +111,13 @@ def create_zendesk_ticket(subject, description):
 
 # --- Sunshine API Helpers ---
 
-def get_sunshine_headers():
+def get_sunshine_headers() -> Optional[Dict[str, str]]:
     """
     Returns the headers required for Sunshine Conversations API calls.
     Uses Basic Auth with base64 encoding.
+
+    Returns:
+        Optional[Dict[str, str]]: A dictionary of headers including Authorization, or None if credentials are missing.
     """
     # Try global variables first, then fallback to other common names
     key_id = SUNSHINE_API_KEY_ID or os.getenv("SUNSHINE_KEY_ID")
@@ -109,8 +142,16 @@ def get_sunshine_headers():
     }
 
 @csrf_exempt
-def init_conversation(request):
-    """Initialize a conversation for a new or existing user."""
+def init_conversation(request: HttpRequest) -> JsonResponse:
+    """
+    Initialize a conversation for a new or existing user.
+    
+    Args:
+        request (HttpRequest): The incoming HTTP request containing optional userId.
+
+    Returns:
+        JsonResponse: JSON containing appUserId, conversationId, and externalId.
+    """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
     
@@ -181,8 +222,16 @@ def init_conversation(request):
         # 3. Check for existing conversations (Robust Logic)
         conversation_id = None
         
-        def fetch_conversation(target_id):
-            """Helper to list conversations for a given user ID (internal or external)."""
+        def fetch_conversation(target_id: str) -> Optional[str]:
+            """
+            Helper to list conversations for a given user ID (internal or external).
+
+            Args:
+                target_id (str): The user ID to search for (appUserId or externalId).
+
+            Returns:
+                Optional[str]: The ID of the most recent conversation, or None if not found.
+            """
             try:
                 # Correct v2 Endpoint: /v2/apps/{appId}/conversations?filter[userId]={userId}
                 l_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations"
@@ -238,8 +287,16 @@ def init_conversation(request):
         return JsonResponse({"error": "Internal Server Error", "details": str(e)}, status=500)
 
 @csrf_exempt
-def get_conversation_messages(request):
-    """Fetch messages for a conversation."""
+def get_conversation_messages(request: HttpRequest) -> JsonResponse:
+    """
+    Fetch messages for a specific conversation.
+
+    Args:
+        request (HttpRequest): The incoming HTTP request containing 'conversationId' query param.
+
+    Returns:
+        JsonResponse: JSON containing the list of messages and conversation details.
+    """
     if request.method != "GET":
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
@@ -278,8 +335,16 @@ def get_conversation_messages(request):
         return JsonResponse({"error": str(e)}, status=500)
 
 @csrf_exempt
-def send_message_to_sunshine(request):
-    """Send a message from the user to Sunshine."""
+def send_message_to_sunshine(request: HttpRequest) -> JsonResponse:
+    """
+    Send a message from the user to Sunshine.
+
+    Args:
+        request (HttpRequest): The incoming HTTP request containing message details (text, author, etc.).
+
+    Returns:
+        JsonResponse: JSON response indicating success or failure.
+    """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
@@ -326,8 +391,16 @@ def send_message_to_sunshine(request):
 
 
 @csrf_exempt
-def escalate_to_agent(request):
-    """Escalates the conversation to the next switchboard integration (e.g., Agent Workspace)."""
+def escalate_to_agent(request: HttpRequest) -> JsonResponse:
+    """
+    Escalates the conversation to the next switchboard integration (e.g., Agent Workspace).
+
+    Args:
+        request (HttpRequest): The incoming HTTP request containing conversationId and reason.
+
+    Returns:
+        JsonResponse: JSON response indicating the status of the escalation.
+    """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
@@ -391,7 +464,16 @@ def escalate_to_agent(request):
 
 # Webhook endpoint
 @csrf_exempt
-def webhook_message(request):
+def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseForbidden]:
+    """
+    Webhook endpoint to receive events from Sunshine.
+
+    Args:
+        request (HttpRequest): The incoming HTTP request containing the event payload.
+
+    Returns:
+        Union[JsonResponse, HttpResponseForbidden]: JSON response status or Forbidden if signature fails.
+    """
     # DEBUG: Log all headers to see what is coming in
     logger.info(f"Webhook Headers: {dict(request.headers)}")
 
@@ -466,8 +548,13 @@ def webhook_message(request):
 
     return JsonResponse({"status": "received"})
 
-def handle_conversation_read(event_data):
-    """Notify user when an agent reads the conversation (opens ticket)."""
+def handle_conversation_read(event_data: Dict[str, Any]) -> None:
+    """
+    Notify user when an agent reads the conversation (opens ticket).
+
+    Args:
+        event_data (Dict[str, Any]): The raw event data from the webhook.
+    """
     conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
     if not conversation_id:
         return
@@ -511,8 +598,13 @@ def handle_conversation_read(event_data):
             except Exception as e:
                 logger.error(f"Failed to send agent read notification: {e}")
 
-def handle_participant_join(event_data):
-    """Notify user when an agent joins the conversation."""
+def handle_participant_join(event_data: Dict[str, Any]) -> None:
+    """
+    Notify user when an agent joins the conversation.
+
+    Args:
+        event_data (Dict[str, Any]): The raw event data from the webhook.
+    """
     conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
     if not conversation_id:
         return
@@ -543,8 +635,13 @@ def handle_participant_join(event_data):
                 logger.error(f"Failed to send agent join notification: {e}")
 
 
-def process_message_event(event_data):
-    """Handle incoming user messages."""
+def process_message_event(event_data: Dict[str, Any]) -> None:
+    """
+    Handle incoming user messages and optionally create tickets.
+
+    Args:
+        event_data (Dict[str, Any]): The raw event data from the webhook.
+    """
     conversation = event_data.get("conversation", {})
     conversation_id = conversation.get("_id") or conversation.get("id")
     app_user = event_data.get("appUser", {})
@@ -575,8 +672,13 @@ def process_message_event(event_data):
         except Exception as e:
             logger.error(f"Failed to create ticket: {e}")
 
-def handle_agent_end_session(event_data):
-    """Send a system message when agent ends the chat."""
+def handle_agent_end_session(event_data: Dict[str, Any]) -> None:
+    """
+    Send a system message when agent ends the chat.
+
+    Args:
+        event_data (Dict[str, Any]): The raw event data from the webhook.
+    """
     conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
     if not conversation_id:
         return
