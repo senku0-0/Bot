@@ -450,16 +450,43 @@ document.addEventListener('DOMContentLoaded', function() {
         appendMessage(option, 'user-message');
 
         if (option === "Yes") {
+            // Submit positive CSAT
+            submitCSAT(5, null);
             setTimeout(() => {
                 appendMessage("Thank you! Glad I could help. Have a great day! 👋", 'bot-message');
                 chatInputArea.style.display = 'none';
             }, 500);
         } else {
+            // Submit negative CSAT (allow user to optionally comment afterwards)
+            submitCSAT(2, null);
             setTimeout(() => {
                 appendMessage("I'm sorry about that. Would you like to connect to a human agent?", 'bot-message');
                 appendOptions(["Connect to Agent"], handleAgentConnect);
             }, 500);
         }
+    }
+
+    // Submit CSAT to backend
+    function submitCSAT(rating, comment) {
+        if (!rating) return;
+
+        const payload = {
+            rating: rating,
+            comment: comment || null,
+            conversationId: conversationId,
+            appUserId: appUserId
+        };
+
+        fetch('/api/csat/submit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(res => res.json())
+        .then(data => {
+            console.log('CSAT submitted', data);
+        })
+        .catch(err => console.error('Error submitting CSAT', err));
     }
 
     // Helper: Escalate to Agent

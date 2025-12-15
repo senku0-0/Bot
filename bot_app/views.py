@@ -109,6 +109,61 @@ def create_zendesk_ticket(subject: str, description: str) -> Dict[str, Any]:
     )
     return response.json()
 
+
+def create_zendesk_survey_response(subject_zrns: List[str], rating: int, comment: Optional[str] = None, locale: str = 'en-us') -> Dict[str, Any]:
+    """
+    Create a CSAT survey response in Zendesk and submit answers.
+
+    This attempts to use the Guide Survey Responses API to attach a numeric
+    rating (and optional open-ended comment) to the given subject ZRNs
+    (e.g. ['zen:conversation:<id>'] or ['zen:ticket:<id>']).
+
+    Returns the parsed JSON response from Zendesk.
+    """
+    if not ZENDESK_SUBDOMAIN or not ZENDESK_EMAIL or not ZENDESK_API_TOKEN:
+        raise RuntimeError("Zendesk credentials not configured")
+
+    url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/guide/survey_responses"
+    headers = {"Content-Type": "application/json"}
+
+    answers = []
+    # rating scale answer
+    answers.append({
+        "type": "rating_scale",
+        "rating": int(rating)
+    })
+
+    # optional open-ended comment
+    if comment:
+        answers.append({
+            "type": "open_ended",
+            "value": str(comment)
+        })
+
+    payload = {
+        "survey_response": {
+            "locale": locale,
+            "subject_zrns": subject_zrns,
+            "answers": answers
+        }
+    }
+
+    resp = requests.post(
+        url,
+        json=payload,
+        headers=headers,
+        auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN)
+    )
+
+    # Raise for status to let caller handle fallback
+    try:
+        resp.raise_for_status()
+    except Exception:
+        # Include response text for debugging
+        raise RuntimeError(f"Zendesk survey_responses error: {resp.status_code} {resp.text}")
+
+    return resp.json()
+
 # --- Sunshine API Helpers ---
 
 def get_sunshine_headers() -> Optional[Dict[str, str]]:
@@ -695,3 +750,84 @@ def handle_agent_end_session(event_data: Dict[str, Any]) -> None:
             requests.post(url, json=payload, headers=headers)
     except Exception as e:
         logger.error(f"Failed to send end-session message: {e}")
+
+
+@csrf_exempt
+def csat_submit(request: HttpRequest) -> JsonResponse:
+    """
+    Forward CSAT submissions to Zendesk (no local DB write).
+    Expected JSON: {"rating": 1-5, "comment": "optional", "conversationId": "...", "appUserId": "..."}
+    This will create a Zendesk ticket with the CSAT details.
+    """
+    if request.method != 'POST':
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body or b'{}')
+    except Exception:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    rating = data.get('rating')
+    if rating is None:
+        return JsonResponse({"error": "Missing rating"}, status=400)
+
+    try:
+        rating = int(rating)
+    except Exception:
+        return JsonResponse({"error": "Invalid rating"}, status=400)
+
+    if not (1 <= rating <= 5):
+        return JsonResponse({"error": "Rating must be 1-5"}, status=400)
+
+    comment = data.get('comment')
+    conversation_id = data.get('conversationId') or data.get('conversation_id')
+    app_user_id = data.get('appUserId') or data.get('app_user_id')
+
+    # Gather simple metadata
+    user_agent = request.META.get('HTTP_USER_AGENT', '')[:512]
+    ip = request.META.get('REMOTE_ADDR') or request.META.get('HTTP_X_FORWARDED_FOR', '')
+
+    # Build Zendesk ticket subject/body to capture CSAT
+    subject = f"CSAT Rating: {rating}"
+    if conversation_id:
+        subject += f" (conversation {conversation_id})"
+
+    description_lines = [f"Rating: {rating}"]
+    if comment:
+        description_lines.append(f"Comment: {comment}")
+    if app_user_id:
+        description_lines.append(f"AppUserId: {app_user_id}")
+    if conversation_id:
+        description_lines.append(f"ConversationId: {conversation_id}")
+    if user_agent:
+        description_lines.append(f"User-Agent: {user_agent}")
+    if ip:
+        description_lines.append(f"IP: {ip}")
+
+    description = "\n".join(description_lines)
+
+    # Prefer Survey Responses API (numeric 1-5). If it fails, fallback to creating a ticket.
+    subject_zrns = []
+    if conversation_id:
+        subject_zrns.append(f"zen:conversation:{conversation_id}")
+    # If you later want to attach to ticket, add: subject_zrns.append(f"zen:ticket:{ticket_id}")
+
+    try:
+        if subject_zrns:
+            resp = create_zendesk_survey_response(subject_zrns=subject_zrns, rating=rating, comment=comment)
+            logger.info(f"Created Zendesk survey response: {resp}")
+            return JsonResponse({"status": "survey_created", "zendesk": resp}, status=201)
+
+        # Fallback: if no subject_zrns available, create a ticket containing the CSAT
+        resp = create_zendesk_ticket(subject=subject, description=description)
+        logger.info(f"Forwarded CSAT to Zendesk as ticket: {resp}")
+        return JsonResponse({"status": "ticket_created", "zendesk": resp}, status=201)
+    except Exception as e:
+        logger.exception("Failed to forward CSAT to Zendesk via survey responses; attempting ticket fallback")
+        # Attempt fallback ticket creation and include the error
+        try:
+            resp = create_zendesk_ticket(subject=subject, description=description + "\n\n(Forwarding error: " + str(e) + ")")
+            return JsonResponse({"status": "ticket_created_fallback", "zendesk": resp, "error": str(e)}, status=201)
+        except Exception as e2:
+            logger.exception("Ticket fallback also failed")
+            return JsonResponse({"error": "Failed to forward to Zendesk", "details": f"{e} | {e2}"}, status=500)
