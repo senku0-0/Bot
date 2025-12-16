@@ -6,6 +6,9 @@ from typing import Optional, Dict, Any, Union, List
 from dotenv import load_dotenv
 import requests
 from requests.auth import HTTPBasicAuth
+from django.conf import settings
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 
 # Configure Logging to Console
 logger = logging.getLogger(__name__)
@@ -107,7 +110,11 @@ def create_zendesk_ticket(subject: str, description: str) -> Dict[str, Any]:
         headers=headers,
         auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN)
     )
-    return response.json()
+    try:
+        return response.json()
+    except Exception:
+        logger.error(f"Zendesk ticket create returned non-json: {response.status_code} {response.text}")
+        return {"status_code": response.status_code, "text": response.text}
 
 
 def create_zendesk_survey_response(subject_zrns: List[str], rating: int, comment: Optional[str] = None, locale: str = 'en-us') -> Dict[str, Any]:
@@ -540,10 +547,6 @@ def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseFor
         api_key_header = request.headers.get("X-Api-Key")
         if api_key_header:
             logger.info("Found X-Api-Key header instead of X-Hub-Signature. Validating...")
-            # In some custom integrations, the X-Api-Key might be used for auth instead of signature
-            # For now, we will log it and allow it if it matches a known secret (or just allow for debugging)
-            # SECURITY WARNING: In production, you should verify this key against a stored secret.
-            # For this specific debugging session, we will assume it's valid to see if the payload processes.
             logger.warning("Bypassing signature check because X-Api-Key is present (Debugging Mode)")
             sig = "BYPASS_DEBUG" 
 
@@ -564,10 +567,8 @@ def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseFor
     # Handle Sunshine v2 "events" array structure if present
     events_list = event.get("events", [])
     if not events_list and "trigger" in event:
-        # Handle legacy/flattened structure where the body IS the event
         events_list = [event]
     elif not events_list and "messages" in event:
-        # Handle the specific case where it might be just a message payload (fallback)
         events_list = [event]
         event["trigger"] = "conversation:message"
 
@@ -583,7 +584,6 @@ def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseFor
         # 2. Handle Switchboard Events (Agent Control)
         elif trigger == "switchboard:passControl":
             logger.info("Control passed to switchboard integration.")
-            # You could update local DB state here
             
         elif trigger == "switchboard:releaseControl":
             logger.info("Control released by switchboard integration (Agent ended chat).")
@@ -614,33 +614,17 @@ def handle_conversation_read(event_data: Dict[str, Any]) -> None:
     if not conversation_id:
         return
 
-    # Identify if the reader is an agent
-    # We compare the reader's userId with the appUser's userId.
-    # If they are different, it's likely an agent.
-    
     app_user = event_data.get("appUser", {})
     app_user_id = app_user.get("_id") or app_user.get("id")
-    
-    # 'userId' is usually at the top level for conversation:read
     reader_id = event_data.get("userId")
-    
-    # If userId is missing, check 'source' or 'author' (structure varies by version)
     if not reader_id:
         reader_id = event_data.get("source", {}).get("from", {}).get("id")
 
-    # If we found a reader, and it's NOT the user, assume it's an agent
     if reader_id and app_user_id and reader_id != app_user_id:
-        # Try to get agent name if possible (often not in read payload, so use generic or fetch)
-        # For speed, we'll use "An agent" or try to infer. 
-        # If the payload has 'role' == 'business', that's even better.
-        
         is_business = event_data.get("role") == "business"
-        
         if is_business or reader_id != app_user_id:
-            agent_name = "An agent" # 'read' events rarely contain the display name
+            agent_name = "An agent"
             logger.info(f"Agent (ID: {reader_id}) read conversation {conversation_id}")
-            
-            # Send system message
             try:
                 headers = get_sunshine_headers()
                 if headers:
@@ -656,27 +640,20 @@ def handle_conversation_read(event_data: Dict[str, Any]) -> None:
 def handle_participant_join(event_data: Dict[str, Any]) -> None:
     """
     Notify user when an agent joins the conversation.
-
-    Args:
-        event_data (Dict[str, Any]): The raw event data from the webhook.
     """
     conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
     if not conversation_id:
         return
 
     participants = event_data.get("participants", [])
-    # Support for singular 'participant' payload (common in some webhook versions)
     single_participant = event_data.get("participant")
     if single_participant:
         participants.append(single_participant)
 
     for p in participants:
-        # Check if the participant is a business user (Agent)
         if p.get("type") == "business":
             agent_name = p.get("displayName", "An agent")
             logger.info(f"Agent {agent_name} joined conversation {conversation_id}")
-            
-            # Send a system message to notify the user
             try:
                 headers = get_sunshine_headers()
                 if headers:
@@ -693,21 +670,15 @@ def handle_participant_join(event_data: Dict[str, Any]) -> None:
 def process_message_event(event_data: Dict[str, Any]) -> None:
     """
     Handle incoming user messages and optionally create tickets.
-
-    Args:
-        event_data (Dict[str, Any]): The raw event data from the webhook.
     """
     conversation = event_data.get("conversation", {})
     conversation_id = conversation.get("_id") or conversation.get("id")
     app_user = event_data.get("appUser", {})
     app_user_id = app_user.get("_id") or app_user.get("id")
     
-    # Check who is currently in control
     sb_integration = conversation.get("activeSwitchboardIntegration", {})
     current_integration_name = sb_integration.get("name")
 
-    # If the Agent (next/zendesk) is in control, DO NOT create a ticket.
-    # Zendesk will handle the message automatically.
     if current_integration_name in ["next", "zendesk"]:
         logger.info(f"Ignoring message from {app_user_id} because Agent is in control.")
         return
@@ -726,19 +697,42 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
             )
         except Exception as e:
             logger.error(f"Failed to create ticket: {e}")
+    
+    # Broadcast incoming message to any connected WebSocket clients for this conversation
+    try:
+        if conversation_id:
+            msg = None
+            messages = event_data.get('messages') or []
+            if messages:
+                msg = messages[0]
+            else:
+                msg = {
+                    'id': event_data.get('message', {}).get('id') or event_data.get('id') or str(uuid.uuid4()),
+                    'author': {'type': 'user', 'displayName': None},
+                    'content': {'type': 'text', 'text': text or ''},
+                    'received': event_data.get('received') or event_data.get('created') or None
+                }
+
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f'chat_{conversation_id}',
+                {
+                    'type': 'chat.message',
+                    'message': msg
+                }
+            )
+    except Exception as ex:
+        logger.exception(f"Failed to broadcast message to websocket group: {ex}")
+
 
 def handle_agent_end_session(event_data: Dict[str, Any]) -> None:
     """
     Send a system message when agent ends the chat.
-
-    Args:
-        event_data (Dict[str, Any]): The raw event data from the webhook.
     """
     conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
     if not conversation_id:
         return
 
-    # Send a message to the user confirming the session has ended
     try:
         headers = get_sunshine_headers()
         if headers:
@@ -783,11 +777,9 @@ def csat_submit(request: HttpRequest) -> JsonResponse:
     conversation_id = data.get('conversationId') or data.get('conversation_id')
     app_user_id = data.get('appUserId') or data.get('app_user_id')
 
-    # Gather simple metadata
     user_agent = request.META.get('HTTP_USER_AGENT', '')[:512]
     ip = request.META.get('REMOTE_ADDR') or request.META.get('HTTP_X_FORWARDED_FOR', '')
 
-    # Build Zendesk ticket subject/body to capture CSAT
     subject = f"CSAT Rating: {rating}"
     if conversation_id:
         subject += f" (conversation {conversation_id})"
@@ -806,11 +798,9 @@ def csat_submit(request: HttpRequest) -> JsonResponse:
 
     description = "\n".join(description_lines)
 
-    # Prefer Survey Responses API (numeric 1-5). If it fails, fallback to creating a ticket.
     subject_zrns = []
     if conversation_id:
         subject_zrns.append(f"zen:conversation:{conversation_id}")
-    # If you later want to attach to ticket, add: subject_zrns.append(f"zen:ticket:{ticket_id}")
 
     try:
         if subject_zrns:
@@ -818,16 +808,81 @@ def csat_submit(request: HttpRequest) -> JsonResponse:
             logger.info(f"Created Zendesk survey response: {resp}")
             return JsonResponse({"status": "survey_created", "zendesk": resp}, status=201)
 
-        # Fallback: if no subject_zrns available, create a ticket containing the CSAT
         resp = create_zendesk_ticket(subject=subject, description=description)
         logger.info(f"Forwarded CSAT to Zendesk as ticket: {resp}")
         return JsonResponse({"status": "ticket_created", "zendesk": resp}, status=201)
     except Exception as e:
         logger.exception("Failed to forward CSAT to Zendesk via survey responses; attempting ticket fallback")
-        # Attempt fallback ticket creation and include the error
         try:
             resp = create_zendesk_ticket(subject=subject, description=description + "\n\n(Forwarding error: " + str(e) + ")")
             return JsonResponse({"status": "ticket_created_fallback", "zendesk": resp, "error": str(e)}, status=201)
         except Exception as e2:
             logger.exception("Ticket fallback also failed")
             return JsonResponse({"error": "Failed to forward to Zendesk", "details": f"{e} | {e2}"}, status=500)
+
+
+@csrf_exempt
+def csat_debug(request: HttpRequest) -> JsonResponse:
+    """
+    Debug endpoint to test creating a Zendesk Guide Survey Response.
+    - POST JSON: {"conversationId": "...", "rating": 1-5, "comment": "optional"}
+    - Only allowed when Django `DEBUG` is True to avoid exposing credentials.
+    Returns raw Zendesk response or an error for troubleshooting.
+    """
+    if request.method != 'POST':
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    if not getattr(settings, 'DEBUG', False):
+        return JsonResponse({"error": "Not allowed"}, status=403)
+
+    try:
+        data = json.loads(request.body or b'{}')
+    except Exception:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    conversation_id = data.get('conversationId') or data.get('conversation_id')
+    rating = data.get('rating', 5)
+    comment = data.get('comment')
+
+    if not conversation_id:
+        return JsonResponse({"error": "Missing conversationId"}, status=400)
+
+    try:
+        rating = int(rating)
+    except Exception:
+        return JsonResponse({"error": "Invalid rating"}, status=400)
+
+    subject_zrns = [f"zen:conversation:{conversation_id}"]
+    try:
+        resp = create_zendesk_survey_response(subject_zrns=subject_zrns, rating=rating, comment=comment)
+        return JsonResponse({"status": "ok", "zendesk": resp}, status=200)
+    except Exception as e:
+        logger.exception("Debug survey response failed")
+        return JsonResponse({"error": "survey_failed", "details": str(e)}, status=500)
+
+
+@csrf_exempt
+def upload_file(request: HttpRequest) -> JsonResponse:
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    if not request.FILES.get('file'):
+        return JsonResponse({'error': 'No file provided'}, status=400)
+
+    file = request.FILES['file']
+    
+    # For simplicity, we'll just return a dummy token.
+    # In a real application, you would upload this to a storage service (e.g., S3)
+    # and get a public URL or an attachment ID from a service like Zendesk.
+    
+    # Let's save it to a temporary directory for now.
+    from django.core.files.storage import FileSystemStorage
+    import os
+
+    fs = FileSystemStorage(location=os.path.join(settings.BASE_DIR, 'tmp'))
+    filename = fs.save(file.name, file)
+    
+    # This is not a real media URL, just a placeholder.
+    media_url = fs.url(filename)
+    
+    return JsonResponse({'mediaUrl': media_url})

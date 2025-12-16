@@ -201,10 +201,11 @@
 /* Chat Input Area */
 .chat-input {
     display: none; /* Hidden by default */
-    padding: 15px;
+    padding: 12px;
     background-color: white;
     border-top: 1px solid #eee;
-    gap: 10px;
+    gap: 8px;
+    align-items: center; /* vertically center children (icon, input, send) */
 }
 
 .chat-input input {
@@ -216,6 +217,94 @@
     font-size: 0.95em;
     transition: border-color 0.2s, box-shadow 0.2s;
     background-color: #f8f9fa;
+}
+
+.chat-input .attachment-icon {
+    margin-left: 2px;
+    margin-right: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Attachment chips container (above input) */
+.chat-attachments {
+    width: 100%;
+    margin-bottom: 8px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+    max-height: 100px; /* Limit height */
+    overflow-y: auto; /* Make it scrollable */
+    padding: 5px 0;
+}
+
+/* Attachment chip (Gmail-like) */
+.attachment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    background: #f1f3f4; /* light gray background */
+    border-radius: 16px;
+    padding: 5px 10px;
+    font-size: 13px;
+    color: #202124;
+    max-width: 100%;
+    animation: chipFadeIn 0.3s ease-out;
+}
+
+@keyframes chipFadeIn {
+    from { opacity: 0; transform: scale(0.8); }
+    to { opacity: 1; transform: scale(1); }
+}
+
+.attachment-chip .thumb {
+    width: 32px;
+    height: 24px;
+    background: rgba(0,0,0,0.06);
+    border-radius: 4px;
+    display: inline-block;
+    flex: 0 0 32px;
+    object-fit: cover;
+}
+
+.attachment-chip .meta {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.attachment-chip .name {
+    color: #1a73e8; /* blue link color */
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 180px;
+}
+
+.attachment-chip .size {
+    color: #5f6368;
+    font-size: 12px;
+}
+
+.attachment-chip .remove-btn {
+    background: transparent;
+    border: none;
+    color: #5f6368;
+    cursor: pointer;
+    padding: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: background-color 0.2s;
+}
+
+.attachment-chip .remove-btn:hover {
+    background: rgba(0,0,0,0.1);
+    color: #000;
 }
 
 .chat-input input:focus {
@@ -470,4 +559,197 @@
 
 .typing-dot-small:nth-child(2) {
     animation-delay: -0.16s;
+}
+
+/* Production-grade attachment icon
+   - CSS variables for theming and size
+   - Accessible when used as a button/link (focus-visible, aria-label)
+   - Supports using an <img> fallback or a CSS variable `--attachment-icon-url`
+   - Reduced-motion and high-contrast friendly
+*/
+.attachment-icon {
+    /* sizing */
+    --attachment-icon-size: 20px;
+    --attachment-icon-padding: 4px;
+    width: var(--attachment-icon-size);
+    height: var(--attachment-icon-size);
+    min-width: var(--attachment-icon-size);
+    min-height: var(--attachment-icon-size);
+
+    /* visuals */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+    padding: var(--attachment-icon-padding);
+    box-sizing: content-box;
+    /* keep background transparent for icon-only look */
+    background-color: transparent !important;
+    color: var(--attachment-icon-color, #4a90e2);
+    border-radius: var(--attachment-icon-radius, 6px);
+    cursor: pointer;
+    vertical-align: middle;
+    position: relative;
+    overflow: visible;
+    -webkit-tap-highlight-color: transparent;
+
+    /* default: use inline SVG child when available; CSS variable --attachment-icon-url remains available as fallback */
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 70%;
+    background-image: var(--attachment-icon-url, none);
+
+    /* subtle elevation and transition */
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    transition: transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+}
+
+.attachment-icon:hover {
+    transform: translateY(-1px);
+    /* no background fill on hover; change color only for contrast */
+    box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+    color: var(--attachment-icon-hover-color, #1063af);
+}
+
+.attachment-icon:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+}
+
+/* Keyboard focus accessibility */
+.attachment-icon:focus {
+    outline: none;
+}
+
+.attachment-icon:focus-visible {
+    box-shadow: 0 0 0 4px rgba(0,123,255,0.14);
+}
+
+/* If using an <img> inside the icon (preferred for raster images or external SVG files) */
+.attachment-icon img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: contain;
+    pointer-events: none; /* clicks handled by parent */
+}
+
+/* Style inline SVG inside the icon button */
+.attachment-icon svg,
+.attachment-svg {
+    width: calc(var(--attachment-icon-size) * 0.95);
+    height: calc(var(--attachment-icon-size) * 0.95);
+    display: block;
+    fill: currentColor; /* use currentColor so icon follows .attachment-icon color */
+    stroke: none;
+}
+
+/* Make the icon color a bit more muted by default, stronger on hover */
+.attachment-icon { color: var(--attachment-icon-color, #4a90e2); }
+.attachment-icon:hover { color: var(--attachment-icon-hover-color, #1063af); }
+
+/* Respect user motion preferences */
+@media (prefers-reduced-motion: reduce) {
+    .attachment-icon {
+        transition: none;
+    }
+}
+
+/* High contrast adjustments for accessibility */
+@media (prefers-contrast: more) {
+    .attachment-icon {
+        background-color: var(--attachment-icon-bg, #fff);
+        box-shadow: none;
+        border: 1px solid rgba(0,0,0,0.6);
+    }
+}
+
+/* Utility sizes */
+.attachment-icon--sm { --attachment-icon-size: 18px; --attachment-icon-padding: 3px; }
+.attachment-icon--md { --attachment-icon-size: 20px; --attachment-icon-padding: 4px; }
+.attachment-icon--lg { --attachment-icon-size: 28px; --attachment-icon-padding: 6px; }
+
+/* If used inline with text, ensure proper alignment */
+.attachment-icon.inline { vertical-align: middle; }
+
+/* Provide a simple visually-hidden helper if you need to add labels */
+.sr-only {
+  position: absolute !important;
+  height: 1px; width: 1px;
+  overflow: hidden;
+  clip: rect(1px, 1px, 1px, 1px);
+  white-space: nowrap; /* added line */
+}
+
+/* Icon button styles provided by user - applied to attachment control */
+.icon-button {
+    /* Base: plain icon-only button (no heavy chrome) */
+    background: transparent;
+    border: none;
+    padding: 6px; /* small hit target padding; total clickable area will be ~32px */
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    border-radius: 50%;
+    font-family: sans-serif;
+    color: #333;
+    width: 32px; /* enforce consistent hit target */
+    height: 32px;
+}
+
+.icon-button:hover {
+    background-color: rgba(0,0,0,0.04);
+}
+
+/* Target the SVG within the button */
+.icon-button .attachment-svg {
+    /* Icon size inside the smaller hit target */
+    width: 18px;
+    height: 18px;
+    fill: currentColor;
+}
+
+/* Modifier: WhatsApp look */
+.icon-button--whatsapp {
+    color: #25D366;
+}
+.icon-button--whatsapp:hover {
+    background-color: rgba(37,211,102,0.12);
+}
+
+/* Modifier: Gmail look */
+.icon-button--gmail {
+    color: #EA4335;
+}
+.icon-button--gmail:hover {
+    background-color: rgba(234,67,53,0.12);
+}
+
+/* Modifier: Plain look (black icon, no background, no shadow) */
+.icon-button--plain {
+    color: #000;
+    background: transparent;
+    box-shadow: none !important;
+}
+.icon-button--plain:hover {
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+/* Force plain icon to always be visible and black */
+.icon-button--plain,
+.icon-button--plain .attachment-svg {
+    color: #000 !important;
+    fill: #000 !important;
+    opacity: 1 !important;
+}
+.icon-button--plain:hover,
+.icon-button--plain:focus,
+.icon-button--plain:active {
+    color: #000 !important;
+    fill: #000 !important;
+    background: transparent !important;
+    box-shadow: none !important;
 }

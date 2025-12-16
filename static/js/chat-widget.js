@@ -10,6 +10,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const sendBtn = document.querySelector('#chat-send-btn');
     const messagesContainer = document.querySelector('.chat-messages');
     const chatHeaderTitle = document.querySelector('.chat-header span');
+    const attachBtn = document.querySelector('#chat-attach-btn');
+    const fileInput = document.querySelector('#chat-file-input');
 
     let isChatOpen = false;
     let awaitingFeedback = false;
@@ -29,6 +31,8 @@ document.addEventListener('DOMContentLoaded', function() {
     let mainOptions = [];
     let appRelatedOptions = [];
     let deleteAccountReasons = [];
+
+    let chatSocket = null;
 
     // Initialize Chat Session (Get IDs from Backend)
     function initializeChatSession() {
@@ -60,13 +64,199 @@ document.addEventListener('DOMContentLoaded', function() {
                         chatHeaderTitle.textContent = "Agent"; // Or keep generic if name unknown
                     }
 
-                    // Fetch previous messages
-                    fetchMessages();
+                    // Connect to websocket
+                    connectWebSocket();
                 } else {
                     console.error("Failed to initialize chat session", data);
                 }
             })
             .catch(error => console.error('Error initializing chat:', error));
+    }
+
+    function connectWebSocket() {
+        if (conversationId) {
+            const wsScheme = window.location.protocol === "https:" ? "wss" : "ws";
+            const wsPath = `${wsScheme}://${window.location.host}/ws/chat/${conversationId}/`;
+            chatSocket = new WebSocket(wsPath);
+
+            chatSocket.onopen = function(e) {
+                console.log("WebSocket connection opened.");
+                // Fetch initial messages
+                fetchMessages();
+            };
+
+            chatSocket.onmessage = function(e) {
+                const data = JSON.parse(e.data);
+                if (data.type === 'messages') {
+                    handleFetchedMessages(data.messages);
+                } else if (data.type === 'new_message') {
+                    handleNewMessage(data.message);
+                }
+            };
+
+            chatSocket.onclose = function(e) {
+                console.error('Chat socket closed unexpectedly');
+            };
+        }
+    }
+
+
+
+    function handleNewMessage(msg) {
+        if (!displayedMessageIds.has(msg.id)) {
+            renderMessage(msg);
+            scrollToBottom();
+        }
+    }
+
+    function handleFetchedMessages(data) {
+        // This function is similar to the old fetchMessages success handler
+        // Check Conversation Status (Active Switchboard Integration)
+        if (data.conversation && data.conversation.id) {
+            const activeIntegration = data.conversation.activeSwitchboardIntegration;
+            
+            const isAgentActive = activeIntegration && (
+                activeIntegration.name === 'next' || 
+                activeIntegration.name === 'zendesk' || 
+                activeIntegration.integrationType === 'zendesk'
+            );
+
+            if (isAgentActive) {
+                if (!isAgentConnected) {
+                    isAgentConnected = true;
+                    localStorage.setItem('chat_isAgentConnected', 'true');
+                    chatInputArea.style.display = 'flex';
+                }
+                if (!hasConfirmedAgentActivity) {
+                    hasConfirmedAgentActivity = true;
+                    localStorage.setItem('chat_hasConfirmedAgentActivity', 'true');
+                }
+            }
+        }
+
+        if (data.messages) {
+            const sortedMessages = data.messages.sort((a, b) => new Date(a.received) - new Date(b.received));
+            let hasNewMessages = false;
+
+            sortedMessages.forEach(msg => {
+                if (!displayedMessageIds.has(msg.id)) {
+                    renderMessage(msg);
+                    hasNewMessages = true;
+                }
+            });
+            
+            if (hasNewMessages) {
+                scrollToBottom();
+            }
+
+            if (sortedMessages.length > 0 && isAgentConnected) {
+                const lastMsg = sortedMessages[sortedMessages.length - 1];
+                let isLastMsgEndSession = false;
+
+                if (lastMsg.content && lastMsg.content.type === 'text') {
+                    const senderName = (lastMsg.author.type === 'user') ? null : (lastMsg.author.displayName || 'Agent');
+                    const text = lastMsg.content.text.toLowerCase();
+                    isLastMsgEndSession = (senderName === 'System') || 
+                                          (text.includes("messaging session ended")) ||
+                                          (text.includes("the agent has ended the session"));
+                } else if (lastMsg.source && lastMsg.source.type === 'system') {
+                    isLastMsgEndSession = true;
+                }
+
+                const msgTime = new Date(lastMsg.received).getTime();
+                const isTrulyOld = msgTime < (lastAgentRequestTime - 5000);
+
+                if (isLastMsgEndSession && !isTrulyOld) {
+                    console.log("Last message is End Session. Closing chat.");
+                    endSession();
+                }
+            }
+        }
+    }
+    
+    function renderMessage(msg) {
+        if (displayedMessageIds.has(msg.id)) return;
+
+        if (msg.content && msg.content.type === 'text') {
+            const isUser = msg.author.type === 'user'; 
+            const senderName = isUser ? null : (msg.author.displayName || 'Agent');
+            const text = msg.content.text;
+            const lowerText = text.toLowerCase();
+
+            if (!isUser && senderName !== 'System') {
+                removeLoadingIndicator();
+            }
+
+            if (isUser && text.startsWith("Connecting to agent. Reason:")) {
+                displayedMessageIds.add(msg.id);
+                return; 
+            }
+
+            if (!isUser && senderName !== 'System' && !hasConfirmedAgentActivity) {
+                 console.log("Agent activity detected via message. Arming auto-close.");
+                 hasConfirmedAgentActivity = true;
+                 localStorage.setItem('chat_hasConfirmedAgentActivity', 'true');
+            }
+
+            const isEndSessionMessage = 
+                (senderName === 'System') || 
+                (lowerText.includes("messaging session ended")) ||
+                (lowerText.includes("the agent has ended the session"));
+
+            if (lowerText.includes(" connected") && senderName === 'System') {
+                removeLoadingIndicator();
+                
+                if (!agentJoinAnnounced) {
+                    const namePart = text.split(" connected")[0];
+                    if (namePart && namePart !== "An agent") {
+                        chatHeaderTitle.textContent = namePart;
+                        chatHeaderTitle.style.fontSize = '1.1rem';
+                    }
+                    
+                    appendMessage(text, 'system-message', null);
+                    
+                    agentJoinAnnounced = true;
+                    localStorage.setItem('chat_agentJoinAnnounced', 'true');
+                    
+                    isAgentConnected = true; 
+                    localStorage.setItem('chat_isAgentConnected', 'true');
+                    chatInputArea.style.display = 'flex';
+                }
+                
+                displayedMessageIds.add(msg.id);
+                return;
+            }
+
+            if (isEndSessionMessage) {
+                appendMessage(text, 'system-message', null);
+                displayedMessageIds.add(msg.id);
+                return; 
+            }
+
+            if (!isUser && !agentJoinAnnounced && senderName !== 'System') {
+                const nameToUse = senderName || "An agent";
+                appendMessage(`${nameToUse} connected`, 'system-message'); 
+                agentJoinAnnounced = true;
+                localStorage.setItem('chat_agentJoinAnnounced', 'true');
+                
+                isAgentConnected = true; 
+                localStorage.setItem('chat_isAgentConnected', 'true');
+                chatInputArea.style.display = 'flex'; 
+            }
+
+            if (!isUser && senderName && senderName !== 'Agent' && senderName !== 'System') {
+                chatHeaderTitle.textContent = senderName;
+                chatHeaderTitle.style.fontSize = '1.1rem'; 
+            }
+
+            appendMessage(text, isUser ? 'user-message' : 'bot-message', null);
+            displayedMessageIds.add(msg.id);
+        }
+        else if (msg.source && msg.source.type === 'system') {
+            const text = "Messaging session ended"; 
+            appendMessage(text, 'system-message', null);
+            displayedMessageIds.add(msg.id);
+        }
     }
 
     // Fetch previous messages
@@ -92,219 +282,17 @@ document.addEventListener('DOMContentLoaded', function() {
         showMainOptions();
     }
 
+
     // Fetch previous messages
     function fetchMessages() {
-        if (!conversationId) return;
-
-        fetch(`/api/chat/messages?conversationId=${conversationId}`)
-            .then(response => response.json())
-            .then(data => {
-                // Check Conversation Status (Active Switchboard Integration)
-                if (data.conversation && data.conversation.id) {
-                    const activeIntegration = data.conversation.activeSwitchboardIntegration;
-                    
-                    // Debugging: Log the integration status to help troubleshoot
-                    if (activeIntegration) {
-                        // console.log("Active Integration:", activeIntegration.name, activeIntegration.integrationType);
-                    }
-
-                    // Check if Agent is Active (Broader check)
-                    const isAgentActive = activeIntegration && (
-                        activeIntegration.name === 'next' || 
-                        activeIntegration.name === 'zendesk' || 
-                        activeIntegration.integrationType === 'zendesk'
-                    );
-
-                    // 1. Sync State: If Switchboard says Agent is Active, we must be connected
-                    if (isAgentActive) {
-                        if (!isAgentConnected) {
-                            isAgentConnected = true;
-                            localStorage.setItem('chat_isAgentConnected', 'true');
-                            chatInputArea.style.display = 'flex';
-                        }
-                        // Mark that we have confirmed the agent is active at least once
-                        if (!hasConfirmedAgentActivity) {
-                            hasConfirmedAgentActivity = true;
-                            localStorage.setItem('chat_hasConfirmedAgentActivity', 'true');
-                        }
-                    }
-                    
-                    // 2. Status-Based Closing (Solved Ticket Detection)
-                    // Re-enabled as per user request.
-                    // SAFETY CHECK: Only close if activeIntegration is explicitly defined (not missing from response)
-                    // If activeIntegration is undefined, it might be a partial API response, so we ignore it.
-                    /*
-                    if (activeIntegration !== undefined && isAgentConnected && hasConfirmedAgentActivity && !isAgentActive) {
-                         console.log("Session ended detected via Switchboard status (Agent Solved/Left).");
-                         
-                         // FIX: Inform the user visually before closing
-                         appendMessage("Messaging session ended", 'system-message');
-                         
-                         endSession();
-                    }
-                    */
-                }
-
-                if (data.messages) {
-                    // Sort messages by date (oldest first)
-                    const sortedMessages = data.messages.sort((a, b) => new Date(a.received) - new Date(b.received));
-                    let hasNewMessages = false;
-
-                    sortedMessages.forEach(msg => {
-                        // Check if message is already displayed
-                        if (!displayedMessageIds.has(msg.id)) {
-                            
-                            // Handle Text Messages
-                            if (msg.content && msg.content.type === 'text') {
-                                const isUser = msg.author.type === 'user'; 
-                                const senderName = isUser ? null : (msg.author.displayName || 'Agent');
-                                const text = msg.content.text;
-                                const lowerText = text.toLowerCase();
-
-                                // Remove loading indicator if agent speaks
-                                if (!isUser && senderName !== 'System') {
-                                    removeLoadingIndicator();
-                                }
-
-                                // HIDE AUTO-GENERATED ESCALATION MESSAGE
-                                // We send this to Zendesk to create the ticket, but we don't want to show it to the user again.
-                                if (isUser && text.startsWith("Connecting to agent. Reason:")) {
-                                    displayedMessageIds.add(msg.id);
-                                    return; 
-                                }
-
-                                // DETECT AGENT ACTIVITY VIA MESSAGES (Fallback)
-                                // If we see a message from a human agent, confirm activity immediately.
-                                if (!isUser && senderName !== 'System' && !hasConfirmedAgentActivity) {
-                                     console.log("Agent activity detected via message. Arming auto-close.");
-                                     hasConfirmedAgentActivity = true;
-                                     localStorage.setItem('chat_hasConfirmedAgentActivity', 'true');
-                                }
-
-                                // Check for System End Session Message (Text based)
-                                // We just display it here. The logic to CLOSE the session is handled AFTER the loop
-                                // by checking if the *last* message is an end-session message.
-                                const isEndSessionMessage = 
-                                    (senderName === 'System') || 
-                                    (lowerText.includes("messaging session ended")) ||
-                                    (lowerText.includes("the agent has ended the session"));
-
-                                // Check for Agent Join Message
-                                // We use 'agentJoinAnnounced' to prevent duplicate "Connected" messages 
-                                // if the backend sends them multiple times (e.g. on every read receipt).
-                                if (lowerText.includes(" connected") && senderName === 'System') {
-                                    removeLoadingIndicator();
-                                    
-                                    if (!agentJoinAnnounced) {
-                                        // Extract Agent Name and Update Header
-                                        const namePart = text.split(" connected")[0];
-                                        if (namePart && namePart !== "An agent") {
-                                            chatHeaderTitle.textContent = namePart;
-                                            chatHeaderTitle.style.fontSize = '1.1rem';
-                                        }
-                                        
-                                        // Render as System Message
-                                        appendMessage(text, 'system-message', null);
-                                        
-                                        // Mark as announced
-                                        agentJoinAnnounced = true;
-                                        localStorage.setItem('chat_agentJoinAnnounced', 'true');
-                                        
-                                        isAgentConnected = true; 
-                                        localStorage.setItem('chat_isAgentConnected', 'true');
-                                        chatInputArea.style.display = 'flex';
-                                    }
-                                    
-                                    displayedMessageIds.add(msg.id);
-                                    hasNewMessages = true;
-                                    return;
-                                }
-
-                                if (isEndSessionMessage) {
-                                    appendMessage(text, 'system-message', null);
-                                    displayedMessageIds.add(msg.id);
-                                    hasNewMessages = true;
-                                    return; 
-                                }
-
-                                // Agent Join Announcement (Fallback if webhook delayed)
-                                if (!isUser && !agentJoinAnnounced && senderName !== 'System') {
-                                    const nameToUse = senderName || "An agent";
-                                    // Use system-message style for consistency
-                                    appendMessage(`${nameToUse} connected`, 'system-message'); 
-                                    agentJoinAnnounced = true;
-                                    localStorage.setItem('chat_agentJoinAnnounced', 'true');
-                                    
-                                    isAgentConnected = true; 
-                                    localStorage.setItem('chat_isAgentConnected', 'true');
-                                    chatInputArea.style.display = 'flex'; 
-                                }
-
-                                // Update header
-                                if (!isUser && senderName && senderName !== 'Agent' && senderName !== 'System') {
-                                    chatHeaderTitle.textContent = senderName;
-                                    chatHeaderTitle.style.fontSize = '1.1rem'; 
-                                }
-
-                                appendMessage(text, isUser ? 'user-message' : 'bot-message', null);
-                                displayedMessageIds.add(msg.id);
-                                hasNewMessages = true;
-                            }
-                            // Handle Non-Text System Messages (e.g. Activities)
-                            else if (msg.source && msg.source.type === 'system') {
-                                const text = "Messaging session ended"; 
-                                appendMessage(text, 'system-message', null);
-                                displayedMessageIds.add(msg.id);
-                                hasNewMessages = true;
-                            }
-                        }
-                    });
-                    
-                    if (hasNewMessages) {
-                        scrollToBottom();
-                    }
-
-                    // CHECK IF SESSION SHOULD END (Message Based)
-                    // If the VERY LAST message in the conversation is an "End Session" message,
-                    // and we are currently connected, then we should close the session.
-                    if (sortedMessages.length > 0 && isAgentConnected) {
-                        const lastMsg = sortedMessages[sortedMessages.length - 1];
-                        let isLastMsgEndSession = false;
-
-                        if (lastMsg.content && lastMsg.content.type === 'text') {
-                            const senderName = (lastMsg.author.type === 'user') ? null : (lastMsg.author.displayName || 'Agent');
-                            const text = lastMsg.content.text.toLowerCase();
-                            isLastMsgEndSession = (senderName === 'System') || 
-                                                  (text.includes("messaging session ended")) ||
-                                                  (text.includes("the agent has ended the session"));
-                        } else if (lastMsg.source && lastMsg.source.type === 'system') {
-                            isLastMsgEndSession = true;
-                        }
-
-                        // Safety Check: Ensure this message is not from BEFORE we requested the agent.
-                        // This handles the edge case where the user connects, but the backend fails to send the trigger message,
-                        // leaving an OLD "End Session" message as the last one.
-                        // We use a 5-second buffer to account for clock skew.
-                        const msgTime = new Date(lastMsg.received).getTime();
-                        const isTrulyOld = msgTime < (lastAgentRequestTime - 5000);
-
-                        if (isLastMsgEndSession && !isTrulyOld) {
-                            console.log("Last message is End Session. Closing chat.");
-                            endSession();
-                        }
-                    }
-                }
-            })
-            .catch(error => console.error('Error fetching messages:', error));
+        if (!conversationId || !chatSocket || chatSocket.readyState !== WebSocket.OPEN) return;
+        chatSocket.send(JSON.stringify({
+            'type': 'fetch_messages',
+            'data': {
+                'conversationId': conversationId
+            }
+        }));
     }
-
-    // Poll for new messages every 1 second (1000ms)
-    // Optimization: Only poll if chat is open OR if we are waiting for/connected to an agent
-    setInterval(() => {
-        if (isChatOpen || isAgentConnected) {
-            fetchMessages();
-        }
-    }, 1000);
 
     // Call initialization on load
     initializeChatSession();
@@ -321,33 +309,175 @@ document.addEventListener('DOMContentLoaded', function() {
         })
         .catch(error => console.error('Error loading issues:', error));
 
-    // Helper: Send Message to Backend (Sunshine)
-    function sendToSunshine(text) {
-        if (!appUserId || !conversationId) {
-            console.error("Cannot send message: Chat not initialized");
-            return;
+    async function sendMessage() {
+        const messageText = chatInput.value.trim();
+        const files = [...attachedFiles];
+
+        if (messageText === "" && files.length === 0) return;
+
+        // Clear input and attachments UI
+        chatInput.value = '';
+        document.querySelector('#chat-attachments').innerHTML = '';
+        attachedFiles = [];
+
+        if (files.length > 0) {
+            // Append a user message to show something is happening
+            appendMessage(messageText || `Sending ${files.length} file(s)...`, 'user-message');
+
+            const uploadPromises = files.map(file => {
+                const formData = new FormData();
+                formData.append('file', file);
+                return fetch('/api/chat/upload', {
+                    method: 'POST',
+                    body: formData,
+                    // Note: No 'Content-Type' header, browser sets it for FormData
+                }).then(response => response.json());
+            });
+
+            const uploadResults = await Promise.all(uploadPromises);
+
+            uploadResults.forEach((result, index) => {
+                if (result.mediaUrl) {
+                    const isLastFile = index === uploadResults.length - 1;
+                    chatSocket.send(JSON.stringify({
+                        'type': 'send_attachment',
+                        'data': {
+                            appUserId: appUserId,
+                            conversationId: conversationId,
+                            mediaUrl: result.mediaUrl,
+                            text: isLastFile ? messageText : "" // Send text with the last file
+                        }
+                    }));
+                }
+            });
+
+        } else if (messageText !== "") {
+            appendMessage(messageText, 'user-message');
+            if (chatSocket && chatSocket.readyState === WebSocket.OPEN) {
+                chatSocket.send(JSON.stringify({
+                    'type': 'send_message',
+                    'data': {
+                        appUserId: appUserId,
+                        conversationId: conversationId,
+                        text: messageText
+                    }
+                }));
+            }
+        }
+        
+        // If connected to agent, keep input open. Otherwise (ticket mode), close it.
+        if (!isAgentConnected) {
+            chatInputArea.style.display = 'none';
+
+            setTimeout(() => {
+                // Since we are escalating to Sunshine/Zendesk, we can show a confirmation
+                appendMessage("Your issue has been forwarded to our support team. An agent will review it shortly.", 'bot-message');
+                
+                // Optional: Still ask for feedback or just end here
+                // askForFeedback(); 
+            }, 1500);
+        }
+    }
+
+    // Helper: human readable file size
+    function humanFileSize(bytes, si = true) {
+        const thresh = si ? 1000 : 1024;
+        if (Math.abs(bytes) < thresh) {
+            return bytes + ' B';
+        }
+        const units = si
+            ? ['kB','MB','GB','TB','PB','EB','ZB','YB']
+            : ['KiB','MiB','GiB','TiB','PiB','EiB','ZiB','YiB'];
+        let u = -1;
+        do {
+            bytes /= thresh;
+            ++u;
+        } while (Math.abs(bytes) >= thresh && u < units.length - 1);
+        return bytes.toFixed(1) + ' ' + units[u];
+    }
+
+    let attachedFiles = [];
+
+    // Attachment button: open file picker and show preview locally
+    if (attachBtn && fileInput) {
+        attachBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', function(e) {
+            const files = e.target.files;
+            if (!files) return;
+
+            const attachmentsContainer = document.querySelector('#chat-attachments');
+            if (!attachmentsContainer) return;
+
+            for (const file of files) {
+                attachedFiles.push(file);
+                const chip = createAttachmentChip(file);
+                attachmentsContainer.appendChild(chip);
+            }
+            
+            // Clear the file input so the user can select the same file again
+            fileInput.value = null;
+        });
+    }
+
+    function createAttachmentChip(file) {
+        const chip = document.createElement('div');
+        chip.classList.add('attachment-chip');
+        chip.dataset.fileName = file.name;
+
+        // Thumbnail (image preview) or icon placeholder
+        const thumb = document.createElement('div');
+        thumb.classList.add('thumb');
+
+        if (file.type && file.type.startsWith('image/')) {
+            const url = URL.createObjectURL(file);
+            const img = document.createElement('img');
+            img.src = url;
+            img.alt = file.name;
+            img.className = 'thumb';
+            img.style.width = '32px';
+            img.style.height = '20px';
+            img.style.borderRadius = '4px';
+            chip.appendChild(img);
+        } else {
+            // show placeholder box
+            chip.appendChild(thumb);
         }
 
-        fetch('/api/chat/send', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                appUserId: appUserId,
-                conversationId: conversationId,
-                text: text
-            })
-        })
-        .then(response => response.json())
-        .then(data => {
-            console.log("Message sent to Sunshine:", data);
-            // Optimistically add the message ID to displayed set to prevent duplication by poller
-            if (data.data && data.data.messages && data.data.messages.length > 0) {
-                const msgId = data.data.messages[0].id;
-                displayedMessageIds.add(msgId);
-            }
-        })
-        .catch(error => console.error('Error sending message:', error));
+        const meta = document.createElement('div');
+        meta.classList.add('meta');
+
+        const name = document.createElement('div');
+        name.classList.add('name');
+        name.textContent = file.name;
+
+        const size = document.createElement('div');
+        size.classList.add('size');
+        size.textContent = humanFileSize(file.size);
+
+        meta.appendChild(name);
+        meta.appendChild(size);
+        chip.appendChild(meta);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.classList.add('remove-btn');
+        removeBtn.setAttribute('aria-label', 'Remove attachment');
+        removeBtn.innerHTML = '✕';
+        removeBtn.addEventListener('click', function(ev) {
+            ev.stopPropagation();
+            const chipToRemove = ev.target.closest('.attachment-chip');
+            const fileName = chipToRemove.dataset.fileName;
+            attachedFiles = attachedFiles.filter(f => f.name !== fileName);
+            chipToRemove.remove();
+        });
+
+        chip.appendChild(removeBtn);
+        return chip;
     }
+
 
     // Toggle Chat
     function toggleChat() {
@@ -512,6 +642,32 @@ document.addEventListener('DOMContentLoaded', function() {
             console.log("Escalation successful:", data);
         })
         .catch(error => console.error('Error escalating chat:', error));
+    }
+
+    // Send text to Sunshine via websocket if available, otherwise fallback to HTTP
+    function sendToSunshine(text) {
+        if (!conversationId || !appUserId) {
+            console.error('Cannot send to Sunshine: missing conversation or user id');
+            return;
+        }
+
+        if (chatSocket && chatSocket.readyState === WebSocket.OPEN) {
+            chatSocket.send(JSON.stringify({
+                type: 'send_message',
+                data: {
+                    appUserId: appUserId,
+                    conversationId: conversationId,
+                    text: text
+                }
+            }));
+        } else {
+            // fallback HTTP
+            fetch('/api/chat/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ appUserId: appUserId, conversationId: conversationId, text: text })
+            }).then(r => r.json()).then(res => console.log('Sent via HTTP fallback', res)).catch(err => console.error('Fallback send failed', err));
+        }
     }
 
     // Handle Agent Connect

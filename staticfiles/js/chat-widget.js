@@ -1,3 +1,5 @@
+// messaging session ended
+
 document.addEventListener('DOMContentLoaded', function() {
     const chatWidget = document.querySelector('.chat-widget');
     const chatBox = document.querySelector('.chat-box');
@@ -7,15 +9,305 @@ document.addEventListener('DOMContentLoaded', function() {
     const chatInput = document.querySelector('#chat-input-field');
     const sendBtn = document.querySelector('#chat-send-btn');
     const messagesContainer = document.querySelector('.chat-messages');
+    const chatHeaderTitle = document.querySelector('.chat-header span');
 
     let isChatOpen = false;
     let awaitingFeedback = false;
+    let appUserId = null;
+    let conversationId = null;
+    let lastContext = "General Inquiry"; // Track user context for escalation
+    let displayedMessageIds = new Set(); // Track displayed messages to prevent duplicates/reloading
+    
+    // State Management with Persistence
+    let isAgentConnected = localStorage.getItem('chat_isAgentConnected') === 'true'; 
+    let lastAgentRequestTime = parseInt(localStorage.getItem('chat_lastAgentRequestTime') || '0');
+    let agentJoinAnnounced = localStorage.getItem('chat_agentJoinAnnounced') === 'true';
+    let hasConfirmedAgentActivity = localStorage.getItem('chat_hasConfirmedAgentActivity') === 'true';
 
     // Predefined troubleshooting steps and options
     let troubleshootingSteps = {};
     let mainOptions = [];
     let appRelatedOptions = [];
     let deleteAccountReasons = [];
+
+    // Initialize Chat Session (Get IDs from Backend)
+    function initializeChatSession() {
+        // Check localStorage for existing user ID
+        const storedUserId = localStorage.getItem('chat_user_id');
+        const payload = storedUserId ? { userId: storedUserId } : {};
+
+        fetch('/api/chat/init', { 
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (data.appUserId && data.conversationId) {
+                    appUserId = data.appUserId;
+                    conversationId = data.conversationId;
+                    
+                    // Save externalId (if returned) or appUserId to localStorage
+                    if (data.externalId) {
+                        localStorage.setItem('chat_user_id', data.externalId);
+                    }
+
+                    console.log("Chat initialized:", appUserId, conversationId);
+                    
+                    // Restore UI state if agent was connected
+                    if (isAgentConnected) {
+                        chatInputArea.style.display = 'flex';
+                        chatHeaderTitle.textContent = "Agent"; // Or keep generic if name unknown
+                    }
+
+                    // Fetch previous messages
+                    fetchMessages();
+                } else {
+                    console.error("Failed to initialize chat session", data);
+                }
+            })
+            .catch(error => console.error('Error initializing chat:', error));
+    }
+
+    // Fetch previous messages
+    // Helper: End Session Cleanup
+    function endSession() {
+        console.log("Ending session and cleaning up...");
+        isAgentConnected = false;
+        agentJoinAnnounced = false;
+        hasConfirmedAgentActivity = false;
+        
+        // Clear Persistence
+        localStorage.removeItem('chat_isAgentConnected');
+        localStorage.removeItem('chat_agentJoinAnnounced');
+        localStorage.removeItem('chat_hasConfirmedAgentActivity');
+        // We do NOT clear lastAgentRequestTime immediately to prevent race conditions with old messages
+        
+        // UI Updates
+        chatInputArea.style.display = 'none';
+        chatHeaderTitle.textContent = "Yatri Bandhu";
+        
+        // Show "What can I help you with?" message before options
+        appendMessage("What can I help you with?", 'bot-message');
+        showMainOptions();
+    }
+
+    // Fetch previous messages
+    function fetchMessages() {
+        if (!conversationId) return;
+
+        fetch(`/api/chat/messages?conversationId=${conversationId}`)
+            .then(response => response.json())
+            .then(data => {
+                // Check Conversation Status (Active Switchboard Integration)
+                if (data.conversation && data.conversation.id) {
+                    const activeIntegration = data.conversation.activeSwitchboardIntegration;
+                    
+                    // Debugging: Log the integration status to help troubleshoot
+                    if (activeIntegration) {
+                        // console.log("Active Integration:", activeIntegration.name, activeIntegration.integrationType);
+                    }
+
+                    // Check if Agent is Active (Broader check)
+                    const isAgentActive = activeIntegration && (
+                        activeIntegration.name === 'next' || 
+                        activeIntegration.name === 'zendesk' || 
+                        activeIntegration.integrationType === 'zendesk'
+                    );
+
+                    // 1. Sync State: If Switchboard says Agent is Active, we must be connected
+                    if (isAgentActive) {
+                        if (!isAgentConnected) {
+                            isAgentConnected = true;
+                            localStorage.setItem('chat_isAgentConnected', 'true');
+                            chatInputArea.style.display = 'flex';
+                        }
+                        // Mark that we have confirmed the agent is active at least once
+                        if (!hasConfirmedAgentActivity) {
+                            hasConfirmedAgentActivity = true;
+                            localStorage.setItem('chat_hasConfirmedAgentActivity', 'true');
+                        }
+                    }
+                    
+                    // 2. Status-Based Closing (Solved Ticket Detection)
+                    // Re-enabled as per user request.
+                    // SAFETY CHECK: Only close if activeIntegration is explicitly defined (not missing from response)
+                    // If activeIntegration is undefined, it might be a partial API response, so we ignore it.
+                    /*
+                    if (activeIntegration !== undefined && isAgentConnected && hasConfirmedAgentActivity && !isAgentActive) {
+                         console.log("Session ended detected via Switchboard status (Agent Solved/Left).");
+                         
+                         // FIX: Inform the user visually before closing
+                         appendMessage("Messaging session ended", 'system-message');
+                         
+                         endSession();
+                    }
+                    */
+                }
+
+                if (data.messages) {
+                    // Sort messages by date (oldest first)
+                    const sortedMessages = data.messages.sort((a, b) => new Date(a.received) - new Date(b.received));
+                    let hasNewMessages = false;
+
+                    sortedMessages.forEach(msg => {
+                        // Check if message is already displayed
+                        if (!displayedMessageIds.has(msg.id)) {
+                            
+                            // Handle Text Messages
+                            if (msg.content && msg.content.type === 'text') {
+                                const isUser = msg.author.type === 'user'; 
+                                const senderName = isUser ? null : (msg.author.displayName || 'Agent');
+                                const text = msg.content.text;
+                                const lowerText = text.toLowerCase();
+
+                                // Remove loading indicator if agent speaks
+                                if (!isUser && senderName !== 'System') {
+                                    removeLoadingIndicator();
+                                }
+
+                                // HIDE AUTO-GENERATED ESCALATION MESSAGE
+                                // We send this to Zendesk to create the ticket, but we don't want to show it to the user again.
+                                if (isUser && text.startsWith("Connecting to agent. Reason:")) {
+                                    displayedMessageIds.add(msg.id);
+                                    return; 
+                                }
+
+                                // DETECT AGENT ACTIVITY VIA MESSAGES (Fallback)
+                                // If we see a message from a human agent, confirm activity immediately.
+                                if (!isUser && senderName !== 'System' && !hasConfirmedAgentActivity) {
+                                     console.log("Agent activity detected via message. Arming auto-close.");
+                                     hasConfirmedAgentActivity = true;
+                                     localStorage.setItem('chat_hasConfirmedAgentActivity', 'true');
+                                }
+
+                                // Check for System End Session Message (Text based)
+                                // We just display it here. The logic to CLOSE the session is handled AFTER the loop
+                                // by checking if the *last* message is an end-session message.
+                                const isEndSessionMessage = 
+                                    (senderName === 'System') || 
+                                    (lowerText.includes("messaging session ended")) ||
+                                    (lowerText.includes("the agent has ended the session"));
+
+                                // Check for Agent Join Message
+                                // We use 'agentJoinAnnounced' to prevent duplicate "Connected" messages 
+                                // if the backend sends them multiple times (e.g. on every read receipt).
+                                if (lowerText.includes(" connected") && senderName === 'System') {
+                                    removeLoadingIndicator();
+                                    
+                                    if (!agentJoinAnnounced) {
+                                        // Extract Agent Name and Update Header
+                                        const namePart = text.split(" connected")[0];
+                                        if (namePart && namePart !== "An agent") {
+                                            chatHeaderTitle.textContent = namePart;
+                                            chatHeaderTitle.style.fontSize = '1.1rem';
+                                        }
+                                        
+                                        // Render as System Message
+                                        appendMessage(text, 'system-message', null);
+                                        
+                                        // Mark as announced
+                                        agentJoinAnnounced = true;
+                                        localStorage.setItem('chat_agentJoinAnnounced', 'true');
+                                        
+                                        isAgentConnected = true; 
+                                        localStorage.setItem('chat_isAgentConnected', 'true');
+                                        chatInputArea.style.display = 'flex';
+                                    }
+                                    
+                                    displayedMessageIds.add(msg.id);
+                                    hasNewMessages = true;
+                                    return;
+                                }
+
+                                if (isEndSessionMessage) {
+                                    appendMessage(text, 'system-message', null);
+                                    displayedMessageIds.add(msg.id);
+                                    hasNewMessages = true;
+                                    return; 
+                                }
+
+                                // Agent Join Announcement (Fallback if webhook delayed)
+                                if (!isUser && !agentJoinAnnounced && senderName !== 'System') {
+                                    const nameToUse = senderName || "An agent";
+                                    // Use system-message style for consistency
+                                    appendMessage(`${nameToUse} connected`, 'system-message'); 
+                                    agentJoinAnnounced = true;
+                                    localStorage.setItem('chat_agentJoinAnnounced', 'true');
+                                    
+                                    isAgentConnected = true; 
+                                    localStorage.setItem('chat_isAgentConnected', 'true');
+                                    chatInputArea.style.display = 'flex'; 
+                                }
+
+                                // Update header
+                                if (!isUser && senderName && senderName !== 'Agent' && senderName !== 'System') {
+                                    chatHeaderTitle.textContent = senderName;
+                                    chatHeaderTitle.style.fontSize = '1.1rem'; 
+                                }
+
+                                appendMessage(text, isUser ? 'user-message' : 'bot-message', null);
+                                displayedMessageIds.add(msg.id);
+                                hasNewMessages = true;
+                            }
+                            // Handle Non-Text System Messages (e.g. Activities)
+                            else if (msg.source && msg.source.type === 'system') {
+                                const text = "Messaging session ended"; 
+                                appendMessage(text, 'system-message', null);
+                                displayedMessageIds.add(msg.id);
+                                hasNewMessages = true;
+                            }
+                        }
+                    });
+                    
+                    if (hasNewMessages) {
+                        scrollToBottom();
+                    }
+
+                    // CHECK IF SESSION SHOULD END (Message Based)
+                    // If the VERY LAST message in the conversation is an "End Session" message,
+                    // and we are currently connected, then we should close the session.
+                    if (sortedMessages.length > 0 && isAgentConnected) {
+                        const lastMsg = sortedMessages[sortedMessages.length - 1];
+                        let isLastMsgEndSession = false;
+
+                        if (lastMsg.content && lastMsg.content.type === 'text') {
+                            const senderName = (lastMsg.author.type === 'user') ? null : (lastMsg.author.displayName || 'Agent');
+                            const text = lastMsg.content.text.toLowerCase();
+                            isLastMsgEndSession = (senderName === 'System') || 
+                                                  (text.includes("messaging session ended")) ||
+                                                  (text.includes("the agent has ended the session"));
+                        } else if (lastMsg.source && lastMsg.source.type === 'system') {
+                            isLastMsgEndSession = true;
+                        }
+
+                        // Safety Check: Ensure this message is not from BEFORE we requested the agent.
+                        // This handles the edge case where the user connects, but the backend fails to send the trigger message,
+                        // leaving an OLD "End Session" message as the last one.
+                        // We use a 5-second buffer to account for clock skew.
+                        const msgTime = new Date(lastMsg.received).getTime();
+                        const isTrulyOld = msgTime < (lastAgentRequestTime - 5000);
+
+                        if (isLastMsgEndSession && !isTrulyOld) {
+                            console.log("Last message is End Session. Closing chat.");
+                            endSession();
+                        }
+                    }
+                }
+            })
+            .catch(error => console.error('Error fetching messages:', error));
+    }
+
+    // Poll for new messages every 1 second (1000ms)
+    // Optimization: Only poll if chat is open OR if we are waiting for/connected to an agent
+    setInterval(() => {
+        if (isChatOpen || isAgentConnected) {
+            fetchMessages();
+        }
+    }, 1000);
+
+    // Call initialization on load
+    initializeChatSession();
 
     // Fetch issues from JSON file
     const issuesUrl = window.issuesUrl || 'static/js/issues.json'; // Fallback for non-Django envs
@@ -28,6 +320,34 @@ document.addEventListener('DOMContentLoaded', function() {
             deleteAccountReasons = data.deleteAccountReasons;
         })
         .catch(error => console.error('Error loading issues:', error));
+
+    // Helper: Send Message to Backend (Sunshine)
+    function sendToSunshine(text) {
+        if (!appUserId || !conversationId) {
+            console.error("Cannot send message: Chat not initialized");
+            return;
+        }
+
+        fetch('/api/chat/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                appUserId: appUserId,
+                conversationId: conversationId,
+                text: text
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log("Message sent to Sunshine:", data);
+            // Optimistically add the message ID to displayed set to prevent duplication by poller
+            if (data.data && data.data.messages && data.data.messages.length > 0) {
+                const msgId = data.data.messages[0].id;
+                displayedMessageIds.add(msgId);
+            }
+        })
+        .catch(error => console.error('Error sending message:', error));
+    }
 
     // Toggle Chat
     function toggleChat() {
@@ -64,6 +384,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Handle Main Option Click (Level 1)
     function handleMainOptionClick(option) {
         appendMessage(option, 'user-message');
+        lastContext = option; // Update context
         
         if (option === "App Related Issues") {
             setTimeout(() => {
@@ -95,6 +416,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Handle App Related Option Click (Level 2)
     function handleAppRelatedOptionClick(option) {
         appendMessage(option, 'user-message');
+        lastContext = option; // Update context
 
         if (option === "Others") {
             appendMessage("Please describe your issue below.", 'bot-message');
@@ -128,11 +450,15 @@ document.addEventListener('DOMContentLoaded', function() {
         appendMessage(option, 'user-message');
 
         if (option === "Yes") {
+            // Submit positive CSAT
+            submitCSAT(5, null);
             setTimeout(() => {
                 appendMessage("Thank you! Glad I could help. Have a great day! 👋", 'bot-message');
                 chatInputArea.style.display = 'none';
             }, 500);
         } else {
+            // Submit negative CSAT (allow user to optionally comment afterwards)
+            submitCSAT(2, null);
             setTimeout(() => {
                 appendMessage("I'm sorry about that. Would you like to connect to a human agent?", 'bot-message');
                 appendOptions(["Connect to Agent"], handleAgentConnect);
@@ -140,38 +466,148 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    // Submit CSAT to backend
+    function submitCSAT(rating, comment) {
+        if (!rating) return;
+
+        const payload = {
+            rating: rating,
+            comment: comment || null,
+            conversationId: conversationId,
+            appUserId: appUserId
+        };
+
+        fetch('/api/csat/submit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(res => res.json())
+        .then(data => {
+            console.log('CSAT submitted', data);
+        })
+        .catch(err => console.error('Error submitting CSAT', err));
+    }
+
+    // Helper: Escalate to Agent
+    function escalateToAgent(reason) {
+        if (!conversationId) {
+            console.error("Cannot escalate: Chat not initialized");
+            return;
+        }
+        
+        console.log("Escalating to agent with reason:", reason);
+
+        fetch('/api/chat/escalate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                conversationId: conversationId,
+                appUserId: appUserId, // Send appUserId so backend can send a message on user's behalf
+                reason: reason || lastContext
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log("Escalation successful:", data);
+        })
+        .catch(error => console.error('Error escalating chat:', error));
+    }
+
     // Handle Agent Connect
     function handleAgentConnect(option) {
         appendMessage(option, 'user-message');
+        
+        // Escalate to Sunshine/Zendesk with context
+        escalateToAgent(lastContext);
+        
+        isAgentConnected = true; 
+        lastAgentRequestTime = Date.now(); 
+        agentJoinAnnounced = false;
+
+        // Persist State
+        localStorage.setItem('chat_isAgentConnected', 'true');
+        localStorage.setItem('chat_lastAgentRequestTime', lastAgentRequestTime.toString());
+        localStorage.setItem('chat_agentJoinAnnounced', 'false');
+
         setTimeout(() => {
-            appendMessage("Connecting you to a human agent... Please wait while we transfer your chat.", 'bot-message');
+            // Show loading indicator instead of text
+            showLoadingIndicator();
+            
+            // Show input field for live chat
+            chatInputArea.style.display = 'flex';
+            chatInput.focus();
         }, 500);
     }
 
-    // Send Message (For "OTHERS" flow)
+    // Helper: Show Loading Indicator
+    function showLoadingIndicator() {
+        if (document.getElementById('agent-loading-indicator')) return;
+
+        const loaderDiv = document.createElement('div');
+        loaderDiv.id = 'agent-loading-indicator';
+        // Use system-message to avoid bubble styling
+        loaderDiv.classList.add('message', 'system-message');
+        
+        loaderDiv.innerHTML = `
+            Please hang on
+            <div class="typing-indicator-inline">
+                <div class="typing-dot-small"></div>
+                <div class="typing-dot-small"></div>
+                <div class="typing-dot-small"></div>
+            </div>
+        `;
+        messagesContainer.appendChild(loaderDiv);
+        scrollToBottom();
+    }
+
+    // Helper: Remove Loading Indicator
+    function removeLoadingIndicator() {
+        const loader = document.getElementById('agent-loading-indicator');
+        if (loader) {
+            loader.remove();
+        }
+    }
+
+    // Send Message (For "OTHERS" flow and Live Agent)
     function sendMessage() {
         const messageText = chatInput.value.trim();
         if (messageText === "") return;
 
         appendMessage(messageText, 'user-message');
-        chatInput.value = '';
-        chatInputArea.style.display = 'none';
+        
+        // Send user text to Sunshine
+        sendToSunshine(messageText);
 
-        setTimeout(() => {
-            const botResponses = [
-                "I understand. Based on your description, it sounds like a configuration issue. Please try resetting your preferences.",
-                "That sounds unusual. Could you try reinstalling the application to see if that resolves the glitch?",
-                "I see. This might be related to a recent server update. Please try again in 10 minutes."
-            ];
-            const randomResponse = botResponses[Math.floor(Math.random() * botResponses.length)];
-            appendMessage(randomResponse, 'bot-message');
-            
-            askForFeedback();
-        }, 1500);
+        chatInput.value = '';
+        
+        // If connected to agent, keep input open. Otherwise (ticket mode), close it.
+        if (!isAgentConnected) {
+            chatInputArea.style.display = 'none';
+
+            setTimeout(() => {
+                // Since we are escalating to Sunshine/Zendesk, we can show a confirmation
+                appendMessage("Your issue has been forwarded to our support team. An agent will review it shortly.", 'bot-message');
+                
+                // Optional: Still ask for feedback or just end here
+                // askForFeedback(); 
+            }, 1500);
+        }
     }
 
     // Append Message to UI
-    function appendMessage(text, className) {
+    function appendMessage(text, className, senderName = null) {
+        // If senderName is provided (for agents), add a label
+        if (senderName && className === 'bot-message') {
+            const nameDiv = document.createElement('div');
+            nameDiv.textContent = senderName;
+            nameDiv.style.fontSize = '0.75rem';
+            nameDiv.style.color = '#666';
+            nameDiv.style.marginBottom = '2px';
+            nameDiv.style.marginLeft = '5px';
+            messagesContainer.appendChild(nameDiv);
+        }
+
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', className);
         
@@ -308,7 +744,20 @@ document.addEventListener('DOMContentLoaded', function() {
         });
         
         deleteBtn.addEventListener('click', function() {
-            // No action as requested
+            let reasonText = selectedReason;
+            if (selectedReason === "Others") {
+                reasonText += ": " + otherInput.value.trim();
+            }
+            
+            // Send to Sunshine
+            sendToSunshine("Delete Account Request: " + reasonText);
+            
+            modal.remove();
+            appendMessage("Delete Account Request", 'user-message');
+            
+            setTimeout(() => {
+                appendMessage("Your request has been submitted. Our team will contact you shortly.", 'bot-message');
+            }, 500);
         });
     }
 

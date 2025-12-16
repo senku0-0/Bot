@@ -7,6 +7,8 @@ from .views import (
     escalate_to_agent,
     get_conversation_messages,
     csat_submit,
+    csat_debug,
+    upload_file,
 )
 
 urlpatterns = [
@@ -16,5 +18,8 @@ urlpatterns = [
     path('api/chat/send', send_message_to_sunshine, name='send_message_to_sunshine'),
     path('api/chat/escalate', escalate_to_agent, name='escalate_to_agent'),
     path('api/chat/messages', get_conversation_messages, name='get_conversation_messages'),
-    path('api/csat/submit', csat_submit, name='csat_submit'),
+    path('api/csat/submit', csat_submit, name
+='csat_submit'),
+    path('api/csat/debug', csat_debug, name='csat_debug'),
+    path('api/chat/upload', upload_file, name='upload_file'),
 ]
