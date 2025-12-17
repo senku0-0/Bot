@@ -734,6 +734,231 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    // Document Upload Functionality
+    const fileAttachBtn = document.querySelector('#file-attach-btn');
+    const fileInput = document.querySelector('#file-input');
+
+    // File attachment button click handler
+    fileAttachBtn.addEventListener('click', function() {
+        fileInput.click();
+    });
+
+    // File selection handler
+    fileInput.addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (file) {
+            showDocumentPreviewModal(file);
+        }
+    });
+
+    // Show document preview modal
+    function showDocumentPreviewModal(file) {
+        // Create modal elements
+        const modal = document.createElement('div');
+        modal.classList.add('document-preview-modal');
+
+        const modalContent = document.createElement('div');
+        modalContent.classList.add('document-preview-content');
+
+        // Header
+        const header = document.createElement('div');
+        header.classList.add('document-preview-header');
+
+        const filename = document.createElement('div');
+        filename.classList.add('filename');
+        filename.textContent = file.name;
+
+        const closeBtn = document.createElement('button');
+        closeBtn.classList.add('close-btn');
+        closeBtn.innerHTML = '×';
+        closeBtn.addEventListener('click', function() {
+            modal.remove();
+        });
+
+        header.appendChild(filename);
+        header.appendChild(closeBtn);
+
+        // Body
+        const body = document.createElement('div');
+        body.classList.add('document-preview-body');
+
+        const info = document.createElement('div');
+        info.classList.add('document-preview-info');
+
+        if (file.type.startsWith('image/')) {
+            // Display the image
+            const img = document.createElement('img');
+            img.src = URL.createObjectURL(file);
+            img.style.maxWidth = '100%';
+            img.style.maxHeight = '100%';
+            img.style.objectFit = 'contain';
+            img.style.borderRadius = '12px';
+            info.appendChild(img);
+        } else {
+            // Display file icon and details for non-images
+            const fileIcon = document.createElement('div');
+            fileIcon.classList.add('document-file-icon');
+            fileIcon.innerHTML = '📄'; // Generic file icon
+
+            const details = document.createElement('div');
+            details.classList.add('document-details');
+
+            const name = document.createElement('div');
+            name.classList.add('name');
+            name.textContent = file.name;
+
+            const size = document.createElement('div');
+            size.classList.add('size');
+            size.textContent = formatFileSize(file.size) + ' · ' + getFileType(file.type);
+
+            details.appendChild(name);
+            details.appendChild(size);
+
+            info.appendChild(fileIcon);
+            info.appendChild(details);
+        }
+
+        body.appendChild(info);
+
+        // Footer (Chat Input Style)
+        const footer = document.createElement('div');
+        footer.classList.add('document-preview-footer');
+
+        const messageInputBar = document.createElement('div');
+        messageInputBar.classList.add('chat-input');
+        messageInputBar.style.display = 'flex';
+        messageInputBar.style.padding = '0';
+        messageInputBar.style.borderTop = 'none';
+        messageInputBar.style.backgroundColor = 'transparent';
+
+        const inputField = document.createElement('input');
+        inputField.type = 'text';
+        inputField.placeholder = 'Type a message';
+        inputField.style.width = '230px';
+        inputField.style.padding = '12px 15px';
+        inputField.style.border = '1px solid #e0e0e0';
+        inputField.style.borderRadius = '25px';
+        inputField.style.outline = 'none';
+        inputField.style.fontSize = '0.95em';
+        inputField.style.backgroundColor = '#f8f9fa';
+
+        const sendBtn = document.createElement('button');
+        sendBtn.innerHTML = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>';
+        sendBtn.style.backgroundColor = '#007bff';
+        sendBtn.style.color = 'white';
+        sendBtn.style.border = 'none';
+        sendBtn.style.width = '45px';
+        sendBtn.style.height = '45px';
+        sendBtn.style.borderRadius = '50%';
+        sendBtn.style.cursor = 'pointer';
+        sendBtn.style.display = 'flex';
+        sendBtn.style.justifyContent = 'center';
+        sendBtn.style.alignItems = 'center';
+        sendBtn.style.transition = 'background-color 0.2s, transform 0.2s';
+        sendBtn.style.boxShadow = '0 2px 5px rgba(0, 123, 255, 0.3)';
+
+        sendBtn.addEventListener('click', function() {
+            sendDocument(file, inputField.value.trim());
+            modal.remove();
+        });
+
+        messageInputBar.appendChild(inputField);
+        messageInputBar.appendChild(sendBtn);
+
+        footer.appendChild(messageInputBar);
+
+        // Assemble modal
+        modalContent.appendChild(header);
+        modalContent.appendChild(body);
+        modalContent.appendChild(footer);
+        modal.appendChild(modalContent);
+
+        // Add to chat box to match its size
+        const chatBox = document.querySelector('.chat-box');
+        chatBox.appendChild(modal);
+
+        // Focus input field
+        setTimeout(() => inputField.focus(), 100);
+    }
+
+    // Format file size
+    function formatFileSize(bytes) {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1024;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    // Get file type description
+    function getFileType(mimeType) {
+        if (!mimeType) return 'File';
+        const typeMap = {
+            'application/pdf': 'PDF',
+            'application/msword': 'DOC',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'DOCX',
+            'application/vnd.ms-excel': 'XLS',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'XLSX',
+            'application/vnd.ms-powerpoint': 'PPT',
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'PPTX',
+            'text/plain': 'TXT',
+            'image/jpeg': 'JPEG',
+            'image/png': 'PNG',
+            'image/gif': 'GIF',
+            'image/webp': 'WEBP',
+            'video/mp4': 'MP4',
+            'video/avi': 'AVI',
+            'video/quicktime': 'MOV',
+            'audio/mpeg': 'MP3',
+            'audio/wav': 'WAV',
+            'application/zip': 'ZIP',
+            'application/x-rar-compressed': 'RAR'
+        };
+        return typeMap[mimeType] || mimeType.split('/')[1]?.toUpperCase() || 'File';
+    }
+
+    // Send document to backend
+    function sendDocument(file, message) {
+        if (!appUserId || !conversationId) {
+            console.error("Cannot send document: Chat not initialized");
+            appendMessage("Error: Chat not initialized. Please refresh and try again.", 'system-message');
+            return;
+        }
+
+        // Create FormData for multipart upload
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('appUserId', appUserId);
+        formData.append('conversationId', conversationId);
+        if (message) {
+            formData.append('message', message);
+        }
+
+        fetch('/api/send-to-zendesk', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                appendMessage(`Document "${file.name}" sent successfully!`, 'user-message');
+                if (message) {
+                    appendMessage(message, 'user-message');
+                }
+            } else {
+                appendMessage("Failed to send document. Please try again.", 'system-message');
+            }
+        })
+        .catch(error => {
+            console.error('Error sending document:', error);
+            appendMessage("Error sending document. Please check your connection and try again.", 'system-message');
+        })
+        .finally(() => {
+            // Reset file input
+            fileInput.value = '';
+        });
+    }
+
     // Event Listeners for Sending
     sendBtn.addEventListener('click', sendMessage);
     chatInput.addEventListener('keypress', function(e) {

@@ -672,6 +672,104 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
         except Exception as e:
             logger.error(f"Failed to create ticket: {e}")
 
+@csrf_exempt
+def send_to_zendesk(request: HttpRequest) -> JsonResponse:
+    """
+    Handle file upload and send to Zendesk agent via Sunshine Conversations API.
+
+    Args:
+        request (HttpRequest): The incoming HTTP request with multipart/form-data.
+
+    Returns:
+        JsonResponse: JSON response with status or error.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        # Extract form data
+        file = request.FILES.get('file')
+        message = request.POST.get('message', '')
+        conversation_id = request.POST.get('conversation_id')
+        app_user_id = request.POST.get('app_user_id')
+
+        if not all([file, conversation_id, app_user_id]):
+            return JsonResponse({"error": "Missing required fields: file, conversation_id, app_user_id"}, status=400)
+
+        # Step 1: Upload file to Zendesk Uploads API
+        upload_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/uploads.json?filename={file.name}"
+        upload_headers = {"Content-Type": file.content_type}
+        upload_auth = HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN)
+
+        logger.info(f"Uploading file {file.name} to Zendesk")
+        upload_response = requests.post(upload_url, data=file.read(), headers=upload_headers, auth=upload_auth)
+
+        if upload_response.status_code not in [200, 201]:
+            logger.error(f"Zendesk upload failed: {upload_response.status_code} - {upload_response.text}")
+            return JsonResponse({"error": "Failed to upload file", "status": "fail"}, status=500)
+
+        upload_data = upload_response.json()
+        upload_token = upload_data.get('upload', {}).get('token')
+        if not upload_token:
+            logger.error("No upload token received from Zendesk")
+            return JsonResponse({"error": "Upload token not received", "status": "fail"}, status=500)
+
+        # Step 2: Send file message via Sunshine Conversations API
+        sunshine_headers = get_sunshine_headers()
+        if not sunshine_headers:
+            return JsonResponse({"error": "Server configuration error", "status": "fail"}, status=500)
+
+        msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+
+        # Send file message
+        file_payload = {
+            "author": {"type": "user", "userId": app_user_id},
+            "content": {
+                "type": "file",
+                "mediaUrl": upload_token,  # Zendesk uses the token as mediaUrl
+                "fileName": file.name
+            }
+        }
+
+        logger.info(f"Sending file message to Sunshine: {file.name}")
+        file_response = requests.post(msg_url, json=file_payload, headers=sunshine_headers)
+
+        # Retry once on 5xx errors
+        if file_response.status_code >= 500:
+            logger.warning(f"File message failed with 5xx, retrying: {file_response.status_code}")
+            file_response = requests.post(msg_url, json=file_payload, headers=sunshine_headers)
+
+        if file_response.status_code not in [200, 201]:
+            logger.error(f"Sunshine file message failed: {file_response.status_code} - {file_response.text}")
+            return JsonResponse({"error": "Failed to send file message", "status": "fail"}, status=500)
+
+        # Step 3: Send text message if provided
+        if message.strip():
+            text_payload = {
+                "author": {"type": "user", "userId": app_user_id},
+                "content": {"type": "text", "text": message.strip()}
+            }
+
+            logger.info("Sending text message to Sunshine")
+            text_response = requests.post(msg_url, json=text_payload, headers=sunshine_headers)
+
+            # Retry once on 5xx errors
+            if text_response.status_code >= 500:
+                logger.warning(f"Text message failed with 5xx, retrying: {text_response.status_code}")
+                text_response = requests.post(msg_url, json=text_payload, headers=sunshine_headers)
+
+            if text_response.status_code not in [200, 201]:
+                logger.error(f"Sunshine text message failed: {text_response.status_code} - {text_response.text}")
+                return JsonResponse({"error": "Failed to send text message", "status": "fail"}, status=500)
+
+        logger.info("File and message sent successfully")
+        return JsonResponse({"status": "ok"})
+
+    except Exception as e:
+        logger.exception(f"Exception in send_to_zendesk: {str(e)}")
+        return JsonResponse({"error": "Internal Server Error", "status": "fail", "details": str(e)}, status=500)
+
+
 def handle_agent_end_session(event_data: Dict[str, Any]) -> None:
     """
     Send a system message when agent ends the chat.
