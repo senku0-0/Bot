@@ -940,7 +940,7 @@ document.addEventListener('DOMContentLoaded', function() {
         })
         .then(response => response.json())
         .then(data => {
-            if (data.success) {
+            if (data.status === "ok") {
                 appendMessage(`Document "${file.name}" sent successfully!`, 'user-message');
                 if (message) {
                     appendMessage(message, 'user-message');

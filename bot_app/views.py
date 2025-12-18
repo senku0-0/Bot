@@ -33,7 +33,7 @@ ZENDESK_API_TOKEN = os.getenv("ZENDESK_API_TOKEN")
 SUNSHINE_APP_ID = os.getenv("SUNSHINE_APP_ID", "").strip()
 SUNSHINE_API_KEY_ID = os.getenv("SUNSHINE_API_KEY_ID", "").strip()
 SUNSHINE_API_KEY_SECRET = os.getenv("SUNSHINE_API_KEY_SECRET", "").strip()
-SUNSHINE_API_BASE_URL = os.getenv("SUNSHINE_API_BASE_URL", "https://api.smooch.io").strip()
+SUNSHINE_API_BASE_URL = os.getenv("SUNSHINE_API_BASE_URL", "https://api.smooch.io").strip().rstrip('/')
 
 # Index route (frontend entry point)
 @csrf_exempt
@@ -111,35 +111,70 @@ def create_zendesk_ticket(subject: str, description: str) -> Dict[str, Any]:
 
 # --- Sunshine API Helpers ---
 
-def get_sunshine_headers() -> Optional[Dict[str, str]]:
+def get_sunshine_jwt() -> Optional[str]:
+    """
+    Obtains a JWT access token from Sunshine Conversations OAuth endpoint.
+
+    Returns:
+        Optional[str]: The access token (JWT), or None if failed.
+    """
+    if not SUNSHINE_API_KEY_ID or not SUNSHINE_API_KEY_SECRET:
+        logger.error("SUNSHINE_API_KEY_ID or SUNSHINE_API_KEY_SECRET not set")
+        return None
+
+    url = f"{SUNSHINE_API_BASE_URL}/oauth/token"
+    data = {
+        'grant_type': 'client_credentials',
+        'client_id': SUNSHINE_API_KEY_ID,
+        'client_secret': SUNSHINE_API_KEY_SECRET
+    }
+    try:
+        response = requests.post(url, data=data)
+        if response.status_code == 200:
+            token_data = response.json()
+            return token_data.get('access_token')
+        else:
+            logger.error(f"Failed to get JWT: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        logger.exception(f"Exception getting JWT: {e}")
+        return None
+
+def get_sunshine_headers(include_content_type: bool = True, use_jwt: bool = False) -> Optional[Dict[str, str]]:
     """
     Returns the headers required for Sunshine Conversations API calls.
-    Uses Basic Auth with base64 encoding.
+    Uses Bearer token authentication with API key or JWT.
+
+    Args:
+        include_content_type (bool): Whether to include Content-Type header. Defaults to True.
+                                     Set to False for file uploads where requests should handle multipart/form-data.
+        use_jwt (bool): Whether to use JWT instead of API key. Defaults to False.
 
     Returns:
         Optional[Dict[str, str]]: A dictionary of headers including Authorization, or None if credentials are missing.
     """
-    # Try global variables first, then fallback to other common names
-    key_id = SUNSHINE_API_KEY_ID or os.getenv("SUNSHINE_KEY_ID")
-    secret = SUNSHINE_API_KEY_SECRET or os.getenv("SUNSHINE_SECRET")
-    
-    if not key_id or not secret:
-        # DEBUGGING: Log available keys to help user find the mismatch
-        available_keys = ", ".join([k for k in os.environ.keys() if "SUNSHINE" in k or "ZENDESK" in k])
-        logger.error(f"Missing Auth. Available env vars with SUNSHINE/ZENDESK: {available_keys}")
-        logger.error("SUNSHINE_API_KEY_ID (or SUNSHINE_KEY_ID) or SECRET is missing in .env")
-        return None
+    if use_jwt:
+        token = get_sunshine_jwt()
+        if not token:
+            return None
+    else:
+        token = SUNSHINE_API_KEY_ID or os.getenv("SUNSHINE_KEY_ID")
+        if not token:
+            # DEBUGGING: Log available keys to help user find the mismatch
+            available_keys = ", ".join([k for k in os.environ.keys() if "SUNSHINE" in k or "ZENDESK" in k])
+            logger.error(f"Missing Auth. Available env vars with SUNSHINE/ZENDESK: {available_keys}")
+            logger.error("SUNSHINE_API_KEY_ID (or SUNSHINE_KEY_ID) is missing in .env")
+            return None
 
-    # Manual Basic Auth Header Construction
-    auth_str = f"{key_id}:{secret}"
-    auth_bytes = auth_str.encode('utf-8')
-    auth_base64 = base64.b64encode(auth_bytes).decode('utf-8')
-
-    return {
-        "Authorization": f"Basic {auth_base64}",
-        "Content-Type": "application/json",
+    headers = {
+        "Authorization": f"Bearer {token}",
         "Accept": "application/json"
     }
+
+    if include_content_type:
+        headers["Content-Type"] = "application/json"
+
+    return headers
 
 @csrf_exempt
 def init_conversation(request: HttpRequest) -> JsonResponse:
@@ -160,13 +195,11 @@ def init_conversation(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "Server configuration error: SUNSHINE_APP_ID not set"}, status=500)
 
     try:
-        # Define URL and Headers first
+        # Define URL and Auth
         url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/users"
-        logger.info(f"Calling Sunshine API: {url}") 
-        
-        headers = get_sunshine_headers()
-        if not headers:
-             return JsonResponse({"error": "Server configuration error"}, status=500)
+        logger.info(f"Calling Sunshine API: {url}")
+
+        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
 
         # Try to get userId from request if available (optional)
         user_id = None
@@ -191,7 +224,7 @@ def init_conversation(request: HttpRequest) -> JsonResponse:
         }
 
         # Create/Get user
-        response = requests.post(url, json=user_payload, headers=headers)
+        response = requests.post(url, json=user_payload, auth=auth)
         
         if response.status_code not in [200, 201, 409]: # 409 = Conflict (User already exists), which is fine if we sent a userId
             logger.error(f"Sunshine API Error (Create User): {response.status_code} - {response.text}")
@@ -209,7 +242,7 @@ def init_conversation(request: HttpRequest) -> JsonResponse:
              # Note: v2 API usually allows fetching by userId (externalId)
              
              logger.info(f"User exists, fetching details for: {user_id}")
-             get_response = requests.get(get_user_url, headers=headers)
+             get_response = requests.get(get_user_url, auth=auth)
              if get_response.status_code == 200:
                  app_user_id = get_response.json().get("user", {}).get("id")
         
@@ -238,7 +271,7 @@ def init_conversation(request: HttpRequest) -> JsonResponse:
                 params = {"filter[userId]": target_id}
                 
                 logger.info(f"Checking conversations for: {target_id} using filter")
-                l_resp = requests.get(l_url, headers=headers, params=params)
+                l_resp = requests.get(l_url, auth=auth, params=params)
                 
                 if l_resp.status_code == 200:
                     convs = l_resp.json().get("conversations", [])
@@ -266,7 +299,7 @@ def init_conversation(request: HttpRequest) -> JsonResponse:
                 "type": "personal",
                 "participants": [{"userId": app_user_id}]
             }
-            conv_response = requests.post(conv_url, json=conv_payload, headers=headers)
+            conv_response = requests.post(conv_url, json=conv_payload, auth=auth)
             
             if conv_response.status_code in [200, 201]:
                 conv_data = conv_response.json()
@@ -305,18 +338,16 @@ def get_conversation_messages(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "Missing conversationId"}, status=400)
 
     try:
-        headers = get_sunshine_headers()
-        if not headers:
-             return JsonResponse({"error": "Server configuration error"}, status=500)
+        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
 
         url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
         logger.info(f"Fetching messages: {url}")
-        
-        response = requests.get(url, headers=headers)
-        
+
+        response = requests.get(url, auth=auth)
+
         # Also fetch conversation details to check active switchboard integration (Agent status)
         conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}"
-        conv_response = requests.get(conv_url, headers=headers)
+        conv_response = requests.get(conv_url, auth=auth)
         conversation_data = {}
         if conv_response.status_code == 200:
             conversation_data = conv_response.json().get("conversation", {})
@@ -369,12 +400,10 @@ def send_message_to_sunshine(request: HttpRequest) -> JsonResponse:
             }
         }
         
-        headers = get_sunshine_headers()
-        if not headers:
-             return JsonResponse({"error": "Server configuration error"}, status=500)
+        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
 
         logger.info(f"Sending message to Sunshine: {url}")
-        response = requests.post(url, json=payload, headers=headers)
+        response = requests.post(url, json=payload, auth=auth)
         
         if response.status_code == 201:
             logger.info("Message sent successfully")
@@ -415,24 +444,22 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
 
         # Use global SUNSHINE_APP_ID
         app_id = SUNSHINE_APP_ID
-        headers = get_sunshine_headers()
-        if not headers:
-             return JsonResponse({"error": "Server configuration error"}, status=500)
+        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
 
         # 1. Pass Control to Zendesk ("next")
         pass_control_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/passControl"
-        
+
         pass_control_payload = {
-            "switchboardIntegration": "next", 
+            "switchboardIntegration": "next",
             "metadata": {
                 "dataCapture.systemField.tags": "escalated_from_bot",
-                "dataCapture.systemField.requester.name": "Guest User", 
-                "dataCapture.ticketField.description": f"Escalation Reason: {reason}" 
+                "dataCapture.systemField.requester.name": "Guest User",
+                "dataCapture.ticketField.description": f"Escalation Reason: {reason}"
             }
         }
 
         logger.info(f"Escalating conversation {conversation_id} to next integration")
-        pc_response = requests.post(pass_control_url, json=pass_control_payload, headers=headers)
+        pc_response = requests.post(pass_control_url, json=pass_control_payload, auth=auth)
 
         if pc_response.status_code != 200:
             logger.error(f"Failed to escalate conversation: {pc_response.status_code} - {pc_response.text}")
@@ -445,7 +472,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             msg_payload = {
                 "author": {
                     "type": "user",
-                    "userId": app_user_id 
+                    "userId": app_user_id
                 },
                 "content": {
                     "type": "text",
@@ -453,7 +480,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
                 }
             }
             logger.info(f"Sending trigger message for ticket creation: {msg_url}")
-            requests.post(msg_url, json=msg_payload, headers=headers)
+            requests.post(msg_url, json=msg_payload, auth=auth)
 
         return JsonResponse({"status": "escalated"})
 
@@ -587,14 +614,13 @@ def handle_conversation_read(event_data: Dict[str, Any]) -> None:
             
             # Send system message
             try:
-                headers = get_sunshine_headers()
-                if headers:
-                    url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
-                    payload = {
-                        "author": {"type": "business", "displayName": "System"},
-                        "content": {"type": "text", "text": f"{agent_name} connected"}
-                    }
-                    requests.post(url, json=payload, headers=headers)
+                auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+                url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+                payload = {
+                    "author": {"type": "business", "displayName": "System"},
+                    "content": {"type": "text", "text": f"{agent_name} connected"}
+                }
+                requests.post(url, json=payload, auth=auth)
             except Exception as e:
                 logger.error(f"Failed to send agent read notification: {e}")
 
@@ -623,14 +649,13 @@ def handle_participant_join(event_data: Dict[str, Any]) -> None:
             
             # Send a system message to notify the user
             try:
-                headers = get_sunshine_headers()
-                if headers:
-                    url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
-                    payload = {
-                        "author": {"type": "business", "displayName": "System"},
-                        "content": {"type": "text", "text": f"{agent_name} connected"}
-                    }
-                    requests.post(url, json=payload, headers=headers)
+                auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+                url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+                payload = {
+                    "author": {"type": "business", "displayName": "System"},
+                    "content": {"type": "text", "text": f"{agent_name} connected"}
+                }
+                requests.post(url, json=payload, auth=auth)
             except Exception as e:
                 logger.error(f"Failed to send agent join notification: {e}")
 
@@ -684,41 +709,38 @@ def send_to_zendesk(request: HttpRequest) -> JsonResponse:
         JsonResponse: JSON response with status or error.
     """
     if request.method != "POST":
-        return JsonResponse({"error": "Method not allowed"}, status=405)
+        return JsonResponse({"error": "Method not allowed", "status": "fail"}, status=405)
 
     try:
         # Extract form data
         file = request.FILES.get('file')
         message = request.POST.get('message', '')
-        conversation_id = request.POST.get('conversation_id')
-        app_user_id = request.POST.get('app_user_id')
+        conversation_id = request.POST.get('conversationId')
+        app_user_id = request.POST.get('appUserId')
 
         if not all([file, conversation_id, app_user_id]):
-            return JsonResponse({"error": "Missing required fields: file, conversation_id, app_user_id"}, status=400)
+            return JsonResponse({"error": "Missing required fields: file, conversationId, appUserId", "status": "fail"}, status=400)
 
-        # Step 1: Upload file to Zendesk Uploads API
-        upload_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/uploads.json?filename={file.name}"
-        upload_headers = {"Content-Type": file.content_type}
-        upload_auth = HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN)
+        # Step 1: Upload file to Sunshine Conversations Attachments API
+        upload_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/attachments"
+        upload_files = {'source': file}
+        upload_params = {'access': 'public'}
 
-        logger.info(f"Uploading file {file.name} to Zendesk")
-        upload_response = requests.post(upload_url, data=file.read(), headers=upload_headers, auth=upload_auth)
+        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+        logger.info(f"Uploading file {file.name} to Sunshine Attachments API")
+        upload_response = requests.post(upload_url, files=upload_files, params=upload_params, auth=auth)
 
         if upload_response.status_code not in [200, 201]:
-            logger.error(f"Zendesk upload failed: {upload_response.status_code} - {upload_response.text}")
+            logger.error(f"Sunshine upload failed: {upload_response.status_code} - {upload_response.text}")
             return JsonResponse({"error": "Failed to upload file", "status": "fail"}, status=500)
 
         upload_data = upload_response.json()
-        upload_token = upload_data.get('upload', {}).get('token')
-        if not upload_token:
-            logger.error("No upload token received from Zendesk")
-            return JsonResponse({"error": "Upload token not received", "status": "fail"}, status=500)
+        media_url = upload_data.get('attachment', {}).get('mediaUrl')
+        if not media_url:
+            logger.error("No mediaUrl received from Sunshine upload")
+            return JsonResponse({"error": "Upload mediaUrl not received", "status": "fail"}, status=500)
 
         # Step 2: Send file message via Sunshine Conversations API
-        sunshine_headers = get_sunshine_headers()
-        if not sunshine_headers:
-            return JsonResponse({"error": "Server configuration error", "status": "fail"}, status=500)
-
         msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
 
         # Send file message
@@ -726,18 +748,18 @@ def send_to_zendesk(request: HttpRequest) -> JsonResponse:
             "author": {"type": "user", "userId": app_user_id},
             "content": {
                 "type": "file",
-                "mediaUrl": upload_token,  # Zendesk uses the token as mediaUrl
+                "mediaUrl": media_url,
                 "fileName": file.name
             }
         }
 
         logger.info(f"Sending file message to Sunshine: {file.name}")
-        file_response = requests.post(msg_url, json=file_payload, headers=sunshine_headers)
+        file_response = requests.post(msg_url, json=file_payload, auth=auth)
 
         # Retry once on 5xx errors
         if file_response.status_code >= 500:
             logger.warning(f"File message failed with 5xx, retrying: {file_response.status_code}")
-            file_response = requests.post(msg_url, json=file_payload, headers=sunshine_headers)
+            file_response = requests.post(msg_url, json=file_payload, auth=auth)
 
         if file_response.status_code not in [200, 201]:
             logger.error(f"Sunshine file message failed: {file_response.status_code} - {file_response.text}")
@@ -751,12 +773,12 @@ def send_to_zendesk(request: HttpRequest) -> JsonResponse:
             }
 
             logger.info("Sending text message to Sunshine")
-            text_response = requests.post(msg_url, json=text_payload, headers=sunshine_headers)
+            text_response = requests.post(msg_url, json=text_payload, auth=auth)
 
             # Retry once on 5xx errors
             if text_response.status_code >= 500:
                 logger.warning(f"Text message failed with 5xx, retrying: {text_response.status_code}")
-                text_response = requests.post(msg_url, json=text_payload, headers=sunshine_headers)
+                text_response = requests.post(msg_url, json=text_payload, auth=auth)
 
             if text_response.status_code not in [200, 201]:
                 logger.error(f"Sunshine text message failed: {text_response.status_code} - {text_response.text}")
@@ -783,13 +805,12 @@ def handle_agent_end_session(event_data: Dict[str, Any]) -> None:
 
     # Send a message to the user confirming the session has ended
     try:
-        headers = get_sunshine_headers()
-        if headers:
-            url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
-            payload = {
-                "author": {"type": "business", "displayName": "System"},
-                "content": {"type": "text", "text": "The agent has ended the session. Type a message to start a new ticket."}
-            }
-            requests.post(url, json=payload, headers=headers)
+        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+        payload = {
+            "author": {"type": "business", "displayName": "System"},
+            "content": {"type": "text", "text": "The agent has ended the session. Type a message to start a new ticket."}
+        }
+        requests.post(url, json=payload, auth=auth)
     except Exception as e:
         logger.error(f"Failed to send end-session message: {e}")
