@@ -749,7 +749,9 @@ def send_to_zendesk(request: HttpRequest) -> JsonResponse:
             "content": {
                 "type": "file",
                 "mediaUrl": media_url,
-                "fileName": file.name
+                "fileName": file.name,
+                "contentType": file.content_type,
+                "fileSize": file.size
             }
         }
 

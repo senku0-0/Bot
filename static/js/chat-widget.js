@@ -1,6 +1,6 @@
 // messaging session ended
 
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', function () {
     const chatWidget = document.querySelector('.chat-widget');
     const chatBox = document.querySelector('.chat-box');
     const toggleBtn = document.querySelector('.chat-toggle-btn');
@@ -17,9 +17,11 @@ document.addEventListener('DOMContentLoaded', function() {
     let conversationId = null;
     let lastContext = "General Inquiry"; // Track user context for escalation
     let displayedMessageIds = new Set(); // Track displayed messages to prevent duplicates/reloading
-    
+    let displayedImageFileNames = new Set(); // Track displayed image file names to prevent duplicates
+    let pendingImage = null; // Hold pending image file for caption
+
     // State Management with Persistence
-    let isAgentConnected = localStorage.getItem('chat_isAgentConnected') === 'true'; 
+    let isAgentConnected = localStorage.getItem('chat_isAgentConnected') === 'true';
     let lastAgentRequestTime = parseInt(localStorage.getItem('chat_lastAgentRequestTime') || '0');
     let agentJoinAnnounced = localStorage.getItem('chat_agentJoinAnnounced') === 'true';
     let hasConfirmedAgentActivity = localStorage.getItem('chat_hasConfirmedAgentActivity') === 'true';
@@ -36,7 +38,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const storedUserId = localStorage.getItem('chat_user_id');
         const payload = storedUserId ? { userId: storedUserId } : {};
 
-        fetch('/api/chat/init', { 
+        fetch('/api/chat/init', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -46,14 +48,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (data.appUserId && data.conversationId) {
                     appUserId = data.appUserId;
                     conversationId = data.conversationId;
-                    
+
                     // Save externalId (if returned) or appUserId to localStorage
                     if (data.externalId) {
                         localStorage.setItem('chat_user_id', data.externalId);
                     }
 
                     console.log("Chat initialized:", appUserId, conversationId);
-                    
+
                     // Restore UI state if agent was connected
                     if (isAgentConnected) {
                         chatInputArea.style.display = 'flex';
@@ -76,17 +78,17 @@ document.addEventListener('DOMContentLoaded', function() {
         isAgentConnected = false;
         agentJoinAnnounced = false;
         hasConfirmedAgentActivity = false;
-        
+
         // Clear Persistence
         localStorage.removeItem('chat_isAgentConnected');
         localStorage.removeItem('chat_agentJoinAnnounced');
         localStorage.removeItem('chat_hasConfirmedAgentActivity');
         // We do NOT clear lastAgentRequestTime immediately to prevent race conditions with old messages
-        
+
         // UI Updates
         chatInputArea.style.display = 'none';
         chatHeaderTitle.textContent = "Yatri Bandhu";
-        
+
         // Show "What can I help you with?" message before options
         appendMessage("What can I help you with?", 'bot-message');
         showMainOptions();
@@ -99,204 +101,195 @@ document.addEventListener('DOMContentLoaded', function() {
         fetch(`/api/chat/messages?conversationId=${conversationId}`)
             .then(response => response.json())
             .then(data => {
-                // Check Conversation Status (Active Switchboard Integration)
+
+                /* ===============================
+                   CONVERSATION / AGENT STATE LOGIC
+                   (UNCHANGED)
+                =============================== */
                 if (data.conversation && data.conversation.id) {
                     const activeIntegration = data.conversation.activeSwitchboardIntegration;
-                    
-                    // Debugging: Log the integration status to help troubleshoot
-                    if (activeIntegration) {
-                        // console.log("Active Integration:", activeIntegration.name, activeIntegration.integrationType);
-                    }
 
-                    // Check if Agent is Active (Broader check)
                     const isAgentActive = activeIntegration && (
-                        activeIntegration.name === 'next' || 
-                        activeIntegration.name === 'zendesk' || 
+                        activeIntegration.name === 'next' ||
+                        activeIntegration.name === 'zendesk' ||
                         activeIntegration.integrationType === 'zendesk'
                     );
 
-                    // 1. Sync State: If Switchboard says Agent is Active, we must be connected
                     if (isAgentActive) {
                         if (!isAgentConnected) {
                             isAgentConnected = true;
                             localStorage.setItem('chat_isAgentConnected', 'true');
                             chatInputArea.style.display = 'flex';
                         }
-                        // Mark that we have confirmed the agent is active at least once
                         if (!hasConfirmedAgentActivity) {
                             hasConfirmedAgentActivity = true;
                             localStorage.setItem('chat_hasConfirmedAgentActivity', 'true');
                         }
                     }
-                    
-                    // 2. Status-Based Closing (Solved Ticket Detection)
-                    // Re-enabled as per user request.
-                    // SAFETY CHECK: Only close if activeIntegration is explicitly defined (not missing from response)
-                    // If activeIntegration is undefined, it might be a partial API response, so we ignore it.
-                    /*
-                    if (activeIntegration !== undefined && isAgentConnected && hasConfirmedAgentActivity && !isAgentActive) {
-                         console.log("Session ended detected via Switchboard status (Agent Solved/Left).");
-                         
-                         // FIX: Inform the user visually before closing
-                         appendMessage("Messaging session ended", 'system-message');
-                         
-                         endSession();
-                    }
-                    */
                 }
 
-                if (data.messages) {
-                    // Sort messages by date (oldest first)
-                    const sortedMessages = data.messages.sort((a, b) => new Date(a.received) - new Date(b.received));
-                    let hasNewMessages = false;
+                /* ===============================
+                   MESSAGE RENDERING
+                =============================== */
+                if (!data.messages) return;
 
-                    sortedMessages.forEach(msg => {
-                        // Check if message is already displayed
-                        if (!displayedMessageIds.has(msg.id)) {
-                            
-                            // Handle Text Messages
-                            if (msg.content && msg.content.type === 'text') {
-                                const isUser = msg.author.type === 'user'; 
-                                const senderName = isUser ? null : (msg.author.displayName || 'Agent');
-                                const text = msg.content.text;
-                                const lowerText = text.toLowerCase();
+                const sortedMessages = data.messages.sort(
+                    (a, b) => new Date(a.received) - new Date(b.received)
+                );
 
-                                // Remove loading indicator if agent speaks
-                                if (!isUser && senderName !== 'System') {
-                                    removeLoadingIndicator();
+                let hasNewMessages = false;
+
+                for (let i = 0; i < sortedMessages.length; i++) {
+                    const msg = sortedMessages[i];
+                    if (displayedMessageIds.has(msg.id)) continue;
+
+                    /* ===============================
+                       FILE MESSAGE (IMAGE GROUPING)
+                    =============================== */
+                    if (msg.content?.type === 'file') {
+                        const isUser = msg.author.type === 'user';
+
+                        const fileUrl =
+                            msg.content.mediaUrl ||
+                            msg.content.file?.url ||
+                            msg.content.url;
+
+                        const contentType =
+                            msg.content.contentType ||
+                            msg.content.file?.contentType ||
+                            '';
+
+                        const isImage = contentType.startsWith('image/') ||
+                            (fileUrl && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileUrl));
+
+                        if (isImage && fileUrl) {
+                            // Check if this image has already been displayed immediately
+                            const fileName = msg.content.fileName || msg.content.file?.fileName || '';
+                            if (displayedImageFileNames.has(fileName)) {
+                                displayedMessageIds.add(msg.id);
+                                continue; // Skip rendering duplicate
+                            }
+
+                            let caption = '';
+
+                            const nextMsg = sortedMessages[i + 1];
+                            if (
+                                nextMsg &&
+                                nextMsg.content?.type === 'text' &&
+                                nextMsg.author.type === msg.author.type
+                            ) {
+                                const timeDiff =
+                                    new Date(nextMsg.received) -
+                                    new Date(msg.received);
+
+                                if (timeDiff < 2000) {
+                                    caption = nextMsg.content.text;
+                                    displayedMessageIds.add(nextMsg.id);
+                                    i++; // skip caption message
                                 }
+                            }
 
-                                // HIDE AUTO-GENERATED ESCALATION MESSAGE
-                                // We send this to Zendesk to create the ticket, but we don't want to show it to the user again.
-                                if (isUser && text.startsWith("Connecting to agent. Reason:")) {
-                                    displayedMessageIds.add(msg.id);
-                                    return; 
-                                }
+                            appendImageMessage(
+                                fileUrl,
+                                caption,
+                                isUser ? 'user-message' : 'bot-message'
+                            );
 
-                                // DETECT AGENT ACTIVITY VIA MESSAGES (Fallback)
-                                // If we see a message from a human agent, confirm activity immediately.
-                                if (!isUser && senderName !== 'System' && !hasConfirmedAgentActivity) {
-                                     console.log("Agent activity detected via message. Arming auto-close.");
-                                     hasConfirmedAgentActivity = true;
-                                     localStorage.setItem('chat_hasConfirmedAgentActivity', 'true');
-                                }
+                            displayedMessageIds.add(msg.id);
+                            hasNewMessages = true;
+                            continue;
+                        } else if (!isImage && fileUrl) {
+                            // Only render if file details are available
+                            if (msg.content.fileName && msg.content.fileSize) {
+                                appendFileMessage(
+                                    msg.content.fileName,
+                                    formatFileSize(msg.content.fileSize),
+                                    isUser ? 'user-message' : 'bot-message'
+                                );
 
-                                // Check for System End Session Message (Text based)
-                                // We just display it here. The logic to CLOSE the session is handled AFTER the loop
-                                // by checking if the *last* message is an end-session message.
-                                const isEndSessionMessage = 
-                                    (senderName === 'System') || 
-                                    (lowerText.includes("messaging session ended")) ||
-                                    (lowerText.includes("the agent has ended the session"));
-
-                                // Check for Agent Join Message
-                                // We use 'agentJoinAnnounced' to prevent duplicate "Connected" messages 
-                                // if the backend sends them multiple times (e.g. on every read receipt).
-                                if (lowerText.includes(" connected") && senderName === 'System') {
-                                    removeLoadingIndicator();
-                                    
-                                    if (!agentJoinAnnounced) {
-                                        // Extract Agent Name and Update Header
-                                        const namePart = text.split(" connected")[0];
-                                        if (namePart && namePart !== "An agent") {
-                                            chatHeaderTitle.textContent = namePart;
-                                            chatHeaderTitle.style.fontSize = '1.1rem';
-                                        }
-                                        
-                                        // Render as System Message
-                                        appendMessage(text, 'system-message', null);
-                                        
-                                        // Mark as announced
-                                        agentJoinAnnounced = true;
-                                        localStorage.setItem('chat_agentJoinAnnounced', 'true');
-                                        
-                                        isAgentConnected = true; 
-                                        localStorage.setItem('chat_isAgentConnected', 'true');
-                                        chatInputArea.style.display = 'flex';
-                                    }
-                                    
-                                    displayedMessageIds.add(msg.id);
-                                    hasNewMessages = true;
-                                    return;
-                                }
-
-                                if (isEndSessionMessage) {
-                                    appendMessage(text, 'system-message', null);
-                                    displayedMessageIds.add(msg.id);
-                                    hasNewMessages = true;
-                                    return; 
-                                }
-
-                                // Agent Join Announcement (Fallback if webhook delayed)
-                                if (!isUser && !agentJoinAnnounced && senderName !== 'System') {
-                                    const nameToUse = senderName || "An agent";
-                                    // Use system-message style for consistency
-                                    appendMessage(`${nameToUse} connected`, 'system-message'); 
-                                    agentJoinAnnounced = true;
-                                    localStorage.setItem('chat_agentJoinAnnounced', 'true');
-                                    
-                                    isAgentConnected = true; 
-                                    localStorage.setItem('chat_isAgentConnected', 'true');
-                                    chatInputArea.style.display = 'flex'; 
-                                }
-
-                                // Update header
-                                if (!isUser && senderName && senderName !== 'Agent' && senderName !== 'System') {
-                                    chatHeaderTitle.textContent = senderName;
-                                    chatHeaderTitle.style.fontSize = '1.1rem'; 
-                                }
-
-                                appendMessage(text, isUser ? 'user-message' : 'bot-message', null);
                                 displayedMessageIds.add(msg.id);
                                 hasNewMessages = true;
-                            }
-                            // Handle Non-Text System Messages (e.g. Activities)
-                            else if (msg.source && msg.source.type === 'system') {
-                                const text = "Messaging session ended"; 
-                                appendMessage(text, 'system-message', null);
+                            } else {
+                                // Skip rendering if details are incomplete
                                 displayedMessageIds.add(msg.id);
-                                hasNewMessages = true;
                             }
+                            continue;
+                        } else {
+                            // Image file but no URL yet, or file without URL, skip rendering to prevent duplicate with immediate display
+                            displayedMessageIds.add(msg.id);
+                            continue;
                         }
-                    });
-                    
-                    if (hasNewMessages) {
-                        scrollToBottom();
                     }
 
-                    // CHECK IF SESSION SHOULD END (Message Based)
-                    // If the VERY LAST message in the conversation is an "End Session" message,
-                    // and we are currently connected, then we should close the session.
-                    if (sortedMessages.length > 0 && isAgentConnected) {
-                        const lastMsg = sortedMessages[sortedMessages.length - 1];
-                        let isLastMsgEndSession = false;
+                    /* ===============================
+                       TEXT MESSAGE
+                    =============================== */
+                    if (msg.content?.type === 'text') {
+                        const isUser = msg.author.type === 'user';
+                        const text = msg.content.text;
+                        const lowerText = text.toLowerCase();
 
-                        if (lastMsg.content && lastMsg.content.type === 'text') {
-                            const senderName = (lastMsg.author.type === 'user') ? null : (lastMsg.author.displayName || 'Agent');
-                            const text = lastMsg.content.text.toLowerCase();
-                            isLastMsgEndSession = (senderName === 'System') || 
-                                                  (text.includes("messaging session ended")) ||
-                                                  (text.includes("the agent has ended the session"));
-                        } else if (lastMsg.source && lastMsg.source.type === 'system') {
-                            isLastMsgEndSession = true;
+                        // Hide internal escalation message
+                        if (isUser && text.startsWith("Connecting to agent. Reason:")) {
+                            displayedMessageIds.add(msg.id);
+                            continue;
                         }
 
-                        // Safety Check: Ensure this message is not from BEFORE we requested the agent.
-                        // This handles the edge case where the user connects, but the backend fails to send the trigger message,
-                        // leaving an OLD "End Session" message as the last one.
-                        // We use a 5-second buffer to account for clock skew.
-                        const msgTime = new Date(lastMsg.received).getTime();
-                        const isTrulyOld = msgTime < (lastAgentRequestTime - 5000);
+                        appendMessage(
+                            text,
+                            isUser ? 'user-message' : 'bot-message'
+                        );
 
-                        if (isLastMsgEndSession && !isTrulyOld) {
-                            console.log("Last message is End Session. Closing chat.");
-                            endSession();
-                        }
+                        displayedMessageIds.add(msg.id);
+                        hasNewMessages = true;
+                        continue;
+                    }
+
+                    /* ===============================
+                       SYSTEM MESSAGE
+                    =============================== */
+                    if (msg.source?.type === 'system') {
+                        appendMessage("Messaging session ended", 'system-message');
+                        displayedMessageIds.add(msg.id);
+                        hasNewMessages = true;
+                    }
+                }
+
+                if (hasNewMessages) scrollToBottom();
+
+                /* ===============================
+                   SESSION END DETECTION
+                =============================== */
+                if (sortedMessages.length > 0 && isAgentConnected) {
+                    const lastMsg = sortedMessages[sortedMessages.length - 1];
+                    let isLastMsgEndSession = false;
+
+                    if (lastMsg.content?.type === 'text') {
+                        const senderName =
+                            lastMsg.author.type === 'user'
+                                ? null
+                                : (lastMsg.author.displayName || 'Agent');
+
+                        const text = lastMsg.content.text.toLowerCase();
+                        isLastMsgEndSession =
+                            senderName === 'System' ||
+                            text.includes("messaging session ended") ||
+                            text.includes("the agent has ended the session");
+                    } else if (lastMsg.source?.type === 'system') {
+                        isLastMsgEndSession = true;
+                    }
+
+                    const msgTime = new Date(lastMsg.received).getTime();
+                    const isTrulyOld = msgTime < (lastAgentRequestTime - 5000);
+
+                    if (isLastMsgEndSession && !isTrulyOld) {
+                        endSession();
                     }
                 }
             })
             .catch(error => console.error('Error fetching messages:', error));
     }
+
 
     // Poll for new messages every 1 second (1000ms)
     // Optimization: Only poll if chat is open OR if we are waiting for/connected to an agent
@@ -337,16 +330,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 text: text
             })
         })
-        .then(response => response.json())
-        .then(data => {
-            console.log("Message sent to Sunshine:", data);
-            // Optimistically add the message ID to displayed set to prevent duplication by poller
-            if (data.data && data.data.messages && data.data.messages.length > 0) {
-                const msgId = data.data.messages[0].id;
-                displayedMessageIds.add(msgId);
-            }
-        })
-        .catch(error => console.error('Error sending message:', error));
+            .then(response => response.json())
+            .then(data => {
+                console.log("Message sent to Sunshine:", data);
+                // Optimistically add the message ID to displayed set to prevent duplication by poller
+                if (data.data && data.data.messages && data.data.messages.length > 0) {
+                    const msgId = data.data.messages[0].id;
+                    displayedMessageIds.add(msgId);
+                }
+            })
+            .catch(error => console.error('Error sending message:', error));
     }
 
     // Toggle Chat
@@ -356,7 +349,7 @@ document.addEventListener('DOMContentLoaded', function() {
             chatBox.style.display = 'flex';
             toggleBtn.innerHTML = '✖'; // Close icon
             toggleBtn.setAttribute('aria-label', 'Close chat');
-            
+
             // Initialize options if it's the first time or empty
             if (messagesContainer.children.length <= 1) {
                 showMainOptions();
@@ -369,7 +362,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     toggleBtn.addEventListener('click', toggleChat);
-    closeBtn.addEventListener('click', function(e) {
+    closeBtn.addEventListener('click', function (e) {
         e.stopPropagation();
         toggleChat();
     });
@@ -385,7 +378,7 @@ document.addEventListener('DOMContentLoaded', function() {
     function handleMainOptionClick(option) {
         appendMessage(option, 'user-message');
         lastContext = option; // Update context
-        
+
         if (option === "App Related Issues") {
             setTimeout(() => {
                 appendMessage("Please select the specific issue you are facing:", 'bot-message');
@@ -405,9 +398,9 @@ document.addEventListener('DOMContentLoaded', function() {
     // Show App Related Options (Level 2)
     function showAppRelatedOptions() {
         const options = appRelatedOptions.length > 0 ? appRelatedOptions : [
-            "Location Not Found or Inaccurate", 
-            "Unable to Login", 
-            "My App is Not Responding", 
+            "Location Not Found or Inaccurate",
+            "Unable to Login",
+            "My App is Not Responding",
             "Others"
         ];
         appendOptions(options, handleAppRelatedOptionClick);
@@ -422,7 +415,7 @@ document.addEventListener('DOMContentLoaded', function() {
             appendMessage("Please describe your issue below.", 'bot-message');
             chatInputArea.style.display = 'flex';
             chatInput.focus();
-            awaitingFeedback = false; 
+            awaitingFeedback = false;
         } else if (troubleshootingSteps[option]) {
             setTimeout(() => {
                 appendMessage(troubleshootingSteps[option], 'bot-message');
@@ -465,10 +458,10 @@ document.addEventListener('DOMContentLoaded', function() {
     // Helper: Escalate to Agent
     function escalateToAgent(reason) {
         if (!conversationId) {
-            console.error("Cannot escalate: Chat not initialized");
+            console.warn("Cannot escalate: Chat not initialized");
             return;
         }
-        
+
         console.log("Escalating to agent with reason:", reason);
 
         fetch('/api/chat/escalate', {
@@ -480,22 +473,22 @@ document.addEventListener('DOMContentLoaded', function() {
                 reason: reason || lastContext
             })
         })
-        .then(response => response.json())
-        .then(data => {
-            console.log("Escalation successful:", data);
-        })
-        .catch(error => console.error('Error escalating chat:', error));
+            .then(response => response.json())
+            .then(data => {
+                console.log("Escalation successful:", data);
+            })
+            .catch(error => console.error('Error escalating chat:', error));
     }
 
     // Handle Agent Connect
     function handleAgentConnect(option) {
         appendMessage(option, 'user-message');
-        
+
         // Escalate to Sunshine/Zendesk with context
         escalateToAgent(lastContext);
-        
-        isAgentConnected = true; 
-        lastAgentRequestTime = Date.now(); 
+
+        isAgentConnected = true;
+        lastAgentRequestTime = Date.now();
         agentJoinAnnounced = false;
 
         // Persist State
@@ -506,7 +499,7 @@ document.addEventListener('DOMContentLoaded', function() {
         setTimeout(() => {
             // Show loading indicator instead of text
             showLoadingIndicator();
-            
+
             // Show input field for live chat
             chatInputArea.style.display = 'flex';
             chatInput.focus();
@@ -521,7 +514,7 @@ document.addEventListener('DOMContentLoaded', function() {
         loaderDiv.id = 'agent-loading-indicator';
         // Use system-message to avoid bubble styling
         loaderDiv.classList.add('message', 'system-message');
-        
+
         loaderDiv.innerHTML = `
             Please hang on
             <div class="typing-indicator-inline">
@@ -545,15 +538,26 @@ document.addEventListener('DOMContentLoaded', function() {
     // Send Message (For "OTHERS" flow and Live Agent)
     function sendMessage() {
         const messageText = chatInput.value.trim();
+
+        // If there's a pending image, send it with the message
+        if (pendingImage) {
+            const caption = messageText;
+            sendDocument(pendingImage, caption);
+            clearImagePreview();
+            pendingImage = null;
+            chatInput.value = '';
+            return;
+        }
+
         if (messageText === "") return;
 
-        appendMessage(messageText, 'user-message');
-        
+        // Removed optimistic appendMessage to prevent duplicates - let fetchMessages handle it
+
         // Send user text to Sunshine
         sendToSunshine(messageText);
 
         chatInput.value = '';
-        
+
         // If connected to agent, keep input open. Otherwise (ticket mode), close it.
         if (!isAgentConnected) {
             chatInputArea.style.display = 'none';
@@ -561,9 +565,9 @@ document.addEventListener('DOMContentLoaded', function() {
             setTimeout(() => {
                 // Since we are escalating to Sunshine/Zendesk, we can show a confirmation
                 appendMessage("Your issue has been forwarded to our support team. An agent will review it shortly.", 'bot-message');
-                
+
                 // Optional: Still ask for feedback or just end here
-                // askForFeedback(); 
+                // askForFeedback();
             }, 1500);
         }
     }
@@ -583,26 +587,97 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', className);
-        
+
         // Allow newlines to be rendered
-        messageDiv.style.whiteSpace = "pre-wrap"; 
-        
+        messageDiv.style.whiteSpace = "pre-wrap";
+
         messageDiv.textContent = text;
         messagesContainer.appendChild(messageDiv);
         scrollToBottom();
     }
 
+    // Append Image Message to UI (WhatsApp-style)
+    function appendImageMessage(imageUrl, caption, className) {
+        const messageDiv = document.createElement('div');
+        messageDiv.classList.add('message', className, 'image-bubble');
+
+        const img = document.createElement('img');
+        img.src = imageUrl;
+        img.classList.add('image-thumbnail');
+        img.addEventListener('click', function () {
+            showImageZoomModal(imageUrl);
+        });
+
+        messageDiv.appendChild(img);
+
+        if (caption && caption.trim()) {
+            const captionDiv = document.createElement('div');
+            captionDiv.classList.add('caption-text');
+            captionDiv.textContent = caption;
+            messageDiv.appendChild(captionDiv);
+        }
+
+        messagesContainer.appendChild(messageDiv);
+        scrollToBottom();
+    }
+
+    // Append File Message to UI (WhatsApp-style)
+    function appendFileMessage(fileName, fileSize, className, caption = '') {
+        const bubble = document.createElement('div');
+        bubble.classList.add('message', className, 'file-bubble');
+
+        const fileContainer = document.createElement('div');
+        fileContainer.classList.add('file-bubble-container');
+
+        // File Icon
+        const fileIcon = document.createElement('div');
+        fileIcon.classList.add('file-icon');
+        fileIcon.textContent = '📄'; // Generic file icon
+
+        // File Details
+        const fileDetails = document.createElement('div');
+        fileDetails.classList.add('file-details');
+
+        const nameDiv = document.createElement('div');
+        nameDiv.classList.add('file-name');
+        nameDiv.textContent = fileName;
+
+        const sizeDiv = document.createElement('div');
+        sizeDiv.classList.add('file-size');
+        sizeDiv.textContent = fileSize;
+
+        fileDetails.appendChild(nameDiv);
+        fileDetails.appendChild(sizeDiv);
+
+        fileContainer.appendChild(fileIcon);
+        fileContainer.appendChild(fileDetails);
+
+        // Optional caption below file
+        if (caption) {
+            const captionDiv = document.createElement('div');
+            captionDiv.className = 'file-bubble-caption';
+            captionDiv.textContent = caption;
+            fileContainer.appendChild(captionDiv);
+        }
+
+        bubble.appendChild(fileContainer);
+        messagesContainer.appendChild(bubble);
+
+        scrollToBottom();
+    }
+
+
     // Append Options to UI
     function appendOptions(options, callback) {
         const optionsDiv = document.createElement('div');
         optionsDiv.classList.add('options-container');
-        
+
         options.forEach(option => {
             const btn = document.createElement('button');
             btn.classList.add('option-btn');
             btn.textContent = option;
-            btn.addEventListener('click', function() {
-                optionsDiv.remove(); 
+            btn.addEventListener('click', function () {
+                optionsDiv.remove();
                 callback(option);
             });
             optionsDiv.appendChild(btn);
@@ -622,14 +697,14 @@ document.addEventListener('DOMContentLoaded', function() {
         // Create Modal Elements
         const modal = document.createElement('div');
         modal.classList.add('chat-modal');
-        
+
         const header = document.createElement('div');
         header.classList.add('chat-modal-header');
         header.textContent = 'Why do you want to delete your account?';
-        
+
         const radioGroup = document.createElement('div');
         radioGroup.classList.add('radio-group');
-        
+
         const reasons = deleteAccountReasons.length > 0 ? deleteAccountReasons : [
             "Moving out of town",
             "App experience issues",
@@ -638,29 +713,29 @@ document.addEventListener('DOMContentLoaded', function() {
             "Not required as of now",
             "Others"
         ];
-        
+
         let selectedReason = null;
-        
+
         reasons.forEach((reason, index) => {
             const optionDiv = document.createElement('div');
             optionDiv.classList.add('radio-option');
-            
+
             const radio = document.createElement('input');
             radio.type = 'radio';
             radio.name = 'delete-reason';
             radio.id = `reason-${index}`;
             radio.value = reason;
-            
+
             const label = document.createElement('label');
             label.htmlFor = `reason-${index}`;
             label.textContent = reason;
-            
+
             optionDiv.appendChild(radio);
             optionDiv.appendChild(label);
             radioGroup.appendChild(optionDiv);
-            
+
             // Event Listener for Radio
-            radio.addEventListener('change', function() {
+            radio.addEventListener('change', function () {
                 selectedReason = this.value;
                 if (selectedReason === "Others") {
                     otherInput.style.display = 'block';
@@ -672,34 +747,34 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             });
         });
-        
+
         const otherInput = document.createElement('textarea');
         otherInput.classList.add('delete-reason-input');
         otherInput.placeholder = 'Please describe the issue...';
         otherInput.addEventListener('input', validateDeleteButton);
-        
+
         const buttonsDiv = document.createElement('div');
         buttonsDiv.classList.add('modal-buttons');
-        
+
         const deleteBtn = document.createElement('button');
         deleteBtn.classList.add('modal-btn', 'btn-delete');
         deleteBtn.textContent = 'Delete Account';
         deleteBtn.disabled = true;
-        
+
         const backBtn = document.createElement('button');
         backBtn.classList.add('modal-btn', 'btn-back');
         backBtn.textContent = 'Go Back';
-        
+
         buttonsDiv.appendChild(deleteBtn);
         buttonsDiv.appendChild(backBtn);
-        
+
         modal.appendChild(header);
         modal.appendChild(radioGroup);
         modal.appendChild(otherInput);
         modal.appendChild(buttonsDiv);
-        
+
         chatBox.appendChild(modal);
-        
+
         // Validation Logic
         function validateDeleteButton() {
             if (selectedReason === "Others") {
@@ -708,26 +783,26 @@ document.addEventListener('DOMContentLoaded', function() {
                 deleteBtn.disabled = selectedReason === null;
             }
         }
-        
+
         // Button Actions
-        backBtn.addEventListener('click', function() {
+        backBtn.addEventListener('click', function () {
             modal.remove();
             appendMessage("What can I help you with?", 'bot-message');
             showMainOptions();
         });
-        
-        deleteBtn.addEventListener('click', function() {
+
+        deleteBtn.addEventListener('click', function () {
             let reasonText = selectedReason;
             if (selectedReason === "Others") {
                 reasonText += ": " + otherInput.value.trim();
             }
-            
+
             // Send to Sunshine
             sendToSunshine("Delete Account Request: " + reasonText);
-            
+
             modal.remove();
             appendMessage("Delete Account Request", 'user-message');
-            
+
             setTimeout(() => {
                 appendMessage("Your request has been submitted. Our team will contact you shortly.", 'bot-message');
             }, 500);
@@ -739,14 +814,15 @@ document.addEventListener('DOMContentLoaded', function() {
     const fileInput = document.querySelector('#file-input');
 
     // File attachment button click handler
-    fileAttachBtn.addEventListener('click', function() {
+    fileAttachBtn.addEventListener('click', function () {
         fileInput.click();
     });
 
     // File selection handler
-    fileInput.addEventListener('change', function(e) {
+    fileInput.addEventListener('change', function (e) {
         const file = e.target.files[0];
         if (file) {
+            // Show preview modal for both images and documents
             showDocumentPreviewModal(file);
         }
     });
@@ -771,7 +847,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const closeBtn = document.createElement('button');
         closeBtn.classList.add('close-btn');
         closeBtn.innerHTML = '×';
-        closeBtn.addEventListener('click', function() {
+        closeBtn.addEventListener('click', function () {
             modal.remove();
         });
 
@@ -857,7 +933,7 @@ document.addEventListener('DOMContentLoaded', function() {
         sendBtn.style.transition = 'background-color 0.2s, transform 0.2s';
         sendBtn.style.boxShadow = '0 2px 5px rgba(0, 123, 255, 0.3)';
 
-        sendBtn.addEventListener('click', function() {
+        sendBtn.addEventListener('click', function () {
             sendDocument(file, inputField.value.trim());
             modal.remove();
         });
@@ -925,43 +1001,184 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
 
+        // Check if file is an image
+        const isImage = file.type.startsWith('image/');
+
+        // If it's an image and has a caption, display it immediately in the chat
+        if (isImage && message.trim()) {
+            const imageUrl = URL.createObjectURL(file);
+            appendImageMessage(imageUrl, message, 'user-message');
+            displayedImageFileNames.add(file.name);
+        }
+
         // Create FormData for multipart upload
         const formData = new FormData();
         formData.append('file', file);
         formData.append('appUserId', appUserId);
         formData.append('conversationId', conversationId);
-        if (message) {
+        if (message && !isImage) {
             formData.append('message', message);
         }
 
-        fetch('/api/send-to-zendesk', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.status === "ok") {
-                appendMessage(`Document "${file.name}" sent successfully!`, 'user-message');
-                if (message) {
-                    appendMessage(message, 'user-message');
+        // Create progress bar element (only show for non-images or if upload takes time)
+        let progressContainer = null;
+        if (!isImage) {
+            progressContainer = document.createElement('div');
+            progressContainer.classList.add('upload-progress-container');
+            progressContainer.innerHTML = `
+                <div class="upload-progress-bar">
+                    <div class="upload-progress-fill"></div>
+                </div>
+                <div class="upload-status">Uploading...</div>
+            `;
+            messagesContainer.appendChild(progressContainer);
+            scrollToBottom();
+        }
+
+        const progressFill = progressContainer ? progressContainer.querySelector('.upload-progress-fill') : null;
+        const statusText = progressContainer ? progressContainer.querySelector('.upload-status') : null;
+
+        // Use XMLHttpRequest for progress tracking
+        const xhr = new XMLHttpRequest();
+
+        xhr.upload.addEventListener('progress', function (e) {
+            if (e.lengthComputable && progressContainer) {
+                const percentComplete = (e.loaded / e.total) * 100;
+                progressFill.style.width = percentComplete + '%';
+                statusText.textContent = `Uploading... ${Math.round(percentComplete)}%`;
+            }
+        });
+
+        xhr.addEventListener('load', function () {
+            if (xhr.status === 200) {
+                try {
+                    const data = JSON.parse(xhr.responseText);
+                    console.log("Document sent:", data);
+
+                    // Add message IDs to displayedMessageIds to prevent duplication by fetchMessages
+                    if (data.data && data.data.messages) {
+                        data.data.messages.forEach(msg => {
+                            displayedMessageIds.add(msg.id);
+                        });
+                    }
+
+                    if (progressContainer) {
+                        // Update status to success
+                        statusText.textContent = 'Sent successfully!';
+                        progressFill.style.backgroundColor = '#28a745';
+                        progressContainer.classList.add('upload-complete');
+
+                        // Remove progress bar after a delay
+                        setTimeout(() => {
+                            progressContainer.remove();
+                        }, 2000);
+                    }
+                } catch (e) {
+                    console.error('Error parsing response:', e);
+                    if (progressContainer) {
+                        statusText.textContent = 'Error processing response';
+                        progressFill.style.backgroundColor = '#dc3545';
+                    }
                 }
             } else {
-                appendMessage("Failed to send document. Please try again.", 'system-message');
+                console.error('Error sending document:', xhr.status, xhr.responseText);
+                if (progressContainer) {
+                    statusText.textContent = 'Error sending document';
+                    progressFill.style.backgroundColor = '#dc3545';
+                }
             }
-        })
-        .catch(error => {
-            console.error('Error sending document:', error);
-            appendMessage("Error sending document. Please check your connection and try again.", 'system-message');
-        })
-        .finally(() => {
-            // Reset file input
-            fileInput.value = '';
         });
+
+        xhr.addEventListener('error', function () {
+            console.error('Network error sending document');
+            if (progressContainer) {
+                statusText.textContent = 'Network error - please try again';
+                progressFill.style.backgroundColor = '#dc3545';
+            }
+        });
+
+        xhr.addEventListener('abort', function () {
+            console.log('Upload aborted');
+            if (progressContainer) {
+                statusText.textContent = 'Upload cancelled';
+                progressFill.style.backgroundColor = '#ffc107';
+            }
+        });
+
+        xhr.open('POST', '/api/send-to-zendesk');
+        xhr.send(formData);
+
+        // Reset file input
+        fileInput.value = '';
+    }
+
+    // Show image zoom modal
+    function showImageZoomModal(imageUrl) {
+        // Create modal elements
+        const modal = document.createElement('div');
+        modal.classList.add('zoom-modal');
+
+        const img = document.createElement('img');
+        img.src = imageUrl;
+
+        modal.appendChild(img);
+
+        // Close modal on click or ESC
+        modal.addEventListener('click', function () {
+            modal.remove();
+        });
+
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') {
+                modal.remove();
+            }
+        });
+
+        document.body.appendChild(modal);
+    }
+
+    // Show image preview in input area
+    function showImagePreviewInInput(file) {
+        // Create preview container
+        const previewContainer = document.createElement('div');
+        previewContainer.id = 'image-preview-container';
+        previewContainer.classList.add('image-preview-container');
+
+        const img = document.createElement('img');
+        img.src = URL.createObjectURL(file);
+        img.classList.add('image-preview-thumbnail');
+
+        const removeBtn = document.createElement('button');
+        removeBtn.classList.add('image-preview-remove');
+        removeBtn.innerHTML = '×';
+        removeBtn.addEventListener('click', function () {
+            clearImagePreview();
+        });
+
+        previewContainer.appendChild(img);
+        previewContainer.appendChild(removeBtn);
+
+        // Insert before the input field
+        const inputArea = document.querySelector('.chat-input');
+        inputArea.insertBefore(previewContainer, chatInput);
+
+        // Update placeholder
+        chatInput.placeholder = 'Add a caption (optional)...';
+    }
+
+    // Clear image preview
+    function clearImagePreview() {
+        const preview = document.getElementById('image-preview-container');
+        if (preview) {
+            preview.remove();
+        }
+        pendingImage = null;
+        chatInput.placeholder = 'Type a message...';
     }
 
     // Event Listeners for Sending
     sendBtn.addEventListener('click', sendMessage);
-    chatInput.addEventListener('keypress', function(e) {
+    chatInput.addEventListener('keypress', function (e) {
         if (e.key === 'Enter') {
             sendMessage();
         }
