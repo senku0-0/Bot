@@ -794,6 +794,44 @@ def send_to_zendesk(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "Internal Server Error", "status": "fail", "details": str(e)}, status=500)
 
 
+@csrf_exempt
+def debug_send_agent_join(request: HttpRequest) -> JsonResponse:
+    """
+    Temporary debug endpoint: send an agent-joined system message to a conversation.
+
+    POST JSON: { "conversationId": "...", "agentName": "Jane Doe" }
+    """
+    if request.method != 'POST':
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        conversation_id = data.get('conversationId')
+        agent_name = data.get('agentName', 'Agent')
+
+        if not conversation_id:
+            return JsonResponse({"error": "Missing conversationId"}, status=400)
+
+        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+        payload = {
+            "author": {"type": "business", "displayName": agent_name},
+            "content": {"type": "text", "text": f"{agent_name} connected"}
+        }
+
+        logger.info(f"[DEBUG] Sending agent-join message to {conversation_id} as {agent_name}")
+        resp = requests.post(url, json=payload, auth=auth)
+        try:
+            resp_json = resp.json()
+        except Exception:
+            resp_json = {"status_code": resp.status_code, "text": resp.text}
+
+        return JsonResponse({"status": "sent", "response": resp_json})
+    except Exception as e:
+        logger.exception("Exception in debug_send_agent_join")
+        return JsonResponse({"error": str(e)}, status=500)
+
+
 def handle_agent_end_session(event_data: Dict[str, Any]) -> None:
     """
     Send a system message when agent ends the chat.

@@ -19,18 +19,13 @@ document.addEventListener('DOMContentLoaded', function () {
     let displayedMessageIds = new Set(); // Track displayed messages to prevent duplicates/reloading
     let displayedImageFileNames = new Set(); // Track displayed image file names to prevent duplicates
     let pendingImage = null; // Hold pending image file for caption
+    let pendingLocalMessages = new Set(); // Track optimistic local messages to dedupe when server echoes them
 
     // State Management with Persistence
     let isAgentConnected = localStorage.getItem('chat_isAgentConnected') === 'true';
     let lastAgentRequestTime = parseInt(localStorage.getItem('chat_lastAgentRequestTime') || '0');
     let agentJoinAnnounced = localStorage.getItem('chat_agentJoinAnnounced') === 'true';
     let hasConfirmedAgentActivity = localStorage.getItem('chat_hasConfirmedAgentActivity') === 'true';
-
-    // Predefined troubleshooting steps and options
-    let troubleshootingSteps = {};
-    let mainOptions = [];
-    let appRelatedOptions = [];
-    let deleteAccountReasons = [];
 
     // Initialize Chat Session (Get IDs from Backend)
     function initializeChatSession() {
@@ -131,7 +126,9 @@ document.addEventListener('DOMContentLoaded', function () {
                 /* ===============================
                    MESSAGE RENDERING
                 =============================== */
-                if (!data.messages) return;
+                if (!data.messages) {
+                    return;
+                }
 
                 const sortedMessages = data.messages.sort(
                     (a, b) => new Date(a.received) - new Date(b.received)
@@ -141,7 +138,23 @@ document.addEventListener('DOMContentLoaded', function () {
 
                 for (let i = 0; i < sortedMessages.length; i++) {
                     const msg = sortedMessages[i];
-                    if (displayedMessageIds.has(msg.id)) continue;
+                    if (!msg || !msg.id) {
+                        continue;
+                    }
+                    if (displayedMessageIds.has(msg.id)) {
+                        continue;
+                    }
+
+                    // Dedupe server-echoed user messages that were optimistically added locally
+                    if (msg.author && msg.author.type === 'user' && msg.content?.type === 'text') {
+                        const serverText = msg.content.text || '';
+                        if (pendingLocalMessages.has(serverText)) {
+                            // Mark this server message as accounted for and skip rendering
+                            displayedMessageIds.add(msg.id);
+                            pendingLocalMessages.delete(serverText);
+                            continue;
+                        }
+                    }
 
                     /* ===============================
                        FILE MESSAGE (IMAGE GROUPING)
@@ -231,8 +244,8 @@ document.addEventListener('DOMContentLoaded', function () {
                        TEXT MESSAGE
                     =============================== */
                     if (msg.content?.type === 'text') {
-                        const isUser = msg.author.type === 'user';
-                        const text = msg.content.text;
+                        const isUser = msg.author && msg.author.type === 'user';
+                        const text = msg.content.text || '';
                         const lowerText = text.toLowerCase();
 
                         // Hide internal escalation message
@@ -241,11 +254,86 @@ document.addEventListener('DOMContentLoaded', function () {
                             continue;
                         }
 
-                        appendMessage(
-                            text,
-                            isUser ? 'user-message' : 'bot-message'
+                        // Detect server-sent agent-join/connect messages
+                        const author = msg.author || {};
+                        const authorIsBusiness = author.type === 'business' || msg.source?.type === 'business';
+                        const looksLikeAgentConnect = authorIsBusiness && (
+                            lowerText.includes('connected') ||
+                            lowerText.includes('agent has joined') ||
+                            lowerText.includes('agent joined') ||
+                            lowerText.includes('has joined the chat') ||
+                            lowerText.includes('joined the chat')
                         );
 
+                        if (looksLikeAgentConnect) {
+                        
+
+                            // Try to get agent name from author first
+                            let agentName = author.displayName || author.name || author.username || null;
+                            if (!agentName) {
+                                // Try to extract from text like "Jane Doe connected"
+                                const match = text.match(/^\s*([A-Za-z0-9 ._-]{2,64})\s+(connected|joined|has joined)/i);
+                                if (match) agentName = match[1];
+                            }
+
+                            // If we haven't announced on client side yet, announce now
+                            if (!agentJoinAnnounced) {
+                                agentJoinAnnounced = true;
+                                localStorage.setItem('chat_agentJoinAnnounced', 'true');
+                                if (agentName) {
+                                    localStorage.setItem('chat_agentName', agentName);
+                                }
+                                removeLoadingIndicator();
+                                const announceText = agentName ? `${agentName} has joined the chat` : (text || 'An agent has joined the chat');
+                                appendMessage(announceText, 'system-message');
+                                chatHeaderTitle.textContent = agentName || 'Agent';
+                                // Also render the agent's message content as a bot-message (no repeated name)
+                                appendMessage(text, 'bot-message');
+                                displayedMessageIds.add(msg.id);
+                                hasNewMessages = true;
+                                continue;
+                            } else {
+                                // Already announced — still ensure we capture the agent name and update header
+                                const storedAgentName = localStorage.getItem('chat_agentName');
+                                if (agentName) {
+                                    // Prefer the freshly-detected agent name
+                                    localStorage.setItem('chat_agentName', agentName);
+                                    chatHeaderTitle.textContent = agentName;
+                                } else if (storedAgentName) {
+                                    // Use stored name to update header if needed
+                                    chatHeaderTitle.textContent = storedAgentName;
+                                }
+                                // Avoid rendering duplicate server join message
+                                displayedMessageIds.add(msg.id);
+                                continue;
+                            }
+                        }
+
+                        // If this is a business authored message and we haven't announced yet, treat it as arrival
+                        if (authorIsBusiness && !agentJoinAnnounced) {
+                            
+                            let agentName = author.displayName || author.name || author.username || null;
+                            if (!agentName) {
+                                const match = text.match(/^\s*([A-Za-z0-9 ._-]{2,64})\s+/i);
+                                if (match) agentName = match[1];
+                            }
+                            agentJoinAnnounced = true;
+                            localStorage.setItem('chat_agentJoinAnnounced', 'true');
+                            if (agentName) {
+                                localStorage.setItem('chat_agentName', agentName);
+                                chatHeaderTitle.textContent = agentName;
+                            }
+                            removeLoadingIndicator();
+                            appendMessage(agentName ? `${agentName} has joined the chat` : 'An agent has joined the chat', 'system-message');
+                            // Render the agent's message as a bot message as well (no repeated name)
+                            appendMessage(text, 'bot-message');
+                            displayedMessageIds.add(msg.id);
+                            hasNewMessages = true;
+                            continue;
+                        }
+
+                        // Default rendering for regular text messages
+                        appendMessage(text, isUser ? 'user-message' : 'bot-message');
                         displayedMessageIds.add(msg.id);
                         hasNewMessages = true;
                         continue;
@@ -343,6 +431,13 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (data.data && data.data.messages && data.data.messages.length > 0) {
                     const msgId = data.data.messages[0].id;
                     displayedMessageIds.add(msgId);
+                    // If backend echoed the message immediately, remove from pendingLocalMessages
+                    try {
+                        const echoedText = data.data.messages[0].content?.text;
+                        if (echoedText) pendingLocalMessages.delete(echoedText);
+                    } catch (e) {
+                        // ignore
+                    }
                 }
             })
             .catch(error => console.error('Error sending message:', error));
@@ -470,6 +565,17 @@ document.addEventListener('DOMContentLoaded', function () {
 
         console.log("Escalating to agent with reason:", reason);
 
+        // Mark client as awaiting/connected to agent so poller will run and announcement can trigger
+        isAgentConnected = true;
+        lastAgentRequestTime = Date.now();
+        agentJoinAnnounced = false;
+        localStorage.setItem('chat_isAgentConnected', 'true');
+        localStorage.setItem('chat_lastAgentRequestTime', lastAgentRequestTime.toString());
+        localStorage.setItem('chat_agentJoinAnnounced', 'false');
+        // Show loading indicator and open input so user sees live-chat state
+        showLoadingIndicator();
+        chatInputArea.style.display = 'flex';
+
         fetch('/api/chat/escalate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -557,7 +663,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
         if (messageText === "") return;
 
-        // Removed optimistic appendMessage to prevent duplicates - let fetchMessages handle it
+        // Optimistically show user's message immediately for snappy UI
+        appendMessage(messageText, 'user-message');
+        // Track pending local text so we can dedupe if server echoes it back
+        pendingLocalMessages.add(messageText);
 
         // Send user text to Sunshine
         sendToSunshine(messageText);
