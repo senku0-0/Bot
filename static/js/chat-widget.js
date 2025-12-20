@@ -163,6 +163,12 @@ document.addEventListener('DOMContentLoaded', function () {
                             (fileUrl && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileUrl));
 
                         if (isImage && fileUrl) {
+                            // Skip the specific unwanted Zendesk screenshot
+                            if (fileUrl === 'https://movingtechinnovationshelp.zendesk.com/sc/attachments/v2/01KCWZV760A9H1R0JWS5TTEY3F/Screenshot%202025-12-15%20211526.png') {
+                                displayedMessageIds.add(msg.id);
+                                continue;
+                            }
+
                             // Check if this image has already been displayed immediately
                             const fileName = msg.content.fileName || msg.content.file?.fileName || '';
                             if (displayedImageFileNames.has(fileName)) {
@@ -906,39 +912,30 @@ document.addEventListener('DOMContentLoaded', function () {
         messageInputBar.style.padding = '0';
         messageInputBar.style.borderTop = 'none';
         messageInputBar.style.backgroundColor = 'transparent';
-
-        const inputField = document.createElement('input');
-        inputField.type = 'text';
-        inputField.placeholder = 'Type a message';
-        inputField.style.width = '230px';
-        inputField.style.padding = '12px 15px';
-        inputField.style.border = '1px solid #e0e0e0';
-        inputField.style.borderRadius = '25px';
-        inputField.style.outline = 'none';
-        inputField.style.fontSize = '0.95em';
-        inputField.style.backgroundColor = '#f8f9fa';
+        messageInputBar.style.justifyContent = 'center';
 
         const sendBtn = document.createElement('button');
-        sendBtn.innerHTML = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>';
+        sendBtn.innerHTML = 'Send';
         sendBtn.style.backgroundColor = '#007bff';
         sendBtn.style.color = 'white';
         sendBtn.style.border = 'none';
-        sendBtn.style.width = '45px';
-        sendBtn.style.height = '45px';
-        sendBtn.style.borderRadius = '50%';
+        sendBtn.style.width = 'auto';
+        sendBtn.style.padding = '10px 20px';
+        sendBtn.style.borderRadius = '20px';
         sendBtn.style.cursor = 'pointer';
         sendBtn.style.display = 'flex';
         sendBtn.style.justifyContent = 'center';
         sendBtn.style.alignItems = 'center';
         sendBtn.style.transition = 'background-color 0.2s, transform 0.2s';
         sendBtn.style.boxShadow = '0 2px 5px rgba(0, 123, 255, 0.3)';
+        sendBtn.style.fontSize = '0.95em';
+        sendBtn.style.fontWeight = '500';
 
         sendBtn.addEventListener('click', function () {
-            sendDocument(file, inputField.value.trim());
+            sendDocument(file, '');
             modal.remove();
         });
 
-        messageInputBar.appendChild(inputField);
         messageInputBar.appendChild(sendBtn);
 
         footer.appendChild(messageInputBar);
@@ -952,9 +949,6 @@ document.addEventListener('DOMContentLoaded', function () {
         // Add to chat box to match its size
         const chatBox = document.querySelector('.chat-box');
         chatBox.appendChild(modal);
-
-        // Focus input field
-        setTimeout(() => inputField.focus(), 100);
     }
 
     // Format file size
@@ -1004,10 +998,10 @@ document.addEventListener('DOMContentLoaded', function () {
         // Check if file is an image
         const isImage = file.type.startsWith('image/');
 
-        // If it's an image and has a caption, display it immediately in the chat
-        if (isImage && message.trim()) {
+        // Display image immediately in chat to avoid waiting for Zendesk response
+        if (isImage) {
             const imageUrl = URL.createObjectURL(file);
-            appendImageMessage(imageUrl, message, 'user-message');
+            appendImageMessage(imageUrl, '', 'user-message');
             displayedImageFileNames.add(file.name);
         }
 
