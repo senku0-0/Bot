@@ -163,8 +163,8 @@ document.addEventListener('DOMContentLoaded', function () {
                             (fileUrl && /\.(jpg|jpeg|png|gif|webp)$/i.test(fileUrl));
 
                         if (isImage && fileUrl) {
-                            // Skip the specific unwanted Zendesk screenshot
-                            if (fileUrl === 'https://movingtechinnovationshelp.zendesk.com/sc/attachments/v2/01KCWZV760A9H1R0JWS5TTEY3F/Screenshot%202025-12-15%20211526.png') {
+                            // Skip all Zendesk images to avoid unwanted screenshots
+                            if (fileUrl.includes('zendesk.com')) {
                                 displayedMessageIds.add(msg.id);
                                 continue;
                             }
@@ -604,6 +604,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Append Image Message to UI (WhatsApp-style)
     function appendImageMessage(imageUrl, caption, className) {
+        // Skip unwanted Zendesk images
+        if (imageUrl.includes('zendesk.com')) return;
+
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', className, 'image-bubble');
 
