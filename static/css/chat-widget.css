@@ -165,6 +165,23 @@
     font-style: italic;
 }
 
+/* Agent Announcement: use same centered gray styling as system messages
+   Apply to generic .agent-announcement and when applied to a bot message
+   (e.g., when Zendesk sends CSAT / session ended as an agent announcement) */
+.agent-announcement,
+.bot-message.agent-announcement {
+    align-self: center;
+    background-color: transparent;
+    color: #888;
+    font-size: 0.85rem;
+    padding: 5px 10px;
+    border: none;
+    box-shadow: none;
+    text-align: center;
+    margin: 10px 0;
+    font-style: italic;
+}
+
 /* Options Container */
 .options-container {
     display: flex;

@@ -21,6 +21,10 @@ document.addEventListener('DOMContentLoaded', function () {
     let pendingImage = null; // Hold pending image file for caption
     let pendingLocalMessages = new Set(); // Track optimistic local messages to dedupe when server echoes them
 
+    // Polling control
+    let pollInterval = null; // handle for the poller interval
+    let sessionEnded = false; // when true, polling should stop after session end
+
     // State Management with Persistence
     let isAgentConnected = localStorage.getItem('chat_isAgentConnected') === 'true';
     let lastAgentRequestTime = parseInt(localStorage.getItem('chat_lastAgentRequestTime') || '0');
@@ -73,6 +77,9 @@ document.addEventListener('DOMContentLoaded', function () {
         isAgentConnected = false;
         agentJoinAnnounced = false;
         hasConfirmedAgentActivity = false;
+        // Mark session ended and stop background polling
+        sessionEnded = true;
+        if (typeof stopPolling === 'function') stopPolling();
 
         // Clear Persistence
         localStorage.removeItem('chat_isAgentConnected');
@@ -332,6 +339,39 @@ document.addEventListener('DOMContentLoaded', function () {
                             continue;
                         }
 
+                        // Detect messaging-session-end phrases and render as agent announcement
+                        const looksLikeEndSession = !isUser && (
+                            lowerText.includes('messaging session ended') ||
+                            lowerText.includes('session ended') ||
+                            lowerText.includes('the agent has ended the session') ||
+                            lowerText.includes('agent has ended the session') ||
+                            lowerText.includes('agent ended the session')
+                        );
+
+                        if (looksLikeEndSession) {
+                            appendMessage(text, 'agent-announcement');
+                            displayedMessageIds.add(msg.id);
+                            hasNewMessages = true;
+                            continue;
+                        }
+
+                        // Detect Zendesk CSAT / ticket-solved / rating prompts and render as agent announcement
+                        const looksLikeCsatOrSolved = authorIsBusiness && (
+                            lowerText.includes('csat') ||
+                            lowerText.includes('ticket solved') ||
+                            lowerText.includes('solved') ||
+                            lowerText.includes('rate your experience') ||
+                            lowerText.includes('please rate') ||
+                            lowerText.includes('satisfaction')
+                        );
+
+                        if (looksLikeCsatOrSolved) {
+                            appendMessage(text, 'agent-announcement');
+                            displayedMessageIds.add(msg.id);
+                            hasNewMessages = true;
+                            continue;
+                        }
+
                         // Default rendering for regular text messages
                         appendMessage(text, isUser ? 'user-message' : 'bot-message');
                         displayedMessageIds.add(msg.id);
@@ -343,7 +383,8 @@ document.addEventListener('DOMContentLoaded', function () {
                        SYSTEM MESSAGE
                     =============================== */
                     if (msg.source?.type === 'system') {
-                        appendMessage("Messaging session ended", 'system-message');
+                        // Use agent-announcement styling for session ended notices
+                        appendMessage("Messaging session ended", 'agent-announcement');
                         displayedMessageIds.add(msg.id);
                         hasNewMessages = true;
                     }
@@ -385,16 +426,28 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
 
-    // Poll for new messages every 1 second (1000ms)
-    // Optimization: Only poll if chat is open OR if we are waiting for/connected to an agent
-    setInterval(() => {
-        if (isChatOpen || isAgentConnected) {
-            fetchMessages();
+    // Poll control: start/stop poller so we can halt it when session ends
+    function startPolling() {
+        if (pollInterval) return; // already running
+        pollInterval = setInterval(() => {
+            if (sessionEnded) return;
+            if (isChatOpen || isAgentConnected) {
+                fetchMessages();
+            }
+        }, 1000);
+    }
+
+    function stopPolling() {
+        if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
         }
-    }, 1000);
+    }
 
     // Call initialization on load
     initializeChatSession();
+    // Start background polling (will only fetch when open or agent-connected)
+    startPolling();
 
     // Fetch issues from JSON file
     const issuesUrl = window.issuesUrl || 'static/js/issues.json'; // Fallback for non-Django envs
@@ -572,6 +625,8 @@ document.addEventListener('DOMContentLoaded', function () {
         localStorage.setItem('chat_isAgentConnected', 'true');
         localStorage.setItem('chat_lastAgentRequestTime', lastAgentRequestTime.toString());
         localStorage.setItem('chat_agentJoinAnnounced', 'false');
+        // Ensure poller is running so we pick up agent messages
+        if (typeof startPolling === 'function') startPolling();
         // Show loading indicator and open input so user sees live-chat state
         showLoadingIndicator();
         chatInputArea.style.display = 'flex';
@@ -607,6 +662,8 @@ document.addEventListener('DOMContentLoaded', function () {
         localStorage.setItem('chat_isAgentConnected', 'true');
         localStorage.setItem('chat_lastAgentRequestTime', lastAgentRequestTime.toString());
         localStorage.setItem('chat_agentJoinAnnounced', 'false');
+        // Start polling so we receive agent messages even if chat is closed
+        if (typeof startPolling === 'function') startPolling();
 
         setTimeout(() => {
             // Show loading indicator instead of text
