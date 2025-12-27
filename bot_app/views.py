@@ -28,6 +28,8 @@ if not SECRET:
 ZENDESK_SUBDOMAIN = os.getenv("ZENDESK_SUBDOMAIN")
 ZENDESK_EMAIL = os.getenv("ZENDESK_EMAIL")
 ZENDESK_API_TOKEN = os.getenv("ZENDESK_API_TOKEN")
+ZENDESK_CHAT_CONVERSATION_FIELD_ID = os.getenv("ZENDESK_CHAT_CONVERSATION_FIELD_ID")
+APP_RELATED_SUB_CATEGORY = os.getenv("APP_RELATED_SUB_CATEGORY")
 
 # Sunshine Credentials
 SUNSHINE_APP_ID = os.getenv("SUNSHINE_APP_ID", "").strip()
@@ -82,32 +84,69 @@ def verify_signature(payload: bytes, signature: str) -> bool:
     return True
 
 # Create Zendesk ticket
-def create_zendesk_ticket(subject: str, description: str) -> Dict[str, Any]:
+def create_zendesk_ticket(subject: str, description: str, conversation_id: Optional[str] = None, app_related_sub_category: Optional[Union[str,int]] = None) -> Dict[str, Any]:
     """
-    Create a new ticket in Zendesk.
+    Create a new ticket in Zendesk and optionally populate custom fields.
 
     Args:
         subject (str): The subject of the ticket.
         description (str): The body/description of the ticket.
+        conversation_id (Optional[str]): Sunshine conversation id to store on the ticket custom field.
+        app_related_sub_category (Optional[Union[str,int]]): Value for the app-related sub-category field.
 
     Returns:
         Dict[str, Any]: The JSON response from the Zendesk API.
     """
     url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets.json"
     headers = {"Content-Type": "application/json"}
-    data = {
-        "ticket": {
-            "subject": subject,
-            "comment": {"body": description}
-        }
+
+    ticket = {
+        "subject": subject,
+        "comment": {"body": description}
     }
+
+    # Build custom_fields array if env var ids or values are present
+    custom_fields: List[Dict[str, Union[int,str]]] = []
+    try:
+        if conversation_id and ZENDESK_CHAT_CONVERSATION_FIELD_ID:
+            cf_id = int(ZENDESK_CHAT_CONVERSATION_FIELD_ID)
+            custom_fields.append({"id": cf_id, "value": conversation_id})
+            logger.info(f"Adding Zendesk custom field {cf_id} with conv id {conversation_id}")
+    except Exception:
+        logger.exception("Invalid ZENDESK_CHAT_CONVERSATION_FIELD_ID; skipping conversation custom field")
+
+    try:
+        if app_related_sub_category and APP_RELATED_SUB_CATEGORY:
+            cf_id2 = int(APP_RELATED_SUB_CATEGORY)
+            custom_fields.append({"id": cf_id2, "value": app_related_sub_category})
+            logger.info(f"Adding Zendesk custom field {cf_id2} with sub-category {app_related_sub_category}")
+    except Exception:
+        logger.exception("Invalid APP_RELATED_SUB_CATEGORY; skipping app-related custom field")
+
+    if custom_fields:
+        ticket["custom_fields"] = custom_fields
+
+    data = {"ticket": ticket}
+
     response = requests.post(
         url,
         json=data,
         headers=headers,
-        auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN)
+        auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+        timeout=15
     )
-    return response.json()
+
+    # Return response JSON and log non-201 for troubleshooting
+    try:
+        resp_json = response.json()
+    except Exception:
+        logger.error(f"Zendesk did not return JSON: {response.status_code} - {response.text}")
+        raise
+
+    if response.status_code not in (200,201):
+        logger.error(f"Zendesk ticket create failed: {response.status_code} - {resp_json}")
+
+    return resp_json
 
 # --- Sunshine API Helpers ---
 
@@ -690,9 +729,42 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
     if text:
         logger.info(f"Creating Ticket for message: {text}")
         try:
+            # Attempt to infer app-related sub-category from the message text
+            def get_app_related_tag_from_text(t: str) -> Optional[str]:
+                if not t:
+                    return None
+                s = t.lower()
+                mapping = {
+                    "location not found or inaccurate": "location_not_found_or_inaccurate",
+                    "unable to login": "unable_to_login",
+                    "my app is not responding": "my_app_is_not_responding",
+                    "others": "others",
+                    # allow matching by tag as well
+                    "location_not_found_or_inaccurate": "location_not_found_or_inaccurate",
+                    "unable_to_login": "unable_to_login",
+                    "my_app_is_not_responding": "my_app_is_not_responding",
+                    "others": "others",
+                }
+                # Check for exact phrase or tag in the text
+                for k, v in mapping.items():
+                    if k in s:
+                        return v
+                # Additional heuristic: look for keywords
+                if "location" in s:
+                    return "location_not_found_or_inaccurate"
+                if "login" in s or "sign in" in s:
+                    return "unable_to_login"
+                if "respond" in s or "not responding" in s or "crash" in s:
+                    return "my_app_is_not_responding"
+                return None
+
+            app_related_tag = get_app_related_tag_from_text(text)
+
             create_zendesk_ticket(
                 subject=f"Conversation {conversation_id}",
-                description=f"User {app_user_id} said: {text}"
+                description=f"User {app_user_id} said: {text}",
+                conversation_id=conversation_id,
+                app_related_sub_category=app_related_tag
             )
         except Exception as e:
             logger.error(f"Failed to create ticket: {e}")
