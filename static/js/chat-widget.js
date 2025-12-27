@@ -62,11 +62,12 @@ document.addEventListener('DOMContentLoaded', function () {
                 this.disconnect();
             }
 
-            // Create WebSocket URL - ALWAYS use wss:// on Render.com
-            const wsUrl = `wss://${window.location.host}/ws/chat/${this.conversationId}/`;
-            
+            // Create WebSocket URL - use secure when page is https, otherwise plain ws
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+            const wsUrl = `${wsProtocol}://${window.location.host}/ws/chat/${this.conversationId}/`;
+
             console.log('🔌 Connecting to WebSocket:', wsUrl);
-            
+
             this.socket = new WebSocket(wsUrl);
 
             this.socket.onopen = () => {
@@ -89,6 +90,17 @@ document.addEventListener('DOMContentLoaded', function () {
                 });
                 
                 this.showConnectionStatus('connected');
+            };
+
+            this.socket.onerror = (err) => {
+                console.error('WebSocket error:', err);
+            };
+
+            this.socket.onclose = (ev) => {
+                console.warn('WebSocket closed:', ev.code, ev.reason);
+                this.connected = false;
+                webSocketConnected = false;
+                this.showConnectionStatus('disconnected');
             };
 
             this.socket.onmessage = (event) => {
