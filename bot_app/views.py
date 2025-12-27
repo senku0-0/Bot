@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from django.http import JsonResponse, HttpResponseForbidden, HttpRequest, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
-import json, hmac, hashlib, os, base64, logging, sys, uuid
+import json, hmac, hashlib, os, base64, logging, sys, uuid, re
 from typing import Optional, Dict, Any, Union, List
 from dotenv import load_dotenv
 import requests
@@ -213,10 +213,11 @@ def verify_signature(payload: bytes, signature: str) -> bool:
         
     return True
 
-# Create Zendesk ticket
+# Create Zendesk ticket (ONLY for bot conversations, not for escalated chats)
 def create_zendesk_ticket(subject: str, description: str, conversation_id: Optional[str] = None, app_related_sub_category: Optional[Union[str,int]] = None) -> Dict[str, Any]:
     """
     Create a new ticket in Zendesk and optionally populate custom fields.
+    ONLY USE THIS FOR BOT CONVERSATIONS, NOT FOR ESCALATED CHATS.
 
     Args:
         subject (str): The subject of the ticket.
@@ -592,12 +593,7 @@ def send_message_to_sunshine(request: HttpRequest) -> JsonResponse:
 def escalate_to_agent(request: HttpRequest) -> JsonResponse:
     """
     Escalates the conversation to the next switchboard integration (e.g., Agent Workspace).
-
-    Args:
-        request (HttpRequest): The incoming HTTP request containing conversationId and reason.
-
-    Returns:
-        JsonResponse: JSON response indicating the status of the escalation.
+    NOTE: Sunshine will automatically create Zendesk ticket, so we DON'T create one here.
     """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
@@ -634,46 +630,6 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             logger.error(f"Failed to escalate conversation: {pc_response.status_code} - {pc_response.text}")
             return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
 
-        # ============================================================================
-        # NEW: Create Zendesk ticket and store conversation-ticket mapping
-        # ============================================================================
-        ticket_response = None
-        ticket_id = None
-        
-        try:
-            # Create the Zendesk ticket
-            ticket_subject = f"Chat escalated: {conversation_id}"
-            ticket_description = f"""User requested agent assistance.
-
-Conversation ID: {conversation_id}
-User ID: {app_user_id}
-Reason: {reason}
-
-This ticket was created from a Sunshine Conversations chat escalation."""
-            
-            ticket_response = create_zendesk_ticket(
-                subject=ticket_subject,
-                description=ticket_description,
-                conversation_id=conversation_id,
-                app_related_sub_category=None
-            )
-            
-            # Extract ticket ID from response
-            ticket_id = ticket_response.get('ticket', {}).get('id')
-            
-            if ticket_id:
-                # CRITICAL: Store the mapping in cache
-                cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)  # 24 hours
-                cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)
-                
-                logger.info(f"📌 Stored mapping: Conversation {conversation_id} → Ticket {ticket_id}")
-            else:
-                logger.warning(f"Could not extract ticket ID from response: {ticket_response}")
-                
-        except Exception as ticket_error:
-            logger.error(f"Failed to create Zendesk ticket: {ticket_error}")
-            # Don't fail the entire escalation if ticket creation fails
-
         # 2. Send a message on behalf of the user to trigger ticket creation
         # Only do this if we have the appUserId
         if app_user_id:
@@ -693,7 +649,6 @@ This ticket was created from a Sunshine Conversations chat escalation."""
 
         return JsonResponse({
             "status": "escalated",
-            "ticket_id": ticket_id,
             "conversation_id": conversation_id
         })
 
@@ -891,9 +846,40 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
     sb_integration = conversation.get("activeSwitchboardIntegration", {})
     current_integration_name = sb_integration.get("name")
 
-    # If the Agent (next/zendesk) is in control, DO NOT create a ticket.
-    # Zendesk will handle the message automatically.
+    # ============================================================================
+    # NEW: When agent (Zendesk) takes control, extract ticket ID from metadata
+    # ============================================================================
     if current_integration_name in ["next", "zendesk"]:
+        logger.info(f"Agent (Zendesk) is now in control of conversation {conversation_id}")
+        
+        # Try to extract Zendesk ticket ID from metadata
+        metadata = conversation.get("metadata", {})
+        if metadata:
+            # Sunshine often stores ticket info in metadata
+            # Check common locations for ticket ID
+            ticket_id = None
+            
+            # Check Sunshine's standard metadata format
+            if 'dataCapture' in metadata:
+                ticket_data = metadata.get('dataCapture', {}).get('ticketField', {})
+                if ticket_data:
+                    ticket_id = ticket_data.get('id')
+            
+            # Also check for any ticket references in the entire metadata
+            if not ticket_id:
+                metadata_str = json.dumps(metadata)
+                ticket_match = re.search(r'ticket[_-]?id["\']?\s*:\s*["\']?(\d+)', metadata_str, re.IGNORECASE)
+                if ticket_match:
+                    ticket_id = ticket_match.group(1)
+            
+            if ticket_id:
+                logger.info(f"🎫 Found Zendesk ticket ID in metadata: {ticket_id}")
+                # Store the mapping
+                cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
+                cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)
+                logger.info(f"📌 Stored mapping from metadata: Conversation {conversation_id} → Ticket {ticket_id}")
+        
+        # Don't create additional tickets when agent is in control
         logger.info(f"Ignoring message from {app_user_id} because Agent is in control.")
         return
 
@@ -1104,14 +1090,6 @@ def handle_agent_end_session(event_data: Dict[str, Any]) -> None:
         logger.error(f"Failed to send end-session message: {e}")
 
 @csrf_exempt
-def debug_zendesk_format(request: HttpRequest) -> JsonResponse:
-    """Debug endpoint to see Zendesk webhook format"""
-    logger.info("🔍 DEBUG: Zendesk webhook format")
-    logger.info(f"Headers: {dict(request.headers)}")
-    logger.info(f"Full body: {request.body.decode('utf-8')}")
-    return JsonResponse({"status": "logged"})
-
-@csrf_exempt
 def zendesk_webhook(request: HttpRequest) -> JsonResponse:
     """
     Handle Zendesk webhook notifications when agents reply.
@@ -1136,7 +1114,7 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
             return JsonResponse({"status": "invalid_json"}, status=400)
         
         # ====================================================================
-        # NEW: Handle Zendesk's actual webhook format
+        # Handle Zendesk's actual webhook format
         # ====================================================================
         
         # Check the event type
@@ -1146,13 +1124,30 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
             # This is ticket creation - extract ticket ID for mapping verification
             ticket_id = data.get('detail', {}).get('id')
             if ticket_id:
-                logger.info(f"✅ Ticket created: {ticket_id}")
-                # Check if we have mapping stored
-                conversation_id = cache.get(f'ticket_{ticket_id}')
-                if conversation_id:
-                    logger.info(f"✅ Mapping verified: Ticket {ticket_id} → Conversation {conversation_id}")
+                logger.info(f"✅ Ticket created by Sunshine: {ticket_id}")
+                
+                # Try to find conversation from metadata in the ticket description
+                description = data.get('detail', {}).get('description', '')
+                conversation_id = None
+                
+                # Look for conversation ID in the description (Sunshine puts it there)
+                conv_match = re.search(r'Conversation ID:\s*([a-f0-9]+)', description, re.IGNORECASE)
+                if conv_match:
+                    conversation_id = conv_match.group(1)
+                    # Store mapping
+                    cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
+                    cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)
+                    logger.info(f"📌 Extracted and stored mapping: Ticket {ticket_id} → Conversation {conversation_id}")
                 else:
-                    logger.warning(f"⚠️ No mapping found for ticket {ticket_id}")
+                    # Also try looking for conversation ID in other patterns
+                    conv_match2 = re.search(r'conversation.*id.*?([a-f0-9]+)', description, re.IGNORECASE)
+                    if conv_match2:
+                        conversation_id = conv_match2.group(1)
+                        cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
+                        cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)
+                        logger.info(f"📌 Found conversation ID via pattern 2: {conversation_id}")
+                    else:
+                        logger.warning(f"⚠️ Could not extract conversation ID from ticket description")
             
             return JsonResponse({
                 "status": "ticket_created",
@@ -1161,33 +1156,32 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
         
         elif event_type == "zen:event-type:ticket.commented":
             # THIS IS WHAT YOU NEED FOR AGENT MESSAGES!
-            # Extract comment data from the proper location
             detail = data.get('detail', {})
             ticket_id = detail.get('id')
             
-            # In Zendesk webhooks, comments might be in a different structure
-            # You need to check the actual Zendesk webhook documentation
-            # or log the full payload to see where comments are
-            
             logger.info(f"🎯 AGENT COMMENT EVENT: Ticket {ticket_id}")
-            logger.info(f"Full event data: {json.dumps(data, indent=2)[:1000]}")
             
-            # Since we can't see the full structure, let's try to find comment
-            comment_body = None
+            # Try to find conversation from cache
+            conversation_id = cache.get(f'ticket_{ticket_id}')
             
-            # Try to find comment in different possible locations
-            if 'comment' in detail:
-                comment_body = detail.get('comment', {}).get('body')
-            elif 'latest_comment' in detail:
-                comment_body = detail.get('latest_comment', {}).get('body')
-            
-            if comment_body:
-                logger.info(f"Found comment: {comment_body[:100]}")
-                # Find conversation and forward to Sunshine
-                conversation_id = cache.get(f'ticket_{ticket_id}')
+            if conversation_id:
+                # Extract comment from the event
+                # Zendesk comment format varies - we need to extract it properly
+                comment_body = None
                 
-                if conversation_id:
-                    logger.info(f"✅ Forwarding agent comment to conversation {conversation_id}")
+                # Try different possible locations for comment
+                events = data.get('events', [])
+                for event in events:
+                    if event.get('type') == 'Comment':
+                        comment_body = event.get('body')
+                        break
+                
+                # Also check in detail
+                if not comment_body and 'comment' in detail:
+                    comment_body = detail.get('comment', {}).get('body')
+                
+                if comment_body:
+                    logger.info(f"Found agent comment: {comment_body[:100]}")
                     
                     # Forward to Sunshine
                     auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
@@ -1207,13 +1201,19 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
                     response = requests.post(url, json=payload, auth=auth)
                     
                     if response.status_code in [200, 201]:
-                        logger.info(f"✅ Agent message forwarded to Sunshine!")
+                        logger.info(f"✅ Agent message forwarded to Sunshine conversation {conversation_id}!")
                         return JsonResponse({
                             "status": "forwarded",
                             "ticket_id": ticket_id,
                             "conversation_id": conversation_id
                         })
-                    
+                    else:
+                        logger.error(f"❌ Failed to forward agent message: {response.status_code} - {response.text}")
+                else:
+                    logger.warning("Could not extract comment body from Zendesk webhook")
+            else:
+                logger.warning(f"⚠️ No conversation mapping found for ticket {ticket_id}")
+        
         # If we get here, log the full structure for debugging
         logger.warning(f"⚠️ Unhandled Zendesk event type: {event_type}")
         logger.info(f"Full data structure: {json.dumps(data, indent=2)[:1500]}")
@@ -1227,3 +1227,25 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
     except Exception as e:
         logger.exception(f"Exception in zendesk_webhook: {str(e)}")
         return JsonResponse({"error": str(e)}, status=500)
+    
+@csrf_exempt
+def debug_zendesk_format(request: HttpRequest) -> JsonResponse:
+    """Debug endpoint to see Zendesk webhook format"""
+    logger.info("🔍 DEBUG: Zendesk webhook format")
+    logger.info(f"Headers: {dict(request.headers)}")
+    
+    try:
+        body_str = request.body.decode('utf-8')
+        logger.info(f"Full body: {body_str}")
+        
+        # Try to parse as JSON
+        try:
+            data = json.loads(body_str)
+            logger.info(f"Parsed JSON: {json.dumps(data, indent=2)}")
+        except:
+            logger.info("Body is not valid JSON")
+            
+    except Exception as e:
+        logger.error(f"Error reading body: {e}")
+    
+    return JsonResponse({"status": "logged", "message": "Check server logs for details"})
