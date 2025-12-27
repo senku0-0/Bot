@@ -1104,6 +1104,14 @@ def handle_agent_end_session(event_data: Dict[str, Any]) -> None:
         logger.error(f"Failed to send end-session message: {e}")
 
 @csrf_exempt
+def debug_zendesk_format(request: HttpRequest) -> JsonResponse:
+    """Debug endpoint to see Zendesk webhook format"""
+    logger.info("🔍 DEBUG: Zendesk webhook format")
+    logger.info(f"Headers: {dict(request.headers)}")
+    logger.info(f"Full body: {request.body.decode('utf-8')}")
+    return JsonResponse({"status": "logged"})
+
+@csrf_exempt
 def zendesk_webhook(request: HttpRequest) -> JsonResponse:
     """
     Handle Zendesk webhook notifications when agents reply.
@@ -1114,7 +1122,6 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
     try:
         # Log that we received something
         logger.info("🎯 ZENDESK WEBHOOK RECEIVED!")
-        logger.info(f"Headers: {dict(request.headers)}")
         
         # Try to parse the body
         body_str = request.body.decode('utf-8')
@@ -1123,76 +1130,73 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
         # Try to parse as JSON
         try:
             data = json.loads(body_str)
-            logger.info(f"Parsed JSON: {json.dumps(data, indent=2)[:1000]}")
+            logger.info(f"Parsed JSON type: {data.get('type')}")
         except:
-            logger.warning("Body is not JSON, might be form data or other format")
-            data = {"raw_body": body_str[:200]}
+            logger.warning("Body is not JSON")
+            return JsonResponse({"status": "invalid_json"}, status=400)
         
-        # Extract ticket and comment info (Zendesk format)
-        ticket_id = None
-        comment_body = None
-        comment_author = None
+        # ====================================================================
+        # NEW: Handle Zendesk's actual webhook format
+        # ====================================================================
         
-        # Try different Zendesk webhook formats
-        if isinstance(data, dict):
-            # Format 1: Direct ticket object (most common)
-            if 'ticket' in data:
-                ticket_id = data['ticket'].get('id')
-                comment = data['ticket'].get('comment', {})
-                comment_body = comment.get('body')
-                comment_author = comment.get('author', {})
+        # Check the event type
+        event_type = data.get('type')
+        
+        if event_type == "zen:event-type:ticket.created":
+            # This is ticket creation - extract ticket ID for mapping verification
+            ticket_id = data.get('detail', {}).get('id')
+            if ticket_id:
+                logger.info(f"✅ Ticket created: {ticket_id}")
+                # Check if we have mapping stored
+                conversation_id = cache.get(f'ticket_{ticket_id}')
+                if conversation_id:
+                    logger.info(f"✅ Mapping verified: Ticket {ticket_id} → Conversation {conversation_id}")
+                else:
+                    logger.warning(f"⚠️ No mapping found for ticket {ticket_id}")
             
-            # Format 2: Events array (common in Zendesk)
-            elif 'events' in data and isinstance(data['events'], list):
-                for event in data['events']:
-                    if event.get('type') == 'Comment':
-                        ticket_id = event.get('ticket_id')
-                        comment_body = event.get('body')
-                        comment_author = event.get('author', {})
+            return JsonResponse({
+                "status": "ticket_created",
+                "ticket_id": ticket_id
+            })
         
-        logger.info(f"Ticket ID: {ticket_id}, Comment: {comment_body}")
-        
-        # ============================================================================
-        # CRITICAL: Find conversation and forward agent message to Sunshine
-        # ============================================================================
-        if ticket_id and comment_body:
-            # 1. Check if this is an agent comment (not end-user)
-            is_agent = False
-            if comment_author:
-                # Check if author is agent/admin
-                author_role = comment_author.get('role')
-                if author_role in ['agent', 'admin']:
-                    is_agent = True
-                # Also check if it's not the "system" or end-user
-                elif comment_author.get('id') and 'end-user' not in str(comment_author.get('role', '')).lower():
-                    # If it's not clearly end-user, assume agent
-                    is_agent = True
+        elif event_type == "zen:event-type:ticket.commented":
+            # THIS IS WHAT YOU NEED FOR AGENT MESSAGES!
+            # Extract comment data from the proper location
+            detail = data.get('detail', {})
+            ticket_id = detail.get('id')
             
-            # If we can't determine from role, check content for clues
-            if not is_agent:
-                # If comment contains typical agent phrases or is not from customer
-                agent_phrases = ['thank you', 'please', 'solution', 'resolve', 'investigat', 'looking into']
-                if any(phrase in comment_body.lower() for phrase in agent_phrases):
-                    is_agent = True
+            # In Zendesk webhooks, comments might be in a different structure
+            # You need to check the actual Zendesk webhook documentation
+            # or log the full payload to see where comments are
             
-            if is_agent:
-                # 2. Find the Sunshine conversation from cache
+            logger.info(f"🎯 AGENT COMMENT EVENT: Ticket {ticket_id}")
+            logger.info(f"Full event data: {json.dumps(data, indent=2)[:1000]}")
+            
+            # Since we can't see the full structure, let's try to find comment
+            comment_body = None
+            
+            # Try to find comment in different possible locations
+            if 'comment' in detail:
+                comment_body = detail.get('comment', {}).get('body')
+            elif 'latest_comment' in detail:
+                comment_body = detail.get('latest_comment', {}).get('body')
+            
+            if comment_body:
+                logger.info(f"Found comment: {comment_body[:100]}")
+                # Find conversation and forward to Sunshine
                 conversation_id = cache.get(f'ticket_{ticket_id}')
                 
                 if conversation_id:
-                    logger.info(f"✅ Found mapping: Ticket {ticket_id} → Conversation {conversation_id}")
+                    logger.info(f"✅ Forwarding agent comment to conversation {conversation_id}")
                     
-                    # 3. Forward agent message to Sunshine
+                    # Forward to Sunshine
                     auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
                     url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
-                    
-                    # Get agent name if available
-                    agent_name = comment_author.get('name', 'Agent') if comment_author else 'Agent'
                     
                     payload = {
                         "author": {
                             "type": "business",
-                            "displayName": agent_name
+                            "displayName": "Zendesk Agent"
                         },
                         "content": {
                             "type": "text",
@@ -1200,33 +1204,24 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
                         }
                     }
                     
-                    logger.info(f"📤 Forwarding agent message to Sunshine conversation {conversation_id}")
                     response = requests.post(url, json=payload, auth=auth)
                     
                     if response.status_code in [200, 201]:
-                        logger.info(f"✅ Agent message forwarded successfully to conversation {conversation_id}")
-                    else:
-                        logger.error(f"❌ Failed to forward agent message: {response.status_code} - {response.text}")
-                        
-                    return JsonResponse({
-                        "status": "forwarded",
-                        "ticket_id": ticket_id,
-                        "conversation_id": conversation_id,
-                        "agent_name": agent_name
-                    })
-                else:
-                    logger.warning(f"⚠️ No conversation mapping found for ticket {ticket_id}")
-                    # Try to find by checking if conversation_id is stored in Zendesk custom field
-                    # This would require additional API call to Zendesk
-            else:
-                logger.info("Ignoring non-agent comment (likely from end-user)")
-        else:
-            logger.info("No ticket ID or comment body found in webhook")
+                        logger.info(f"✅ Agent message forwarded to Sunshine!")
+                        return JsonResponse({
+                            "status": "forwarded",
+                            "ticket_id": ticket_id,
+                            "conversation_id": conversation_id
+                        })
+                    
+        # If we get here, log the full structure for debugging
+        logger.warning(f"⚠️ Unhandled Zendesk event type: {event_type}")
+        logger.info(f"Full data structure: {json.dumps(data, indent=2)[:1500]}")
         
         return JsonResponse({
             "status": "received",
-            "ticket_id": ticket_id,
-            "message": "Webhook processed"
+            "event_type": event_type,
+            "message": "Webhook received but event type not handled"
         })
         
     except Exception as e:

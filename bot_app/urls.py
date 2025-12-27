@@ -1,6 +1,6 @@
 from django.urls import path
 from .views import index, webhook_message, init_conversation, send_message_to_sunshine, escalate_to_agent, get_conversation_messages, send_to_zendesk, zendesk_webhook
-from .views import debug_websocket
+from .views import debug_websocket,debug_zendesk_format
 
 urlpatterns = [
     path('', index, name='index'),
@@ -12,4 +12,5 @@ urlpatterns = [
     path('api/send-to-zendesk', send_to_zendesk, name='send_to_zendesk'),
     path('api/debug-websocket', debug_websocket, name='debug_websocket'),
     path('zendesk/webhook', zendesk_webhook, name='zendesk_webhook'),
+    path('debug-zendesk', debug_zendesk_format, name='debug_zendesk'),
 ]
