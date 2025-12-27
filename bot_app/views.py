@@ -50,50 +50,48 @@ SUNSHINE_API_KEY_SECRET = os.getenv("SUNSHINE_API_KEY_SECRET", "").strip()
 SUNSHINE_API_BASE_URL = os.getenv("SUNSHINE_API_BASE_URL", "https://api.smooch.io").strip().rstrip('/')
 
 # ============================================================================
-# WEBSOCKET ADDED: Function to forward webhook to WebSocket
+# WEBSOCKET ADDED: Function to forward agent messages to WebSocket
 # ============================================================================
-def forward_webhook_to_websocket(event_data: Dict[str, Any]) -> None:
+def forward_agent_message_to_websocket(conversation_id: str, message_text: str, agent_name: str = "Agent") -> bool:
     """
-    CRITICAL: Forward Sunshine webhook events to WebSocket for instant UI updates.
-    This ensures agent messages appear without page refresh.
+    CRITICAL: Forward agent messages to WebSocket for instant UI updates.
+    This is called from zendesk_webhook when agents reply.
+    
+    Args:
+        conversation_id: The conversation ID
+        message_text: The agent's message
+        agent_name: Name of the agent
+        
+    Returns:
+        bool: Success status
     """
     try:
-        # Extract conversation ID
-        conversation_id = None
-        
-        # Try v2 format
-        if 'conversation' in event_data:
-            conversation_id = event_data['conversation'].get('id')
-        
-        # Try v1 format
-        if not conversation_id and 'conversation' in event_data:
-            conversation_id = event_data['conversation'].get('_id')
-        
-        # Try events array format
-        if not conversation_id and 'events' in event_data:
-            for evt in event_data.get('events', []):
-                if 'conversation' in evt:
-                    conversation_id = evt['conversation'].get('id') or evt['conversation'].get('_id')
-                    if conversation_id:
-                        break
-        
-        if not conversation_id:
-            logger.debug("No conversation ID in webhook, skipping WebSocket forward")
-            return
-        
-        logger.info(f"📡 Forwarding webhook to WebSocket for conversation: {conversation_id}")
+        logger.info(f"📡 Forwarding agent message to WebSocket for conversation: {conversation_id}")
         
         # Get the channel layer
         channel_layer = get_channel_layer()
         
         # Prepare the WebSocket message
         websocket_message = {
-            'type': 'sunshine_webhook',
-            'payload': event_data,
-            'timestamp': json.dumps(event_data)[:100]  # For debugging
+            'type': 'agent_message',
+            'payload': {
+                'id': f"agent_msg_{uuid.uuid4().hex[:10]}",
+                'author': {
+                    'type': 'business',
+                    'displayName': agent_name,
+                    'role': 'agent'
+                },
+                'content': {
+                    'type': 'text',
+                    'text': message_text
+                },
+                'received': datetime.now().isoformat(),
+                'source': 'zendesk',
+                'conversationId': conversation_id
+            }
         }
         
-        # Send to WebSocket group (sync wrapper for async)
+        # Send to WebSocket group
         async_to_sync(channel_layer.group_send)(
             f'chat_{conversation_id}',
             {
@@ -102,82 +100,50 @@ def forward_webhook_to_websocket(event_data: Dict[str, Any]) -> None:
             }
         )
         
-        logger.info(f"✅ Webhook forwarded to WebSocket: {conversation_id}")
+        logger.info(f"✅ Agent message forwarded to WebSocket: {conversation_id}")
+        return True
         
     except Exception as e:
-        logger.error(f"❌ Error forwarding webhook to WebSocket: {str(e)}")
-        # Don't raise - we don't want to break webhook processing
+        logger.error(f"❌ Error forwarding agent message to WebSocket: {str(e)}")
+        return False
 
 # ============================================================================
-# WEBSOCKET ADDED: Debug endpoint to test WebSocket
+# NEW: Function to store conversation-ticket mapping
 # ============================================================================
-@csrf_exempt
-def debug_websocket(request: HttpRequest) -> JsonResponse:
+def store_conversation_ticket_mapping(conversation_id: str, ticket_id: str) -> bool:
     """
-    Debug endpoint to test WebSocket broadcasting.
-    Usage: GET /api/debug-websocket?conversationId=xxx&message=Hello
+    Store the mapping between Sunshine conversation and Zendesk ticket.
+    CRITICAL for matching agent replies to the right chat.
+    
+    Args:
+        conversation_id: Sunshine conversation ID
+        ticket_id: Zendesk ticket ID
+        
+    Returns:
+        bool: Success status
     """
-    if request.method != 'GET':
-        return JsonResponse({"error": "Method not allowed"}, status=405)
-    
-    conversation_id = request.GET.get('conversationId')
-    message_text = request.GET.get('message', 'Test message from debug endpoint')
-    
-    if not conversation_id:
-        return JsonResponse({"error": "Missing conversationId"}, status=400)
-    
     try:
-        # Test WebSocket broadcast
-        channel_layer = get_channel_layer()
+        # Store mapping both ways for easy lookup
+        cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)  # 24 hours
+        cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
         
-        test_message = {
-            'type': 'debug_message',
-            'payload': {
-                'text': message_text,
-                'conversationId': conversation_id,
-                'source': 'debug_endpoint'
-            }
-        }
-        
-        # Sync wrapper for async function
-        async_to_sync(channel_layer.group_send)(
-            f'chat_{conversation_id}',
-            {
-                'type': 'send_webhook_message',
-                'message': test_message
-            }
-        )
-        
-        return JsonResponse({
-            "status": "sent",
-            "conversationId": conversation_id,
-            "message": message_text
-        })
-        
+        logger.info(f"📌 Stored mapping: Conversation {conversation_id} → Ticket {ticket_id}")
+        return True
     except Exception as e:
-        logger.exception("Error in debug_websocket")
-        return JsonResponse({"error": str(e)}, status=500)
+        logger.error(f"❌ Failed to store conversation-ticket mapping: {str(e)}")
+        return False
 
 # Index route (frontend entry point)
 @csrf_exempt
 def index(request: HttpRequest) -> HttpResponse:
     """
     Render the chat widget frontend.
-
-    Args:
-        request (HttpRequest): The incoming HTTP request.
-
-    Returns:
-        HttpResponse: The rendered HTML page.
     """
-    # ============================================================================
-    # WEBSOCKET ADDED: Pass Sunshine App ID to template for WebSocket connection
-    # ============================================================================
-    from django.conf import settings  # Import Django settings
+    from django.conf import settings
     
     context = {
-        'SUNSHINE_APP_ID': SUNSHINE_APP_ID,  # Already defined at top of views.py
-        'debug': settings.DEBUG,  # Pass Django's DEBUG setting
+        'SUNSHINE_APP_ID': SUNSHINE_APP_ID,
+        'debug': settings.DEBUG,
     }
     return render(request, 'index.html', context)
 
@@ -185,13 +151,6 @@ def index(request: HttpRequest) -> HttpResponse:
 def verify_signature(payload: bytes, signature: str) -> bool:
     """
     Verify the Sunshine webhook signature to ensure authenticity.
-
-    Args:
-        payload (bytes): The raw body of the request.
-        signature (str): The signature header from the request.
-
-    Returns:
-        bool: True if the signature is valid, False otherwise.
     """
     if not signature:
         logger.warning("Webhook signature missing")
@@ -199,14 +158,12 @@ def verify_signature(payload: bytes, signature: str) -> bool:
     if signature.startswith("sha256="):
         signature = signature.split("=", 1)[1]
     
-    # Debugging: Ensure SECRET is loaded
     if not SECRET:
         logger.error("SUNSHINE_WEBHOOK_SIGNING_SECRET is missing or empty!")
         return False
         
     calc = hmac.new(SECRET.encode(), payload, hashlib.sha256).hexdigest()
     
-    # Debugging: Log mismatch (be careful not to log full secrets in production, but helpful here)
     if not hmac.compare_digest(calc, signature):
         logger.warning(f"Signature mismatch. Calculated: {calc[:10]}... Received: {signature[:10]}...")
         return False
@@ -218,15 +175,6 @@ def create_zendesk_ticket(subject: str, description: str, conversation_id: Optio
     """
     Create a new ticket in Zendesk and optionally populate custom fields.
     ONLY USE THIS FOR BOT CONVERSATIONS, NOT FOR ESCALATED CHATS.
-
-    Args:
-        subject (str): The subject of the ticket.
-        description (str): The body/description of the ticket.
-        conversation_id (Optional[str]): Sunshine conversation id to store on the ticket custom field.
-        app_related_sub_category (Optional[Union[str,int]]): Value for the app-related sub-category field.
-
-    Returns:
-        Dict[str, Any]: The JSON response from the Zendesk API.
     """
     url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets.json"
     headers = {"Content-Type": "application/json"}
@@ -267,7 +215,6 @@ def create_zendesk_ticket(subject: str, description: str, conversation_id: Optio
         timeout=15
     )
 
-    # Return response JSON and log non-201 for troubleshooting
     try:
         resp_json = response.json()
     except Exception:
@@ -279,14 +226,10 @@ def create_zendesk_ticket(subject: str, description: str, conversation_id: Optio
 
     return resp_json
 
-# --- Sunshine API Helpers ---
-
+# Sunshine API Helpers
 def get_sunshine_jwt() -> Optional[str]:
     """
     Obtains a JWT access token from Sunshine Conversations OAuth endpoint.
-
-    Returns:
-        Optional[str]: The access token (JWT), or None if failed.
     """
     if not SUNSHINE_API_KEY_ID or not SUNSHINE_API_KEY_SECRET:
         logger.error("SUNSHINE_API_KEY_ID or SUNSHINE_API_KEY_SECRET not set")
@@ -313,15 +256,6 @@ def get_sunshine_jwt() -> Optional[str]:
 def get_sunshine_headers(include_content_type: bool = True, use_jwt: bool = False) -> Optional[Dict[str, str]]:
     """
     Returns the headers required for Sunshine Conversations API calls.
-    Uses Bearer token authentication with API key or JWT.
-
-    Args:
-        include_content_type (bool): Whether to include Content-Type header. Defaults to True.
-                                     Set to False for file uploads where requests should handle multipart/form-data.
-        use_jwt (bool): Whether to use JWT instead of API key. Defaults to False.
-
-    Returns:
-        Optional[Dict[str, str]]: A dictionary of headers including Authorization, or None if credentials are missing.
     """
     if use_jwt:
         token = get_sunshine_jwt()
@@ -330,7 +264,6 @@ def get_sunshine_headers(include_content_type: bool = True, use_jwt: bool = Fals
     else:
         token = SUNSHINE_API_KEY_ID or os.getenv("SUNSHINE_KEY_ID")
         if not token:
-            # DEBUGGING: Log available keys to help user find the mismatch
             available_keys = ", ".join([k for k in os.environ.keys() if "SUNSHINE" in k or "ZENDESK" in k])
             logger.error(f"Missing Auth. Available env vars with SUNSHINE/ZENDESK: {available_keys}")
             logger.error("SUNSHINE_API_KEY_ID (or SUNSHINE_KEY_ID) is missing in .env")
@@ -350,12 +283,6 @@ def get_sunshine_headers(include_content_type: bool = True, use_jwt: bool = Fals
 def init_conversation(request: HttpRequest) -> JsonResponse:
     """
     Initialize a conversation for a new or existing user.
-    
-    Args:
-        request (HttpRequest): The incoming HTTP request containing optional userId.
-
-    Returns:
-        JsonResponse: JSON containing appUserId, conversationId, and externalId.
     """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
@@ -371,23 +298,23 @@ def init_conversation(request: HttpRequest) -> JsonResponse:
 
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
 
-        # Try to get userId from request if available (optional)
+        # Try to get userId from request if available
         user_id = None
         try:
             if request.body:
                 data = json.loads(request.body)
                 user_id = data.get("userId")
         except Exception:
-            pass # Ignore body parsing errors, proceed as new guest
+            pass
 
-        # If no user_id provided, generate a unique one for this guest session
+        # If no user_id provided, generate a unique one
         if not user_id:
             user_id = str(uuid.uuid4())
             logger.info(f"Generated new Guest ID: {user_id}")
         else:
             logger.info(f"Using existing userId: {user_id}")
 
-        # Create User Payload (v2 uses 'externalId')
+        # Create User Payload
         user_payload = {
             "externalId": user_id,
             "profile": {"givenName": "Guest"}
@@ -396,21 +323,16 @@ def init_conversation(request: HttpRequest) -> JsonResponse:
         # Create/Get user
         response = requests.post(url, json=user_payload, auth=auth)
         
-        if response.status_code not in [200, 201, 409]: # 409 = Conflict (User already exists), which is fine if we sent a userId
+        if response.status_code not in [200, 201, 409]:
             logger.error(f"Sunshine API Error (Create User): {response.status_code} - {response.text}")
             return JsonResponse({"error": "Failed to create user", "details": response.text}, status=500)
 
         user_data = response.json()
-        # v2 response structure: {"user": {"id": "..."}}
         app_user_id = user_data.get("user", {}).get("id")
         
-        # Fallback: If user already exists (409), the response might not contain the user object directly in the same format
-        # We might need to fetch the user by externalId if the create response didn't give it to us.
+        # Fallback for existing users
         if not app_user_id and response.status_code == 409:
-             # Try to fetch the user by externalId
-             get_user_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/users/{user_id}" 
-             # Note: v2 API usually allows fetching by userId (externalId)
-             
+             get_user_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/users/{user_id}"
              logger.info(f"User exists, fetching details for: {user_id}")
              get_response = requests.get(get_user_url, auth=auth)
              if get_response.status_code == 200:
@@ -422,21 +344,11 @@ def init_conversation(request: HttpRequest) -> JsonResponse:
              logger.error(f"Could not retrieve appUserId. Response: {response.text}")
              return JsonResponse({"error": "Failed to retrieve user ID"}, status=500)
 
-        # 3. Check for existing conversations (Robust Logic)
+        # Check for existing conversations
         conversation_id = None
         
         def fetch_conversation(target_id: str) -> Optional[str]:
-            """
-            Helper to list conversations for a given user ID (internal or external).
-
-            Args:
-                target_id (str): The user ID to search for (appUserId or externalId).
-
-            Returns:
-                Optional[str]: The ID of the most recent conversation, or None if not found.
-            """
             try:
-                # Correct v2 Endpoint: /v2/apps/{appId}/conversations?filter[userId]={userId}
                 l_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations"
                 params = {"filter[userId]": target_id}
                 
@@ -446,7 +358,6 @@ def init_conversation(request: HttpRequest) -> JsonResponse:
                 if l_resp.status_code == 200:
                     convs = l_resp.json().get("conversations", [])
                     if convs:
-                        # Return the most recently active conversation
                         return convs[0].get("id")
                 else:
                     logger.warning(f"List conversations failed for {target_id}: {l_resp.status_code} - {l_resp.text}")
@@ -458,12 +369,12 @@ def init_conversation(request: HttpRequest) -> JsonResponse:
         if app_user_id:
             conversation_id = fetch_conversation(app_user_id)
 
-        # If not found, try fetching with External ID (user_id)
+        # If not found, try fetching with External ID
         if not conversation_id and user_id:
             conversation_id = fetch_conversation(user_id)
 
         if not conversation_id:
-            # Create a Conversation if absolutely none found
+            # Create a Conversation if none found
             conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations"
             conv_payload = {
                 "type": "personal",
@@ -476,14 +387,13 @@ def init_conversation(request: HttpRequest) -> JsonResponse:
                 conversation_id = conv_data.get("conversation", {}).get("id")
                 logger.info(f"Conversation created: {conversation_id}")
             else:
-                # If creation fails, log it but don't crash yet if we can't help it
                 logger.error(f"Sunshine API Error (Create Conversation): {conv_response.status_code} - {conv_response.text}")
                 return JsonResponse({"error": "Failed to create conversation", "details": conv_response.text}, status=500)
 
         return JsonResponse({
             "appUserId": app_user_id,
             "conversationId": conversation_id,
-            "externalId": user_id # Return the externalId (UUID) so frontend can save it
+            "externalId": user_id
         })
     except Exception as e:
         logger.exception(f"Exception in init_conversation: {str(e)}")
@@ -493,12 +403,6 @@ def init_conversation(request: HttpRequest) -> JsonResponse:
 def get_conversation_messages(request: HttpRequest) -> JsonResponse:
     """
     Fetch messages for a specific conversation.
-
-    Args:
-        request (HttpRequest): The incoming HTTP request containing 'conversationId' query param.
-
-    Returns:
-        JsonResponse: JSON containing the list of messages and conversation details.
     """
     if request.method != "GET":
         return JsonResponse({"error": "Method not allowed"}, status=405)
@@ -515,7 +419,7 @@ def get_conversation_messages(request: HttpRequest) -> JsonResponse:
 
         response = requests.get(url, auth=auth)
 
-        # Also fetch conversation details to check active switchboard integration (Agent status)
+        # Also fetch conversation details to check active switchboard integration
         conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}"
         conv_response = requests.get(conv_url, auth=auth)
         conversation_data = {}
@@ -524,7 +428,6 @@ def get_conversation_messages(request: HttpRequest) -> JsonResponse:
 
         if response.status_code == 200:
             data = response.json()
-            # Merge conversation data into response
             data['conversation'] = conversation_data
             return JsonResponse(data)
         else:
@@ -539,12 +442,6 @@ def get_conversation_messages(request: HttpRequest) -> JsonResponse:
 def send_message_to_sunshine(request: HttpRequest) -> JsonResponse:
     """
     Send a message from the user to Sunshine.
-
-    Args:
-        request (HttpRequest): The incoming HTTP request containing message details (text, author, etc.).
-
-    Returns:
-        JsonResponse: JSON response indicating success or failure.
     """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
@@ -588,12 +485,11 @@ def send_message_to_sunshine(request: HttpRequest) -> JsonResponse:
         logger.exception(f"Exception in send_message_to_sunshine: {str(e)}")
         return JsonResponse({"error": "Internal Server Error", "details": str(e)}, status=500)
 
-
 @csrf_exempt
 def escalate_to_agent(request: HttpRequest) -> JsonResponse:
     """
     Escalates the conversation to the next switchboard integration (e.g., Agent Workspace).
-    NOTE: Sunshine will automatically create Zendesk ticket, so we DON'T create one here.
+    IMPORTANT: When escalating, store the conversation ID so we can map it to the Zendesk ticket.
     """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
@@ -607,11 +503,21 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         if not conversation_id:
             return JsonResponse({"error": "Missing conversationId"}, status=400)
 
+        # Store conversation ID for later mapping
+        # We'll use this when Zendesk creates the ticket
+        cache.set(f'pending_escalation_{conversation_id}', {
+            'app_user_id': app_user_id,
+            'reason': reason,
+            'timestamp': datetime.now().isoformat()
+        }, timeout=300)  # 5 minutes for ticket creation
+        
+        logger.info(f"📝 Stored pending escalation for conversation: {conversation_id}")
+
         # Use global SUNSHINE_APP_ID
         app_id = SUNSHINE_APP_ID
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
 
-        # 1. Pass Control to Zendesk ("next")
+        # Pass Control to Zendesk ("next")
         pass_control_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/passControl"
 
         pass_control_payload = {
@@ -619,7 +525,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             "metadata": {
                 "dataCapture.systemField.tags": "escalated_from_bot",
                 "dataCapture.systemField.requester.name": "Guest User",
-                "dataCapture.ticketField.description": f"Escalation Reason: {reason}"
+                "dataCapture.ticketField.description": f"Conversation ID: {conversation_id}\nEscalation Reason: {reason}"
             }
         }
 
@@ -630,8 +536,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             logger.error(f"Failed to escalate conversation: {pc_response.status_code} - {pc_response.text}")
             return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
 
-        # 2. Send a message on behalf of the user to trigger ticket creation
-        # Only do this if we have the appUserId
+        # Send a message on behalf of the user to trigger ticket creation
         if app_user_id:
             msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/messages"
             msg_payload = {
@@ -656,23 +561,18 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         logger.exception("Exception in escalate_to_agent")
         return JsonResponse({"error": str(e)}, status=500)
 
-
-# ============================================================================
-# WEBSOCKET MODIFIED: Webhook endpoint - ADDED WebSocket forwarding
-# ============================================================================
 @csrf_exempt
 def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseForbidden]:
     """
     Webhook endpoint to receive events from Sunshine.
-    NOW FORWARDS TO WEBSOCKET for instant UI updates.
     """
     # DEBUG: Log all headers to see what is coming in
     logger.info(f"Webhook Headers: {dict(request.headers)}")
 
-    # Try different casing for the header (sometimes proxies/middleware change it)
+    # Try different casing for the header
     sig = request.headers.get("X-Hub-Signature") or request.headers.get("x-hub-signature")
     
-    # Fallback: Check for X-Api-Key if X-Hub-Signature is missing (Legacy/Custom Integration)
+    # Fallback: Check for X-Api-Key if X-Hub-Signature is missing
     if not sig:
         api_key_header = request.headers.get("X-Api-Key")
         if api_key_header:
@@ -694,27 +594,16 @@ def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseFor
         logger.error("Invalid JSON in webhook")
         return HttpResponseForbidden("Invalid JSON")
     
-    # ========================================================================
-    # WEBSOCKET ADDED: CRITICAL - Forward to WebSocket FIRST
-    # This ensures agent messages appear instantly in UI
-    # ========================================================================
-    try:
-        forward_webhook_to_websocket(event)
-    except Exception as e:
-        logger.error(f"WebSocket forwarding failed (continuing anyway): {e}")
-
     # Handle Sunshine v2 "events" array structure if present
     events_list = event.get("events", [])
     if not events_list and "trigger" in event:
-        # Handle legacy/flattened structure where the body IS the event
         events_list = [event]
     elif not events_list and "messages" in event:
-        # Handle the specific case where it might be just a message payload (fallback)
         events_list = [event]
         event["trigger"] = "conversation:message"
 
     for evt in events_list:
-        trigger = evt.get("trigger") or evt.get("type") # v1 uses trigger, v2 uses type
+        trigger = evt.get("trigger") or evt.get("type")
         
         logger.info(f"Processing Webhook Event: {trigger}")
 
@@ -725,7 +614,6 @@ def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseFor
         # 2. Handle Switchboard Events (Agent Control)
         elif trigger == "switchboard:passControl":
             logger.info("Control passed to switchboard integration.")
-            # You could update local DB state here
             
         elif trigger == "switchboard:releaseControl":
             logger.info("Control released by switchboard integration (Agent ended chat).")
@@ -739,7 +627,7 @@ def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseFor
         elif trigger == "conversation:read":
             handle_conversation_read(evt)
 
-        # 5. Handle other events (Log for now)
+        # 5. Handle other events
         elif trigger in ["conversation:typing"]:
             logger.debug(f"Received {trigger} - No action taken.")
 
@@ -748,38 +636,23 @@ def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseFor
 def handle_conversation_read(event_data: Dict[str, Any]) -> None:
     """
     Notify user when an agent reads the conversation (opens ticket).
-
-    Args:
-        event_data (Dict[str, Any]): The raw event data from the webhook.
     """
     conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
     if not conversation_id:
         return
 
-    # Identify if the reader is an agent
-    # We compare the reader's userId with the appUser's userId.
-    # If they are different, it's likely an agent.
-    
     app_user = event_data.get("appUser", {})
     app_user_id = app_user.get("_id") or app_user.get("id")
-    
-    # 'userId' is usually at the top level for conversation:read
     reader_id = event_data.get("userId")
     
-    # If userId is missing, check 'source' or 'author' (structure varies by version)
     if not reader_id:
         reader_id = event_data.get("source", {}).get("from", {}).get("id")
 
-    # If we found a reader, and it's NOT the user, assume it's an agent
     if reader_id and app_user_id and reader_id != app_user_id:
-        # Try to get agent name if possible (often not in read payload, so use generic or fetch)
-        # For speed, we'll use "An agent" or try to infer. 
-        # If the payload has 'role' == 'business', that's even better.
-        
         is_business = event_data.get("role") == "business"
         
         if is_business or reader_id != app_user_id:
-            agent_name = "An agent" # 'read' events rarely contain the display name
+            agent_name = "An agent"
             logger.info(f"Agent (ID: {reader_id}) read conversation {conversation_id}")
             
             # Send system message
@@ -797,22 +670,17 @@ def handle_conversation_read(event_data: Dict[str, Any]) -> None:
 def handle_participant_join(event_data: Dict[str, Any]) -> None:
     """
     Notify user when an agent joins the conversation.
-
-    Args:
-        event_data (Dict[str, Any]): The raw event data from the webhook.
     """
     conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
     if not conversation_id:
         return
 
     participants = event_data.get("participants", [])
-    # Support for singular 'participant' payload (common in some webhook versions)
     single_participant = event_data.get("participant")
     if single_participant:
         participants.append(single_participant)
 
     for p in participants:
-        # Check if the participant is a business user (Agent)
         if p.get("type") == "business":
             agent_name = p.get("displayName", "An agent")
             logger.info(f"Agent {agent_name} joined conversation {conversation_id}")
@@ -829,13 +697,9 @@ def handle_participant_join(event_data: Dict[str, Any]) -> None:
             except Exception as e:
                 logger.error(f"Failed to send agent join notification: {e}")
 
-
 def process_message_event(event_data: Dict[str, Any]) -> None:
     """
     Handle incoming user messages and optionally create tickets.
-
-    Args:
-        event_data (Dict[str, Any]): The raw event data from the webhook.
     """
     conversation = event_data.get("conversation", {})
     conversation_id = conversation.get("_id") or conversation.get("id")
@@ -846,17 +710,13 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
     sb_integration = conversation.get("activeSwitchboardIntegration", {})
     current_integration_name = sb_integration.get("name")
 
-    # ============================================================================
-    # NEW: When agent (Zendesk) takes control, extract ticket ID from metadata
-    # ============================================================================
+    # When agent (Zendesk) takes control, extract ticket ID from metadata
     if current_integration_name in ["next", "zendesk"]:
         logger.info(f"Agent (Zendesk) is now in control of conversation {conversation_id}")
         
         # Try to extract Zendesk ticket ID from metadata
         metadata = conversation.get("metadata", {})
         if metadata:
-            # Sunshine often stores ticket info in metadata
-            # Check common locations for ticket ID
             ticket_id = None
             
             # Check Sunshine's standard metadata format
@@ -875,9 +735,7 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
             if ticket_id:
                 logger.info(f"🎫 Found Zendesk ticket ID in metadata: {ticket_id}")
                 # Store the mapping
-                cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
-                cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)
-                logger.info(f"📌 Stored mapping from metadata: Conversation {conversation_id} → Ticket {ticket_id}")
+                store_conversation_ticket_mapping(conversation_id, ticket_id)
         
         # Don't create additional tickets when agent is in control
         logger.info(f"Ignoring message from {app_user_id} because Agent is in control.")
@@ -935,12 +793,6 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
 def send_to_zendesk(request: HttpRequest) -> JsonResponse:
     """
     Handle file upload and send to Zendesk agent via Sunshine Conversations API.
-
-    Args:
-        request (HttpRequest): The incoming HTTP request with multipart/form-data.
-
-    Returns:
-        JsonResponse: JSON response with status or error.
     """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed", "status": "fail"}, status=405)
@@ -1027,51 +879,9 @@ def send_to_zendesk(request: HttpRequest) -> JsonResponse:
         logger.exception(f"Exception in send_to_zendesk: {str(e)}")
         return JsonResponse({"error": "Internal Server Error", "status": "fail", "details": str(e)}, status=500)
 
-
-@csrf_exempt
-def debug_send_agent_join(request: HttpRequest) -> JsonResponse:
-    """
-    Temporary debug endpoint: send an agent-joined system message to a conversation.
-
-    POST JSON: { "conversationId": "...", "agentName": "Jane Doe" }
-    """
-    if request.method != 'POST':
-        return JsonResponse({"error": "Method not allowed"}, status=405)
-
-    try:
-        data = json.loads(request.body)
-        conversation_id = data.get('conversationId')
-        agent_name = data.get('agentName', 'Agent')
-
-        if not conversation_id:
-            return JsonResponse({"error": "Missing conversationId"}, status=400)
-
-        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
-        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
-        payload = {
-            "author": {"type": "business", "displayName": agent_name},
-            "content": {"type": "text", "text": f"{agent_name} connected"}
-        }
-
-        logger.info(f"[DEBUG] Sending agent-join message to {conversation_id} as {agent_name}")
-        resp = requests.post(url, json=payload, auth=auth)
-        try:
-            resp_json = resp.json()
-        except Exception:
-            resp_json = {"status_code": resp.status_code, "text": resp.text}
-
-        return JsonResponse({"status": "sent", "response": resp_json})
-    except Exception as e:
-        logger.exception("Exception in debug_send_agent_join")
-        return JsonResponse({"error": str(e)}, status=500)
-
-
 def handle_agent_end_session(event_data: Dict[str, Any]) -> None:
     """
     Send a system message when agent ends the chat.
-
-    Args:
-        event_data (Dict[str, Any]): The raw event data from the webhook.
     """
     conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
     if not conversation_id:
@@ -1089,10 +899,14 @@ def handle_agent_end_session(event_data: Dict[str, Any]) -> None:
     except Exception as e:
         logger.error(f"Failed to send end-session message: {e}")
 
+# ============================================================================
+# CRITICAL FIX: Corrected zendesk_webhook function
+# ============================================================================
 @csrf_exempt
 def zendesk_webhook(request: HttpRequest) -> JsonResponse:
     """
     Handle Zendesk webhook notifications when agents reply.
+    This is the MOST IMPORTANT function for agent messages to appear.
     """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
@@ -1101,151 +915,377 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
         # Log that we received something
         logger.info("🎯 ZENDESK WEBHOOK RECEIVED!")
         
-        # Try to parse the body
+        # Parse the body
         body_str = request.body.decode('utf-8')
-        logger.info(f"Body preview: {body_str[:500]}")
+        logger.info(f"📦 Raw body (first 1000 chars): {body_str[:1000]}")
         
-        # Try to parse as JSON
         try:
             data = json.loads(body_str)
-            logger.info(f"Parsed JSON type: {data.get('type')}")
-        except:
-            logger.warning("Body is not JSON")
+        except json.JSONDecodeError:
+            logger.error("❌ Body is not valid JSON")
             return JsonResponse({"status": "invalid_json"}, status=400)
         
         # ====================================================================
-        # Handle Zendesk's actual webhook format
+        # Handle Zendesk's webhook format for AGENT COMMENTS
+        # Zendesk sends agent comments in a specific format
         # ====================================================================
         
-        # Check the event type
-        event_type = data.get('type')
+        # First, check if this is a ticket comment webhook
+        # Zendesk webhooks have different formats, we need to handle all
         
-        if event_type == "zen:event-type:ticket.created":
-            # This is ticket creation - extract ticket ID for mapping verification
-            ticket_id = data.get('detail', {}).get('id')
+        # Format 1: Direct ticket comment format
+        if 'ticket' in data and 'comment' in data:
+            logger.info("📝 Format 1: Direct ticket comment format")
+            return handle_ticket_comment_webhook(data)
+        
+        # Format 2: Event-based webhook (more common)
+        elif 'events' in data:
+            logger.info("📝 Format 2: Event-based webhook format")
+            return handle_event_webhook(data)
+        
+        # Format 3: Simple notification format
+        elif 'type' in data:
+            logger.info("📝 Format 3: Notification format")
+            return handle_notification_webhook(data)
+        
+        else:
+            # Unknown format - log it for debugging
+            logger.warning("⚠️ Unknown Zendesk webhook format")
+            logger.info(f"Full data: {json.dumps(data, indent=2)[:2000]}")
+            
+            # Try to extract ticket ID from any location
+            ticket_id = extract_ticket_id_from_data(data)
             if ticket_id:
-                logger.info(f"✅ Ticket created by Sunshine: {ticket_id}")
-                
-                # Try to find conversation from metadata in the ticket description
-                description = data.get('detail', {}).get('description', '')
-                conversation_id = None
-                
-                # Look for conversation ID in the description (Sunshine puts it there)
-                conv_match = re.search(r'Conversation ID:\s*([a-f0-9]+)', description, re.IGNORECASE)
-                if conv_match:
-                    conversation_id = conv_match.group(1)
-                    # Store mapping
-                    cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
-                    cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)
-                    logger.info(f"📌 Extracted and stored mapping: Ticket {ticket_id} → Conversation {conversation_id}")
-                else:
-                    # Also try looking for conversation ID in other patterns
-                    conv_match2 = re.search(r'conversation.*id.*?([a-f0-9]+)', description, re.IGNORECASE)
-                    if conv_match2:
-                        conversation_id = conv_match2.group(1)
-                        cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
-                        cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)
-                        logger.info(f"📌 Found conversation ID via pattern 2: {conversation_id}")
-                    else:
-                        logger.warning(f"⚠️ Could not extract conversation ID from ticket description")
+                logger.info(f"Extracted ticket ID: {ticket_id}")
+                return JsonResponse({
+                    "status": "unknown_format",
+                    "ticket_id": ticket_id,
+                    "message": "Received webhook but format not recognized"
+                })
             
             return JsonResponse({
-                "status": "ticket_created",
-                "ticket_id": ticket_id
+                "status": "unknown_format",
+                "message": "Webhook format not recognized"
             })
         
-        elif event_type == "zen:event-type:ticket.commented":
-            # THIS IS WHAT YOU NEED FOR AGENT MESSAGES!
-            detail = data.get('detail', {})
-            ticket_id = detail.get('id')
+    except Exception as e:
+        logger.exception(f"❌ Exception in zendesk_webhook: {str(e)}")
+        return JsonResponse({"error": str(e)}, status=500)
+
+def handle_ticket_comment_webhook(data: Dict[str, Any]) -> JsonResponse:
+    """
+    Handle Zendesk webhook format 1: Direct ticket comment
+    """
+    try:
+        ticket = data.get('ticket', {})
+        ticket_id = ticket.get('id')
+        
+        if not ticket_id:
+            logger.error("❌ No ticket ID in webhook")
+            return JsonResponse({"status": "no_ticket_id"}, status=400)
+        
+        comment = ticket.get('comment', {})
+        comment_body = comment.get('body', '')
+        comment_author = comment.get('author', {})
+        author_role = comment_author.get('role', '')
+        
+        # Only process agent/admin comments
+        if author_role not in ['agent', 'admin']:
+            logger.info(f"👤 Ignoring non-agent comment (role: {author_role})")
+            return JsonResponse({"status": "ignored_non_agent"})
+        
+        if not comment_body or comment_body.strip() == '':
+            logger.info("📝 Empty comment body, ignoring")
+            return JsonResponse({"status": "ignored_empty"})
+        
+        logger.info(f"🎯 Agent comment detected for ticket {ticket_id}: {comment_body[:100]}...")
+        
+        # Get conversation ID from cache
+        conversation_id = cache.get(f'ticket_{ticket_id}')
+        
+        if not conversation_id:
+            logger.warning(f"⚠️ No conversation mapping found for ticket {ticket_id}")
             
-            logger.info(f"🎯 AGENT COMMENT EVENT: Ticket {ticket_id}")
-            
-            # Try to find conversation from cache
-            conversation_id = cache.get(f'ticket_{ticket_id}')
-            
-            if conversation_id:
-                # Extract comment from the event
-                # Zendesk comment format varies - we need to extract it properly
-                comment_body = None
-                
-                # Try different possible locations for comment
-                events = data.get('events', [])
-                for event in events:
-                    if event.get('type') == 'Comment':
-                        comment_body = event.get('body')
+            # Try to find conversation from pending escalations
+            # Search all cache keys for this ticket
+            for key in cache._cache.keys():
+                if isinstance(key, str) and key.startswith('pending_escalation_'):
+                    pending_data = cache.get(key)
+                    if pending_data and str(ticket_id) in str(pending_data):
+                        conversation_id = key.replace('pending_escalation_', '')
+                        logger.info(f"🔍 Found pending escalation for conversation {conversation_id}")
                         break
+            
+            if not conversation_id:
+                logger.error(f"❌ Cannot forward agent message - no conversation mapping for ticket {ticket_id}")
+                return JsonResponse({
+                    "status": "no_conversation_mapping",
+                    "ticket_id": ticket_id
+                })
+        
+        # Get agent name
+        agent_name = comment_author.get('name', 'Agent')
+        if not agent_name or agent_name.lower() == 'zendesk':
+            agent_name = "Support Agent"
+        
+        logger.info(f"👤 Agent {agent_name} replied to ticket {ticket_id}")
+        
+        # CRITICAL: Forward agent message to Sunshine
+        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+        
+        payload = {
+            "author": {
+                "type": "business",
+                "displayName": agent_name
+            },
+            "content": {
+                "type": "text",
+                "text": comment_body
+            }
+        }
+        
+        logger.info(f"🚀 Forwarding agent message to Sunshine conversation {conversation_id}")
+        response = requests.post(url, json=payload, auth=auth)
+        
+        if response.status_code in [200, 201]:
+            logger.info(f"✅ Agent message successfully forwarded to Sunshine!")
+            
+            # ALSO forward to WebSocket for instant UI update
+            forward_agent_message_to_websocket(conversation_id, comment_body, agent_name)
+            
+            return JsonResponse({
+                "status": "forwarded",
+                "ticket_id": ticket_id,
+                "conversation_id": conversation_id,
+                "agent_name": agent_name
+            })
+        else:
+            logger.error(f"❌ Failed to forward agent message: {response.status_code} - {response.text}")
+            return JsonResponse({
+                "status": "forward_failed",
+                "ticket_id": ticket_id,
+                "error": response.text
+            }, status=500)
+            
+    except Exception as e:
+        logger.exception(f"❌ Exception in handle_ticket_comment_webhook: {str(e)}")
+        return JsonResponse({"error": str(e)}, status=500)
+
+def handle_event_webhook(data: Dict[str, Any]) -> JsonResponse:
+    """
+    Handle Zendesk webhook format 2: Event-based
+    """
+    try:
+        events = data.get('events', [])
+        
+        for event in events:
+            event_type = event.get('type')
+            
+            if event_type == 'Comment':
+                # This is an agent comment
+                ticket_id = extract_ticket_id_from_data(data)
+                comment_body = event.get('body', '')
                 
-                # Also check in detail
-                if not comment_body and 'comment' in detail:
-                    comment_body = detail.get('comment', {}).get('body')
-                
-                if comment_body:
-                    logger.info(f"Found agent comment: {comment_body[:100]}")
+                if ticket_id and comment_body:
+                    logger.info(f"🎯 Event-based agent comment for ticket {ticket_id}")
                     
-                    # Forward to Sunshine
-                    auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
-                    url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+                    # Get conversation ID
+                    conversation_id = cache.get(f'ticket_{ticket_id}')
                     
-                    payload = {
-                        "author": {
-                            "type": "business",
-                            "displayName": "Zendesk Agent"
-                        },
-                        "content": {
-                            "type": "text",
-                            "text": comment_body
+                    if conversation_id:
+                        # Forward to Sunshine
+                        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+                        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+                        
+                        payload = {
+                            "author": {
+                                "type": "business",
+                                "displayName": "Support Agent"
+                            },
+                            "content": {
+                                "type": "text",
+                                "text": comment_body
+                            }
                         }
-                    }
+                        
+                        response = requests.post(url, json=payload, auth=auth)
+                        
+                        if response.status_code in [200, 201]:
+                            logger.info(f"✅ Event-based agent message forwarded!")
+                            forward_agent_message_to_websocket(conversation_id, comment_body, "Support Agent")
                     
-                    response = requests.post(url, json=payload, auth=auth)
-                    
-                    if response.status_code in [200, 201]:
-                        logger.info(f"✅ Agent message forwarded to Sunshine conversation {conversation_id}!")
-                        return JsonResponse({
-                            "status": "forwarded",
-                            "ticket_id": ticket_id,
-                            "conversation_id": conversation_id
-                        })
-                    else:
-                        logger.error(f"❌ Failed to forward agent message: {response.status_code} - {response.text}")
-                else:
-                    logger.warning("Could not extract comment body from Zendesk webhook")
-            else:
-                logger.warning(f"⚠️ No conversation mapping found for ticket {ticket_id}")
+                break
         
-        # If we get here, log the full structure for debugging
-        logger.warning(f"⚠️ Unhandled Zendesk event type: {event_type}")
-        logger.info(f"Full data structure: {json.dumps(data, indent=2)[:1500]}")
-        
-        return JsonResponse({
-            "status": "received",
-            "event_type": event_type,
-            "message": "Webhook received but event type not handled"
-        })
+        return JsonResponse({"status": "processed_events"})
         
     except Exception as e:
-        logger.exception(f"Exception in zendesk_webhook: {str(e)}")
+        logger.exception(f"❌ Exception in handle_event_webhook: {str(e)}")
         return JsonResponse({"error": str(e)}, status=500)
+
+def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
+    """
+    Handle Zendesk webhook format 3: Notification format
+    """
+    try:
+        event_type = data.get('type', '')
+        
+        if 'ticket.commented' in event_type or 'ticket_updated' in event_type:
+            ticket_id = extract_ticket_id_from_data(data)
+            
+            if ticket_id:
+                logger.info(f"📝 Notification webhook for ticket {ticket_id}")
+                # Try to handle it like a regular ticket comment
+                return handle_ticket_comment_webhook(data)
+        
+        return JsonResponse({"status": "processed_notification"})
+        
+    except Exception as e:
+        logger.exception(f"❌ Exception in handle_notification_webhook: {str(e)}")
+        return JsonResponse({"error": str(e)}, status=500)
+
+def extract_ticket_id_from_data(data: Dict[str, Any]) -> Optional[str]:
+    """
+    Extract ticket ID from any Zendesk webhook format.
+    """
+    # Try different possible locations for ticket ID
+    ticket_id = None
     
+    # Location 1: Direct ticket.id
+    if 'ticket' in data and 'id' in data['ticket']:
+        ticket_id = str(data['ticket']['id'])
+    
+    # Location 2: In detail object
+    elif 'detail' in data and 'id' in data['detail']:
+        ticket_id = str(data['detail']['id'])
+    
+    # Location 3: In events array
+    elif 'events' in data and data['events']:
+        for event in data['events']:
+            if 'ticket_id' in event:
+                ticket_id = str(event['ticket_id'])
+                break
+    
+    # Location 4: Search recursively in the entire data
+    if not ticket_id:
+        data_str = json.dumps(data)
+        matches = re.findall(r'"ticket[_-]?id":\s*"?(\d+)"?', data_str, re.IGNORECASE)
+        if matches:
+            ticket_id = matches[0]
+        else:
+            # Look for any numeric ID that looks like a ticket ID
+            matches = re.findall(r'"id":\s*"?(\d+)"?', data_str)
+            if matches:
+                ticket_id = matches[0]
+    
+    return ticket_id
+
+# ============================================================================
+# Debug endpoints
+# ============================================================================
 @csrf_exempt
 def debug_zendesk_format(request: HttpRequest) -> JsonResponse:
-    """Debug endpoint to see Zendesk webhook format"""
-    logger.info("🔍 DEBUG: Zendesk webhook format")
-    logger.info(f"Headers: {dict(request.headers)}")
+    """
+    Debug endpoint to see Zendesk webhook format.
+    """
+    logger.info("🔍 DEBUG: Zendesk webhook format check")
     
     try:
-        body_str = request.body.decode('utf-8')
-        logger.info(f"Full body: {body_str}")
+        body_str = request.body.decode('utf-8') if request.body else ''
+        logger.info(f"📦 Full body: {body_str}")
         
-        # Try to parse as JSON
         try:
-            data = json.loads(body_str)
-            logger.info(f"Parsed JSON: {json.dumps(data, indent=2)}")
-        except:
-            logger.info("Body is not valid JSON")
+            data = json.loads(body_str) if body_str else {}
+            logger.info(f"📊 Parsed JSON structure:")
+            logger.info(json.dumps(data, indent=2))
+            
+            # Try to extract ticket ID
+            ticket_id = extract_ticket_id_from_data(data)
+            if ticket_id:
+                logger.info(f"🎫 Extracted ticket ID: {ticket_id}")
+                
+                # Check if we have mapping
+                conversation_id = cache.get(f'ticket_{ticket_id}')
+                if conversation_id:
+                    logger.info(f"📌 Found mapping: Ticket {ticket_id} → Conversation {conversation_id}")
+                else:
+                    logger.info(f"⚠️ No mapping found for ticket {ticket_id}")
+            
+        except json.JSONDecodeError:
+            logger.info("❌ Body is not valid JSON")
             
     except Exception as e:
         logger.error(f"Error reading body: {e}")
     
-    return JsonResponse({"status": "logged", "message": "Check server logs for details"})
+    return JsonResponse({
+        "status": "logged",
+        "message": "Check server logs for details"
+    })
+
+@csrf_exempt 
+def debug_check_mappings(request: HttpRequest) -> JsonResponse:
+    """
+    Debug endpoint to check all stored conversation-ticket mappings.
+    """
+    logger.info("🔍 Checking all stored mappings...")
+    
+    mappings = []
+    
+    # This is a simplified check - in production you'd use a database
+    try:
+        # Note: This depends on your cache backend
+        # For Django's cache, you might need to iterate differently
+        logger.info("📊 Current mappings in cache:")
+        
+        # Check for specific patterns
+        import re
+        from django.core.cache import cache
+        
+        # We can't iterate all cache keys in production easily
+        # This is just for debugging
+        
+    except Exception as e:
+        logger.error(f"Error checking mappings: {e}")
+    
+    return JsonResponse({
+        "status": "checked",
+        "mappings": mappings,
+        "message": "Check server logs for details"
+    })
+
+@csrf_exempt
+def debug_send_test_agent_message(request: HttpRequest) -> JsonResponse:
+    """
+    Debug endpoint: manually send a test agent message to a conversation.
+    """
+    if request.method != 'POST':
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        conversation_id = data.get('conversationId')
+        message = data.get('message', 'Test agent message from debug endpoint')
+        agent_name = data.get('agentName', 'Test Agent')
+        
+        if not conversation_id:
+            return JsonResponse({"error": "Missing conversationId"}, status=400)
+        
+        # Forward to WebSocket
+        success = forward_agent_message_to_websocket(conversation_id, message, agent_name)
+        
+        if success:
+            return JsonResponse({
+                "status": "sent",
+                "conversation_id": conversation_id,
+                "message": message,
+                "via": "websocket"
+            })
+        else:
+            return JsonResponse({
+                "status": "failed",
+                "error": "WebSocket forwarding failed"
+            }, status=500)
+            
+    except Exception as e:
+        logger.exception("Exception in debug_send_test_agent_message")
+        return JsonResponse({"error": str(e)}, status=500)

@@ -1,36 +1,24 @@
-"""
-ASGI config for Bot project.
-
-It exposes the ASGI callable as a module-level variable named ``application``.
-
-For more information on this file, see
-https://docs.djangoproject.com/en/6.0/howto/deployment/asgi/
-"""
-
+# asgi.py
 import os
-
 from django.core.asgi import get_asgi_application
-
-# ============================================================================
-# WEBSOCKET ADDED: Import Channels components for WebSocket support
-# ============================================================================
 from channels.routing import ProtocolTypeRouter, URLRouter
 from channels.auth import AuthMiddlewareStack
-import bot_app.routing  # Import your app's WebSocket routing
+from channels.security.websocket import AllowedHostsOriginValidator
+import bot_app.routing
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'Bot.settings')
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'your_project.settings')
 
-# ============================================================================
-# WEBSOCKET ADDED: Configure ASGI application with WebSocket support
-# ============================================================================
+# Initialize Django ASGI application early to ensure the AppRegistry
+# is populated before importing code that may import ORM models.
+django_asgi_app = get_asgi_application()
+
 application = ProtocolTypeRouter({
-    # Django's ASGI application to handle traditional HTTP requests
-    "http": get_asgi_application(),
-    
-    # WebSocket handler
-    "websocket": AuthMiddlewareStack(
-        URLRouter(
-            bot_app.routing.websocket_urlpatterns  # Your WebSocket URL patterns
+    "http": django_asgi_app,
+    "websocket": AllowedHostsOriginValidator(
+        AuthMiddlewareStack(
+            URLRouter(
+                bot_app.routing.websocket_urlpatterns
+            )
         )
     ),
 })

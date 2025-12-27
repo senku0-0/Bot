@@ -28,7 +28,12 @@ SECRET_KEY = 'django-insecure-%2x66k6z91h$wx(8w^x853=)_%s9pol=*#je&w#b*5$t5#8h2+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ["*"]
+# Add for Render.com
+ALLOWED_HOSTS = [
+    'bot-1-lttn.onrender.com',
+    'localhost',
+    '127.0.0.1',
+]
 
 
 # Application definition
@@ -155,3 +160,7 @@ STATICFILES_DIRS = [
 ]
 #  compressed + hashed filenames for caching
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+
+# CORS for WebSocket
+CORS_ALLOW_ALL_ORIGINS = True  # For testing, restrict in production
+CORS_ALLOW_CREDENTIALS = True

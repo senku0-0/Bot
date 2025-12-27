@@ -1,11 +1,7 @@
-"""
-WebSocket routing configuration for bot_app.
-Defines the URL patterns for WebSocket connections.
-"""
-
-from django.urls import path
+# bot_app/routing.py
+from django.urls import re_path
 from . import consumers
 
 websocket_urlpatterns = [
-    path('ws/chat/<str:conversation_id>/', consumers.ChatConsumer.as_asgi()),
+    re_path(r'ws/chat/(?P<conversation_id>[^/]+)/$', consumers.ChatConsumer.as_asgi()),
 ]
