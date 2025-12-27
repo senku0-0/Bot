@@ -97,7 +97,7 @@ CHANNEL_LAYERS = {
 CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-        'LOCATION': REDIS_URL + '/0',  # Use database 0
+        'LOCATION': os.environ.get("REDIS_URL") + '/0',  # Use database 0
     }
 }
 
