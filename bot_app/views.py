@@ -1018,7 +1018,7 @@ def handle_event_webhook(data: Dict[str, Any]) -> JsonResponse:
     except Exception as e:
         logger.exception(f"Exception in handle_event_webhook: {str(e)}")
         return JsonResponse({"error": str(e)}, status=500)
-
+    
 def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
     """
     Handle Zendesk webhook format 3: Notification format
@@ -1026,12 +1026,25 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
     try:
         event_type = data.get('type', '')
         
-        if 'ticket.commented' in event_type or 'ticket_updated' in event_type:
+        if 'ticket.comment_added' in event_type:
+            # 🆕 ADD THIS CHECK:
+            comment_author = data.get('event', {}).get('comment', {}).get('author', {})
+            
+            # Skip if not staff/agent
+            if not comment_author.get('is_staff', False):
+                return JsonResponse({"status": "ignored_user_comment"})
+            
+            # Only process staff comments
             ticket_id = extract_ticket_id_from_data(data)
             
             if ticket_id:
-                # Try to handle it like a regular ticket comment
                 return handle_ticket_comment_webhook(data)
+        
+        return JsonResponse({"status": "processed_notification"})
+        
+    except Exception as e:
+        logger.exception(f"Exception in handle_notification_webhook: {str(e)}")
+        return JsonResponse({"error": str(e)}, status=500)
         
         return JsonResponse({"status": "processed_notification"})
         
