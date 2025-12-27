@@ -105,11 +105,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def send_webhook_message(self, event):
         """Receive agent messages from Django views"""
         try:
-            message = event['message']
-            logger.info(f"📤 Sending agent message to WebSocket")
-            
-            # Send to WebSocket
-            await self.send(text_data=json.dumps(message))
-            
+            message = event.get('message')
+            logger.info(f"📤 send_webhook_message called for conversation {self.conversation_id}; message keys: {list(message.keys()) if isinstance(message, dict) else type(message)}")
+
+            # Send to WebSocket client
+            try:
+                await self.send(text_data=json.dumps(message))
+                logger.info(f"✅ Agent message sent to WebSocket client for conv {self.conversation_id}")
+            except Exception as send_err:
+                logger.exception(f"❌ Error sending agent message to WebSocket client: {send_err}")
+
         except Exception as e:
-            logger.error(f"❌ Error sending agent message: {e}")
+            logger.exception(f"❌ Error in send_webhook_message handler: {e}")

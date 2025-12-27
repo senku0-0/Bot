@@ -58,8 +58,11 @@ def forward_agent_message_to_websocket(conversation_id: str, message_text: str, 
     try:
         # Get the channel layer
         channel_layer = get_channel_layer()
-        
-        # Prepare the WebSocket message
+        if channel_layer is None:
+            logger.error("No channel layer available to forward agent message")
+            return False
+
+        # Prepare the WebSocket message payload
         websocket_message = {
             'type': 'agent_message',
             'payload': {
@@ -78,20 +81,26 @@ def forward_agent_message_to_websocket(conversation_id: str, message_text: str, 
                 'conversationId': conversation_id
             }
         }
-        
-        # Send to WebSocket group
-        async_to_sync(channel_layer.group_send)(
-            f'chat_{conversation_id}',
-            {
-                'type': 'send_webhook_message',
-                'message': websocket_message
-            }
-        )
-        
-        return True
-        
+
+        group_name = f'chat_{conversation_id}'
+        logger.info(f"Forwarding agent message to group {group_name}")
+
+        try:
+            async_to_sync(channel_layer.group_send)(
+                group_name,
+                {
+                    'type': 'send_webhook_message',
+                    'message': websocket_message
+                }
+            )
+            logger.info(f"group_send to {group_name} succeeded")
+            return True
+        except Exception as send_exc:
+            logger.exception(f"group_send failed for {group_name}: {send_exc}")
+            return False
+
     except Exception as e:
-        logger.error(f"Error forwarding agent message to WebSocket: {str(e)}")
+        logger.exception(f"Error preparing to forward agent message to WebSocket: {str(e)}")
         return False
 
 # ============================================================================
@@ -1085,3 +1094,65 @@ def extract_ticket_id_from_data(data: Dict[str, Any]) -> Optional[str]:
                 ticket_id = matches[0]
     
     return ticket_id
+
+
+@csrf_exempt
+def debug_group_send(request: HttpRequest) -> JsonResponse:
+    """
+    Debug endpoint to test channel_layer.group_send delivery to WebSocket consumers.
+    POST JSON: { "conversationId": "<id>", "text": "message text" }
+    """
+    if request.method != 'POST':
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        conv = data.get('conversationId')
+        text = data.get('text', 'test message')
+        if not conv:
+            return JsonResponse({"error": "Missing conversationId"}, status=400)
+
+        ok = forward_agent_message_to_websocket(conv, text, agent_name="DebugAgent")
+        return JsonResponse({"status": "sent" if ok else "failed", "conversationId": conv})
+    except Exception as e:
+        logger.exception(f"Exception in debug_group_send: {e}")
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+@csrf_exempt
+def redis_health(request: HttpRequest) -> JsonResponse:
+    """
+    Health endpoint to test Redis (Django cache) and Channels channel_layer connectivity.
+    GET /api/debug/redis_health
+    Returns JSON with `cache` and `channel_layer` results.
+    """
+    if request.method != 'GET':
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    details: Dict[str, Any] = {"cache": None, "channel_layer": None}
+
+    # Test cache (Redis) set/get
+    try:
+        test_key = f"health_{uuid.uuid4().hex[:8]}"
+        cache.set(test_key, "ok", timeout=5)
+        v = cache.get(test_key)
+        details['cache'] = "ok" if v == "ok" else f"mismatch:{v}"
+    except Exception as e:
+        details['cache'] = f"error: {str(e)}"
+
+    # Test channel_layer group_send (will attempt to publish even if no consumers)
+    try:
+        ch = get_channel_layer()
+        if ch is None:
+            details['channel_layer'] = "no_channel_layer"
+        else:
+            try:
+                async_to_sync(ch.group_send)('health_test_group', {'type': 'health.ping', 'message': 'ping'})
+                details['channel_layer'] = "ok"
+            except Exception as e:
+                details['channel_layer'] = f"error: {str(e)}"
+    except Exception as e:
+        details['channel_layer'] = f"error: {str(e)}"
+
+    status = 200 if details.get('cache') == 'ok' and details.get('channel_layer') == 'ok' else 500
+    return JsonResponse({"status": "ok" if status == 200 else "degraded", "details": details}, status=status)

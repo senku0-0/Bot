@@ -11,4 +11,6 @@ urlpatterns = [
     path('api/chat/messages', views.get_conversation_messages, name='get_conversation_messages'),
     path('api/send-to-zendesk', views.send_to_zendesk, name='send_to_zendesk'),
     path('zendesk/webhook', views.zendesk_webhook, name='zendesk_webhook'),  # CRITICAL!
+    path('api/debug/group_send', views.debug_group_send, name='debug_group_send'),
+    path('api/debug/redis_health', views.redis_health, name='redis_health'),
 ]
