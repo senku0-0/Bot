@@ -45,75 +45,70 @@ document.addEventListener('DOMContentLoaded', function () {
             this.connected = false;
             this.reconnectAttempts = 0;
             this.maxReconnectAttempts = 10; // Increased for better reliability
-            this.appId = window.SUNSHINE_APP_ID || '';
             this.messageQueue = [];
         }
-
-        connect() {
-            if (!this.userId || !this.conversationId) {
-                console.error('Cannot connect WebSocket: missing userId or conversationId');
-                return;
-            }
-
-            if (!this.appId) {
-                console.error('Cannot connect WebSocket: SUNSHINE_APP_ID not set');
-                return;
-            }
-
-            // Close existing connection if any
-            if (this.socket) {
-                this.disconnect();
-            }
-
-            // WebSocket URL for Sunshine Conversations v2
-            // FORMAT: wss://api.smooch.io/v2/ws?appId=APP_ID&userId=USER_ID
-            const wsUrl = `wss://api.smooch.io/v2/ws?appId=${this.appId}&userId=${this.userId}`;
-            
-            console.log('🔌 Connecting to Sunshine WebSocket:', wsUrl);
-            
-            this.socket = new WebSocket(wsUrl);
-
-            this.socket.onopen = () => {
-                console.log('✅ WebSocket connected successfully');
-                this.connected = true;
-                this.reconnectAttempts = 0;
-                webSocketConnected = true;
-                
-                // Send subscription message
-                this.subscribeToConversation();
-                
-                // Update UI
-                this.showConnectionStatus('connected');
-                
-                console.log('📡 WebSocket is now handling real-time updates (replaced polling)');
-            };
-
-            this.socket.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    this.handleIncomingMessage(data);
-                } catch (error) {
-                    console.error('❌ Error parsing WebSocket message:', error);
-                }
-            };
-
-            this.socket.onclose = (event) => {
-                console.log('🔌 WebSocket disconnected:', event.code, event.reason);
-                this.connected = false;
-                webSocketConnected = false;
-                this.showConnectionStatus('disconnected');
-                
-                // Only attempt reconnection if session hasn't ended
-                if (!sessionEnded) {
-                    this.attemptReconnection();
-                }
-            };
-
-            this.socket.onerror = (error) => {
-                console.error('❌ WebSocket error:', error);
-                this.showConnectionStatus('error');
-            };
+    connect() {
+        if (!this.conversationId) {
+            console.error('Cannot connect WebSocket: missing conversationId');
+            return;
         }
+
+        // Close existing connection if any
+        if (this.socket) {
+            this.disconnect();
+        }
+
+        // ============================================================
+        // CRITICAL CHANGE: Connect to YOUR Django server, not Sunshine
+        // ============================================================
+        // Determine WebSocket protocol (ws:// or wss://)
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws/chat/${this.conversationId}/`;
+        
+        console.log('🔌 Connecting to Django WebSocket:', wsUrl);
+        
+        this.socket = new WebSocket(wsUrl);
+
+        this.socket.onopen = () => {
+            console.log('✅ WebSocket connected to Django successfully');
+            this.connected = true;
+            this.reconnectAttempts = 0;
+            webSocketConnected = true;
+            
+            // Flush any queued messages
+            this.flushMessageQueue();
+            
+            this.showConnectionStatus('connected');
+            
+            console.log('📡 Django WebSocket is now handling real-time updates');
+        };
+
+        this.socket.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                this.handleIncomingMessage(data);
+            } catch (error) {
+                console.error('❌ Error parsing WebSocket message:', error);
+            }
+        };
+
+        this.socket.onclose = (event) => {
+            console.log('🔌 WebSocket disconnected from Django:', event.code, event.reason);
+            this.connected = false;
+            webSocketConnected = false;
+            this.showConnectionStatus('disconnected');
+            
+            // Only attempt reconnection if session hasn't ended
+            if (!sessionEnded) {
+                this.attemptReconnection();
+            }
+        };
+
+        this.socket.onerror = (error) => {
+            console.error('❌ WebSocket error connecting to Django:', error);
+            this.showConnectionStatus('error');
+        };
+    }
 
         subscribeToConversation() {
             const subscribeMessage = {
