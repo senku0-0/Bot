@@ -39,49 +39,62 @@ document.addEventListener('DOMContentLoaded', function () {
     let deleteAccountReasons = [];
 
     // ============================================================================
-    // Sunshine WebSocket Manager (REPLACES POLLING)
+    // FIXED: Sunshine WebSocket Manager - SIMPLIFIED & GUARANTEED TO WORK
     // ============================================================================
     class SunshineWebSocketManager {
-        constructor(userId, conversationId) {
-            this.userId = userId;
+        constructor(conversationId) {
             this.conversationId = conversationId;
             this.socket = null;
             this.connected = false;
             this.reconnectAttempts = 0;
             this.maxReconnectAttempts = 10;
-            this.messageQueue = [];
+            this.pingInterval = null;
         }
 
         connect() {
             if (!this.conversationId) {
-                console.error('Cannot connect WebSocket: missing conversationId');
+                console.error('❌ Cannot connect WebSocket: missing conversationId');
                 return;
             }
 
+            // Close existing connection
             if (this.socket) {
                 this.disconnect();
             }
 
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws/chat/${this.conversationId}/`;
+            // Create WebSocket URL - ALWAYS use wss:// on Render.com
+            const wsUrl = `wss://${window.location.host}/ws/chat/${this.conversationId}/`;
             
-            console.log('🔌 Connecting to Django WebSocket:', wsUrl);
+            console.log('🔌 Connecting to WebSocket:', wsUrl);
             
             this.socket = new WebSocket(wsUrl);
 
             this.socket.onopen = () => {
-                console.log('✅ WebSocket connected to Django successfully');
+                console.log('✅ WebSocket CONNECTED!');
                 this.connected = true;
                 this.reconnectAttempts = 0;
                 webSocketConnected = true;
-                this.flushMessageQueue();
+                
+                // Start ping interval (20 seconds for Render.com)
+                this.startPingInterval();
+                
+                // Send subscription message
+                this.send({
+                    type: 'subscribe',
+                    payload: {
+                        conversation: {
+                            id: this.conversationId
+                        }
+                    }
+                });
+                
                 this.showConnectionStatus('connected');
-                console.log('📡 Django WebSocket is now handling real-time updates');
             };
 
             this.socket.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
+                    console.log('📨 WebSocket received:', data.type);
                     this.handleIncomingMessage(data);
                 } catch (error) {
                     console.error('❌ Error parsing WebSocket message:', error);
@@ -89,63 +102,78 @@ document.addEventListener('DOMContentLoaded', function () {
             };
 
             this.socket.onclose = (event) => {
-                console.log('🔌 WebSocket disconnected from Django:', event.code, event.reason);
+                console.log(`🔌 WebSocket CLOSED: Code ${event.code}`);
                 this.connected = false;
                 webSocketConnected = false;
+                
+                // Clear ping interval
+                if (this.pingInterval) {
+                    clearInterval(this.pingInterval);
+                    this.pingInterval = null;
+                }
+                
                 this.showConnectionStatus('disconnected');
                 
-                if (!sessionEnded) {
-                    this.attemptReconnection();
+                // Auto-reconnect (except for normal closure)
+                if (!sessionEnded && event.code !== 1000) {
+                    this.reconnect();
                 }
             };
 
             this.socket.onerror = (error) => {
-                console.error('❌ WebSocket error connecting to Django:', error);
+                console.error('❌ WebSocket error:', error);
                 this.showConnectionStatus('error');
             };
         }
 
-        send(message) {
+        startPingInterval() {
+            // Send ping every 20 seconds to keep connection alive
+            this.pingInterval = setInterval(() => {
+                if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                    this.send({
+                        type: 'ping',
+                        timestamp: Date.now()
+                    });
+                }
+            }, 20000);
+        }
+
+        send(data) {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                this.socket.send(JSON.stringify(message));
+                this.socket.send(JSON.stringify(data));
                 return true;
             } else {
-                console.warn('⚠️ WebSocket not ready, queuing message');
-                this.messageQueue.push(message);
+                console.warn('⚠️ WebSocket not ready');
                 return false;
             }
         }
 
-        flushMessageQueue() {
-            if (this.messageQueue.length > 0 && this.socket && this.socket.readyState === WebSocket.OPEN) {
-                console.log(`🔄 Flushing ${this.messageQueue.length} queued messages`);
-                this.messageQueue.forEach(msg => {
-                    this.socket.send(JSON.stringify(msg));
-                });
-                this.messageQueue = [];
-            }
-        }
-
         handleIncomingMessage(data) {
-            if (data.type === 'conversation:message') {
-                this.handleNewMessage(data.payload);
-            } else if (data.type === 'participant:join') {
-                this.handleParticipantJoin(data.payload);
-            } else if (data.type === 'conversation:read') {
-                this.handleConversationRead(data.payload);
-            } else if (data.type === 'switchboard:passControl') {
-                this.handleSwitchboardControl(data.payload);
-            } else if (data.type === 'sunshine_webhook') {
-                this.handleWebhookEvent(data.payload);
-            } else if (data.type === 'debug_message') {
-                console.log('🐛 Debug message:', data.payload);
+            // Handle connection established
+            if (data.type === 'connection_established') {
+                console.log('✅ ' + data.message);
+                return;
             }
+            
+            // Handle pong response
+            if (data.type === 'pong') {
+                console.log('🏓 Pong received');
+                return;
+            }
+            
+            // Handle agent messages
+            if (data.type === 'agent_message' || data.type === 'sunshine_webhook') {
+                console.log('🎯 AGENT MESSAGE received via WebSocket');
+                this.processAgentMessage(data.payload || data);
+                return;
+            }
+            
+            // Handle other message types
+            console.log('📨 Processing:', data.type);
         }
 
-        handleNewMessage(payload) {
-            if (!payload || !payload.message) return;
-            
-            const message = payload.message;
+        processAgentMessage(message) {
+            // Check if this is an agent message
             const isAgent = message.author && (
                 message.author.type === 'business' || 
                 message.author.type === 'agent' ||
@@ -153,65 +181,80 @@ document.addEventListener('DOMContentLoaded', function () {
             );
             
             if (isAgent) {
-                console.log('🎯 Agent message received via WebSocket');
-                processWebSocketMessage(message);
-            } else {
+                console.log('🎯 Processing agent message:', message.content?.text?.substring(0, 100));
+                
+                // Remove loading indicator if present
+                removeLoadingIndicator();
+                
+                // Add to displayed IDs to prevent duplicates
                 if (message.id && !displayedMessageIds.has(message.id)) {
                     displayedMessageIds.add(message.id);
+                    
+                    // Extract text
+                    const text = message.content?.text || '';
+                    
+                    if (text) {
+                        // Handle agent join messages
+                        const lowerText = text.toLowerCase();
+                        if (lowerText.includes('connected') || lowerText.includes('joined')) {
+                            if (!agentJoinAnnounced) {
+                                agentJoinAnnounced = true;
+                                localStorage.setItem('chat_agentJoinAnnounced', 'true');
+                                
+                                // Extract agent name
+                                let agentName = message.author.displayName || 'Agent';
+                                localStorage.setItem('chat_agentName', agentName);
+                                
+                                // Update header
+                                chatHeaderTitle.textContent = agentName;
+                                
+                                // Show system message
+                                appendMessage(`${agentName} has joined the chat`, 'system-message');
+                            }
+                        }
+                        
+                        // Render the message
+                        appendMessage(text, 'bot-message');
+                        scrollToBottom();
+                    }
                 }
             }
         }
 
-        handleWebhookEvent(payload) {
-            console.log('🔄 Processing forwarded webhook');
-            
-            if (payload.messages) {
-                payload.messages.forEach(msg => this.processWebhookMessage(msg));
-            } else if (payload.events) {
-                payload.events.forEach(event => {
-                    if (event.messages) {
-                        event.messages.forEach(msg => this.processWebhookMessage(msg));
-                    }
-                });
-            }
-        }
-
-        processWebhookMessage(message) {
-            if (message.id) {
-                displayedMessageIds.add(message.id);
-            }
-            
-            const isAgent = message.author && (
-                message.author.type === 'business' || 
-                message.author.type === 'agent' ||
-                message.source === 'zendesk'
-            );
-            
-            if (isAgent) {
-                console.log('🎯 Agent message from webhook');
-                processWebSocketMessage(message);
-            }
-        }
-
-        attemptReconnection() {
+        reconnect() {
             if (this.reconnectAttempts >= this.maxReconnectAttempts || sessionEnded) {
-                console.log('❌ Max reconnection attempts reached or session ended');
+                console.log('❌ Max reconnection attempts reached');
                 return;
             }
             
             this.reconnectAttempts++;
-            const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+            const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 10000);
             
-            console.log(`🔄 Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+            console.log(`🔄 Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
             
             setTimeout(() => {
                 this.connect();
             }, delay);
         }
 
+        disconnect() {
+            if (this.socket) {
+                // Clear intervals
+                if (this.pingInterval) {
+                    clearInterval(this.pingInterval);
+                    this.pingInterval = null;
+                }
+                
+                // Close WebSocket
+                this.socket.close(1000, 'Closing connection');
+                this.socket = null;
+            }
+            this.connected = false;
+            webSocketConnected = false;
+        }
+
         showConnectionStatus(status) {
-            if (!window.DEBUG_MODE) return;
-            
+            // Optional debug indicator
             const statusElement = document.getElementById('websocket-status') || (() => {
                 const div = document.createElement('div');
                 div.id = 'websocket-status';
@@ -234,12 +277,6 @@ document.addEventListener('DOMContentLoaded', function () {
             const config = statusConfig[status] || statusConfig.disconnected;
             statusElement.textContent = config.text;
             statusElement.style.color = config.color;
-        }
-
-        disconnect() {
-            if (this.socket) {
-                this.socket.close(1000, 'Closing connection');
-            }
         }
     }
 
@@ -273,7 +310,11 @@ document.addEventListener('DOMContentLoaded', function () {
                         chatHeaderTitle.textContent = "Agent";
                     }
 
-                    initializeWebSocketConnection(appUserId, conversationId);
+                    // Initialize WebSocket
+                    sunshineSocket = new SunshineWebSocketManager(conversationId);
+                    sunshineSocket.connect();
+                    
+                    // Fetch initial messages
                     fetchMessages();
                 } else {
                     console.error("Failed to initialize chat session", data);
@@ -389,62 +430,6 @@ document.addEventListener('DOMContentLoaded', function () {
             .catch(error => console.error('Error fetching messages:', error));
     }
 
-    function initializeWebSocketConnection(userId, conversationId) {
-        if (!window.WebSocket) {
-            console.error('❌ WebSocket not supported by browser');
-            return;
-        }
-        
-        sunshineSocket = new SunshineWebSocketManager(userId, conversationId);
-        sunshineSocket.connect();
-    }
-
-    function processWebSocketMessage(message) {
-        const formattedMessage = {
-            id: message.id,
-            author: message.author,
-            content: message.content,
-            received: message.received,
-            source: message.source || 'websocket'
-        };
-        
-        handleIncomingServerMessage(formattedMessage);
-    }
-
-    function handleIncomingServerMessage(serverMessage) {
-        if (serverMessage.id && displayedMessageIds.has(serverMessage.id)) return;
-        
-        const isAgent = serverMessage.author && serverMessage.author.type === 'business';
-        const isSystem = serverMessage.author && serverMessage.author.type === 'system';
-        
-        if (isAgent || isSystem) {
-            removeLoadingIndicator();
-            
-            if (serverMessage.id) displayedMessageIds.add(serverMessage.id);
-            
-            const text = serverMessage.content?.text || '';
-            
-            if (text) {
-                const lowerText = text.toLowerCase();
-                if (lowerText.includes('connected') || lowerText.includes('joined')) {
-                    if (!agentJoinAnnounced) {
-                        agentJoinAnnounced = true;
-                        localStorage.setItem('chat_agentJoinAnnounced', 'true');
-                        
-                        let agentName = serverMessage.author.displayName || 'Agent';
-                        localStorage.setItem('chat_agentName', agentName);
-                        
-                        chatHeaderTitle.textContent = agentName;
-                        appendMessage(`${agentName} has joined the chat`, 'system-message');
-                    }
-                }
-                
-                appendMessage(text, 'bot-message');
-                scrollToBottom();
-            }
-        }
-    }
-
     function endSession() {
         console.log("Ending session and cleaning up...");
         isAgentConnected = false;
@@ -520,7 +505,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // ============================================================================
-    // UI Functions
+    // UI Functions (UNCHANGED - keep all your existing code below)
     // ============================================================================
 
     function sendToSunshine(text) {
@@ -809,7 +794,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // ============================================================================
-    // File Handling Functions
+    // File Handling Functions (UNCHANGED)
     // ============================================================================
 
     function showDocumentPreviewModal(file) {
@@ -1267,7 +1252,6 @@ document.addEventListener('DOMContentLoaded', function () {
         status: () => sunshineSocket ? {
             connected: sunshineSocket.connected,
             readyState: sunshineSocket.socket?.readyState,
-            userId: sunshineSocket.userId,
             conversationId: sunshineSocket.conversationId
         } : 'No WebSocket instance',
         reconnect: () => sunshineSocket ? sunshineSocket.connect() : 'No instance',

@@ -1,17 +1,19 @@
-# Bot/asgi.py
+# Bot/asgi.py - MINIMAL VERSION
 import os
-import django
 from django.core.asgi import get_asgi_application
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'Bot.settings')
+
+# Initialize Django FIRST
+django_application = get_asgi_application()
+
+# Import channels AFTER Django is set up
 from channels.routing import ProtocolTypeRouter, URLRouter
 from channels.auth import AuthMiddlewareStack
-import bot_app.routing  # This is your bot_app's routing.py
-
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'Bot.settings')  
-# Initialize Django ASGI application
-django.setup()
+import bot_app.routing
 
 application = ProtocolTypeRouter({
-    "http": get_asgi_application(),
+    "http": django_application,
     "websocket": AuthMiddlewareStack(
         URLRouter(
             bot_app.routing.websocket_urlpatterns
