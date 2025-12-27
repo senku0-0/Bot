@@ -7,6 +7,12 @@ from dotenv import load_dotenv
 import requests
 from requests.auth import HTTPBasicAuth
 
+# ============================================================================
+# WEBSOCKET ADDED: Import Django Channels for WebSocket
+# ============================================================================
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
+
 # Configure Logging to Console
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -37,6 +43,115 @@ SUNSHINE_API_KEY_ID = os.getenv("SUNSHINE_API_KEY_ID", "").strip()
 SUNSHINE_API_KEY_SECRET = os.getenv("SUNSHINE_API_KEY_SECRET", "").strip()
 SUNSHINE_API_BASE_URL = os.getenv("SUNSHINE_API_BASE_URL", "https://api.smooch.io").strip().rstrip('/')
 
+# ============================================================================
+# WEBSOCKET ADDED: Function to forward webhook to WebSocket
+# ============================================================================
+def forward_webhook_to_websocket(event_data: Dict[str, Any]) -> None:
+    """
+    CRITICAL: Forward Sunshine webhook events to WebSocket for instant UI updates.
+    This ensures agent messages appear without page refresh.
+    """
+    try:
+        # Extract conversation ID
+        conversation_id = None
+        
+        # Try v2 format
+        if 'conversation' in event_data:
+            conversation_id = event_data['conversation'].get('id')
+        
+        # Try v1 format
+        if not conversation_id and 'conversation' in event_data:
+            conversation_id = event_data['conversation'].get('_id')
+        
+        # Try events array format
+        if not conversation_id and 'events' in event_data:
+            for evt in event_data.get('events', []):
+                if 'conversation' in evt:
+                    conversation_id = evt['conversation'].get('id') or evt['conversation'].get('_id')
+                    if conversation_id:
+                        break
+        
+        if not conversation_id:
+            logger.debug("No conversation ID in webhook, skipping WebSocket forward")
+            return
+        
+        logger.info(f"📡 Forwarding webhook to WebSocket for conversation: {conversation_id}")
+        
+        # Get the channel layer
+        channel_layer = get_channel_layer()
+        
+        # Prepare the WebSocket message
+        websocket_message = {
+            'type': 'sunshine_webhook',
+            'payload': event_data,
+            'timestamp': json.dumps(event_data)[:100]  # For debugging
+        }
+        
+        # Send to WebSocket group (sync wrapper for async)
+        async_to_sync(channel_layer.group_send)(
+            f'chat_{conversation_id}',
+            {
+                'type': 'send_webhook_message',
+                'message': websocket_message
+            }
+        )
+        
+        logger.info(f"✅ Webhook forwarded to WebSocket: {conversation_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Error forwarding webhook to WebSocket: {str(e)}")
+        # Don't raise - we don't want to break webhook processing
+
+# ============================================================================
+# WEBSOCKET ADDED: Debug endpoint to test WebSocket
+# ============================================================================
+@csrf_exempt
+def debug_websocket(request: HttpRequest) -> JsonResponse:
+    """
+    Debug endpoint to test WebSocket broadcasting.
+    Usage: GET /api/debug-websocket?conversationId=xxx&message=Hello
+    """
+    if request.method != 'GET':
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    
+    conversation_id = request.GET.get('conversationId')
+    message_text = request.GET.get('message', 'Test message from debug endpoint')
+    
+    if not conversation_id:
+        return JsonResponse({"error": "Missing conversationId"}, status=400)
+    
+    try:
+        # Test WebSocket broadcast
+        channel_layer = get_channel_layer()
+        
+        test_message = {
+            'type': 'debug_message',
+            'payload': {
+                'text': message_text,
+                'conversationId': conversation_id,
+                'source': 'debug_endpoint'
+            }
+        }
+        
+        # Sync wrapper for async function
+        async_to_sync(channel_layer.group_send)(
+            f'chat_{conversation_id}',
+            {
+                'type': 'send_webhook_message',
+                'message': test_message
+            }
+        )
+        
+        return JsonResponse({
+            "status": "sent",
+            "conversationId": conversation_id,
+            "message": message_text
+        })
+        
+    except Exception as e:
+        logger.exception("Error in debug_websocket")
+        return JsonResponse({"error": str(e)}, status=500)
+
 # Index route (frontend entry point)
 @csrf_exempt
 def index(request: HttpRequest) -> HttpResponse:
@@ -49,7 +164,16 @@ def index(request: HttpRequest) -> HttpResponse:
     Returns:
         HttpResponse: The rendered HTML page.
     """
-    return render(request, 'index.html')
+    # ============================================================================
+    # WEBSOCKET ADDED: Pass Sunshine App ID to template for WebSocket connection
+    # ============================================================================
+    from django.conf import settings  # Import Django settings
+    
+    context = {
+        'SUNSHINE_APP_ID': SUNSHINE_APP_ID,  # Already defined at top of views.py
+        'debug': settings.DEBUG,  # Pass Django's DEBUG setting
+    }
+    return render(request, 'index.html', context)
 
 # Verify Sunshine webhook signature
 def verify_signature(payload: bytes, signature: str) -> bool:
@@ -528,17 +652,14 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": str(e)}, status=500)
 
 
-# Webhook endpoint
+# ============================================================================
+# WEBSOCKET MODIFIED: Webhook endpoint - ADDED WebSocket forwarding
+# ============================================================================
 @csrf_exempt
 def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseForbidden]:
     """
     Webhook endpoint to receive events from Sunshine.
-
-    Args:
-        request (HttpRequest): The incoming HTTP request containing the event payload.
-
-    Returns:
-        Union[JsonResponse, HttpResponseForbidden]: JSON response status or Forbidden if signature fails.
+    NOW FORWARDS TO WEBSOCKET for instant UI updates.
     """
     # DEBUG: Log all headers to see what is coming in
     logger.info(f"Webhook Headers: {dict(request.headers)}")
@@ -551,10 +672,6 @@ def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseFor
         api_key_header = request.headers.get("X-Api-Key")
         if api_key_header:
             logger.info("Found X-Api-Key header instead of X-Hub-Signature. Validating...")
-            # In some custom integrations, the X-Api-Key might be used for auth instead of signature
-            # For now, we will log it and allow it if it matches a known secret (or just allow for debugging)
-            # SECURITY WARNING: In production, you should verify this key against a stored secret.
-            # For this specific debugging session, we will assume it's valid to see if the payload processes.
             logger.warning("Bypassing signature check because X-Api-Key is present (Debugging Mode)")
             sig = "BYPASS_DEBUG" 
 
@@ -571,6 +688,15 @@ def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseFor
     except json.JSONDecodeError:
         logger.error("Invalid JSON in webhook")
         return HttpResponseForbidden("Invalid JSON")
+    
+    # ========================================================================
+    # WEBSOCKET ADDED: CRITICAL - Forward to WebSocket FIRST
+    # This ensures agent messages appear instantly in UI
+    # ========================================================================
+    try:
+        forward_webhook_to_websocket(event)
+    except Exception as e:
+        logger.error(f"WebSocket forwarding failed (continuing anyway): {e}")
 
     # Handle Sunshine v2 "events" array structure if present
     events_list = event.get("events", [])

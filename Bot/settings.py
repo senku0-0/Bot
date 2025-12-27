@@ -39,6 +39,10 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'bot_app',
+    # ============================================================================
+    # WEBSOCKET ADDED: Django Channels for WebSocket support
+    # ============================================================================
+    'channels',
 ]
 
 MIDDLEWARE = [
@@ -71,6 +75,31 @@ TEMPLATES = [
 
 ASGI_APPLICATION = 'Bot.asgi.application'
 WSGI_APPLICATION = 'Bot.wsgi.application'
+
+# ============================================================================
+# WEBSOCKET ADDED: Channel layers configuration for WebSocket
+# ============================================================================
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            "hosts": [('127.0.0.1', 6379)],  # Redis server (localhost:6379)
+        },
+    },
+}
+
+# ============================================================================
+# WEBSOCKET ADDED: Cache configuration (optional but recommended)
+# ============================================================================
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'LOCATION': 'redis://127.0.0.1:6379/1',  # Redis cache on database 1
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+        }
+    }
+}
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
