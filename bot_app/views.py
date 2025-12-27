@@ -1046,8 +1046,6 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
         logger.exception(f"Exception in handle_notification_webhook: {str(e)}")
         return JsonResponse({"error": str(e)}, status=500)
         
-        return JsonResponse({"status": "processed_notification"})
-        
     except Exception as e:
         logger.exception(f"Exception in handle_notification_webhook: {str(e)}")
         return JsonResponse({"error": str(e)}, status=500)
