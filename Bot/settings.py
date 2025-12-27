@@ -29,11 +29,7 @@ SECRET_KEY = 'django-insecure-%2x66k6z91h$wx(8w^x853=)_%s9pol=*#je&w#b*5$t5#8h2+
 DEBUG = True
 
 # Add for Render.com
-ALLOWED_HOSTS = [
-    'bot-1-lttn.onrender.com',
-    'localhost',
-    '127.0.0.1',
-]
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -46,9 +42,6 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'bot_app',
-    # ============================================================================
-    # WEBSOCKET ADDED: Django Channels for WebSocket support
-    # ============================================================================
     'channels',
 ]
 
@@ -82,12 +75,6 @@ TEMPLATES = [
 
 ASGI_APPLICATION = 'Bot.asgi.application'
 WSGI_APPLICATION = 'Bot.wsgi.application'
-
-
-# ============================================================================
-# WEBSOCKET ADDED: Render Redis Configuration
-# ============================================================================
-
 
 # Get Redis URL from Render environment
 CHANNEL_LAYERS = {

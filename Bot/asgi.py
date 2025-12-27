@@ -1,24 +1,20 @@
-# asgi.py
+# Bot/asgi.py
 import os
+import django
 from django.core.asgi import get_asgi_application
 from channels.routing import ProtocolTypeRouter, URLRouter
 from channels.auth import AuthMiddlewareStack
-from channels.security.websocket import AllowedHostsOriginValidator
-import bot_app.routing
+import bot_app.routing  # This is your bot_app's routing.py
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'your_project.settings')
-
-# Initialize Django ASGI application early to ensure the AppRegistry
-# is populated before importing code that may import ORM models.
-django_asgi_app = get_asgi_application()
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'Bot.settings')  
+# Initialize Django ASGI application
+django.setup()
 
 application = ProtocolTypeRouter({
-    "http": django_asgi_app,
-    "websocket": AllowedHostsOriginValidator(
-        AuthMiddlewareStack(
-            URLRouter(
-                bot_app.routing.websocket_urlpatterns
-            )
+    "http": get_asgi_application(),
+    "websocket": AuthMiddlewareStack(
+        URLRouter(
+            bot_app.routing.websocket_urlpatterns
         )
     ),
 })
