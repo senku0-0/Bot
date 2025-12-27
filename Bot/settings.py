@@ -76,28 +76,26 @@ TEMPLATES = [
 ASGI_APPLICATION = 'Bot.asgi.application'
 WSGI_APPLICATION = 'Bot.wsgi.application'
 
+
 # ============================================================================
-# WEBSOCKET ADDED: Channel layers configuration for WebSocket
+# WEBSOCKET ADDED: Render Redis Configuration
 # ============================================================================
+
+
+# Get Redis URL from Render environment
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
-            "hosts": [('127.0.0.1', 6379)],  # Redis server (localhost:6379)
+            "hosts": [os.environ.get("REDIS_URL")],  
         },
     },
 }
 
-# ============================================================================
-# WEBSOCKET ADDED: Cache configuration (optional but recommended)
-# ============================================================================
 CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-        'LOCATION': 'redis://127.0.0.1:6379/1',  # Redis cache on database 1
-        'OPTIONS': {
-            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-        }
+        'LOCATION': REDIS_URL + '/0',  # Use database 0
     }
 }
 
