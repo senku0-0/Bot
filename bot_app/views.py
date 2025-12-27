@@ -21,7 +21,7 @@ from django.core.cache import cache
 
 # Configure Logging
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.WARNING)
+logger.setLevel(logging.INFO)
 handler = logging.StreamHandler(sys.stdout)
 handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 logger.addHandler(handler)
@@ -83,7 +83,7 @@ def forward_agent_message_to_websocket(conversation_id: str, message_text: str, 
         }
 
         group_name = f'chat_{conversation_id}'
-        logger.info(f"Forwarding agent message to group {group_name}")
+        logger.info(f"Forwarding agent message to group {group_name} - text: {str(message_text)[:200]}")
 
         try:
             async_to_sync(channel_layer.group_send)(
@@ -204,7 +204,20 @@ def create_zendesk_ticket(subject: str, description: str, conversation_id: Optio
         logger.error(f"Zendesk did not return JSON: {response.status_code} - {response.text}")
         raise
 
-    if response.status_code not in (200,201):
+    # If ticket created successfully, try to store the conversation<->ticket mapping
+    if response.status_code in (200, 201):
+        try:
+            ticket_obj = resp_json.get('ticket') or resp_json
+            ticket_id = ticket_obj.get('id') if isinstance(ticket_obj, dict) else None
+            if ticket_id and conversation_id:
+                try:
+                    store_conversation_ticket_mapping(str(conversation_id), str(ticket_id))
+                    logger.info(f"Stored mapping after ticket create: conversation={conversation_id} ticket={ticket_id}")
+                except Exception:
+                    logger.exception("Failed to store conversation-ticket mapping after create")
+        except Exception:
+            logger.exception("Error extracting ticket id after create")
+    else:
         logger.error(f"Zendesk ticket create failed: {response.status_code} - {resp_json}")
 
     return resp_json
@@ -860,6 +873,7 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
             logger.error("Body is not valid JSON")
             return JsonResponse({"status": "invalid_json"}, status=400)
         
+        logger.info(f"Received Zendesk webhook with keys: {list(data.keys())}")
         # Handle Zendesk's webhook format for AGENT COMMENTS
         
         # Format 1: Direct ticket comment format
@@ -908,6 +922,7 @@ def handle_ticket_comment_webhook(data: Dict[str, Any]) -> JsonResponse:
         comment = ticket.get('comment', {})
         comment_body = comment.get('body', '')
         comment_author = comment.get('author', {})
+        logger.info(f"Zendesk comment webhook: ticket={ticket_id} author={comment_author.get('name')} role={comment_author.get('role')} body={str(comment_body)[:300]}")
         author_role = comment_author.get('role', '')
         
         # Only process agent/admin comments
@@ -917,24 +932,15 @@ def handle_ticket_comment_webhook(data: Dict[str, Any]) -> JsonResponse:
         if not comment_body or comment_body.strip() == '':
             return JsonResponse({"status": "ignored_empty"})
         
-        # Get conversation ID from cache
-        conversation_id = cache.get(f'ticket_{ticket_id}')
-        
+        # Resolve conversation id from cache or Zendesk ticket custom field
+        conversation_id = resolve_conversation_id_for_ticket(ticket_id)
+
         if not conversation_id:
-            # Try to find conversation from pending escalations
-            for key in cache._cache.keys():
-                if isinstance(key, str) and key.startswith('pending_escalation_'):
-                    pending_data = cache.get(key)
-                    if pending_data and str(ticket_id) in str(pending_data):
-                        conversation_id = key.replace('pending_escalation_', '')
-                        break
-            
-            if not conversation_id:
-                logger.error(f"Cannot forward agent message - no conversation mapping for ticket {ticket_id}")
-                return JsonResponse({
-                    "status": "no_conversation_mapping",
-                    "ticket_id": ticket_id
-                })
+            logger.error(f"Cannot forward agent message - no conversation mapping for ticket {ticket_id}")
+            return JsonResponse({
+                "status": "no_conversation_mapping",
+                "ticket_id": ticket_id
+            })
         
         # Get agent name
         agent_name = comment_author.get('name', 'Agent')
@@ -957,9 +963,12 @@ def handle_ticket_comment_webhook(data: Dict[str, Any]) -> JsonResponse:
         }
         
         response = requests.post(url, json=payload, auth=auth)
-        
+
+        logger.info(f"Posted agent comment to Sunshine conversation {conversation_id} (status={response.status_code})")
+
         if response.status_code in [200, 201]:
             # ALSO forward to WebSocket for instant UI update
+            logger.info(f"Forwarding agent comment body to websocket for conv {conversation_id}")
             forward_agent_message_to_websocket(conversation_id, comment_body, agent_name)
             
             return JsonResponse({
@@ -997,7 +1006,7 @@ def handle_event_webhook(data: Dict[str, Any]) -> JsonResponse:
                 
                 if ticket_id and comment_body:
                     # Get conversation ID
-                    conversation_id = cache.get(f'ticket_{ticket_id}')
+                    conversation_id = resolve_conversation_id_for_ticket(ticket_id)
                     
                     if conversation_id:
                         # Forward to Sunshine
@@ -1094,6 +1103,51 @@ def extract_ticket_id_from_data(data: Dict[str, Any]) -> Optional[str]:
                 ticket_id = matches[0]
     
     return ticket_id
+
+
+def resolve_conversation_id_for_ticket(ticket_id: str) -> Optional[str]:
+    """
+    Resolve the Sunshine conversation id for a Zendesk ticket id.
+    First checks the cache, then attempts to fetch the ticket from Zendesk
+    and read the `ZENDESK_CHAT_CONVERSATION_FIELD_ID` custom field.
+    If found, stores the mapping via `store_conversation_ticket_mapping`.
+    """
+    try:
+        # Fast path: cached mapping
+        conv = cache.get(f'ticket_{ticket_id}')
+        if conv:
+            return conv
+
+        # Try to fetch ticket details from Zendesk and inspect custom fields
+        if not all([ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, ZENDESK_API_TOKEN, ZENDESK_CHAT_CONVERSATION_FIELD_ID]):
+            return None
+
+        z_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+        z_resp = requests.get(z_url, auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN), timeout=10)
+        if z_resp.status_code != 200:
+            logger.warning(f"Zendesk ticket fetch failed for {ticket_id}: {z_resp.status_code}")
+            return None
+
+        z_json = z_resp.json()
+        ticket_obj = z_json.get('ticket', {})
+        cfs = ticket_obj.get('custom_fields', []) or []
+        for cf in cfs:
+            try:
+                if str(cf.get('id')) == str(ZENDESK_CHAT_CONVERSATION_FIELD_ID):
+                    val = cf.get('value')
+                    if val:
+                        conv_id = str(val)
+                        # persist mapping for future webhooks
+                        try:
+                            store_conversation_ticket_mapping(conv_id, str(ticket_id))
+                        except Exception:
+                            logger.exception("Failed to store mapping after Zendesk lookup")
+                        return conv_id
+            except Exception:
+                continue
+    except Exception as e:
+        logger.exception(f"Error resolving conversation for ticket {ticket_id}: {e}")
+    return None
 
 
 @csrf_exempt

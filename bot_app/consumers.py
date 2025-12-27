@@ -4,7 +4,10 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 import asyncio
 
 logger = logging.getLogger(__name__)
-
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+logger.addHandler(handler)
 class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         """WebSocket connection handler"""
