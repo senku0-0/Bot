@@ -213,7 +213,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         processAgentMessage(message) {
             console.log('🎯 [WEBSOCKET] Processing agent message:', message);
-            
+
             // Check if this is an agent message
             const isAgent = message.author && (
                 message.author.type === 'business' || 
@@ -221,53 +221,42 @@ document.addEventListener('DOMContentLoaded', function () {
                 message.source === 'zendesk' ||
                 message.author.role === 'agent'
             );
-            
-            if (isAgent) {
-                console.log('🎯 [WEBSOCKET] Confirmed as agent message');
-                
-                // Extract text content
-                const text = message.content?.text || message.text || '';
-                const messageId = message.id || `agent_${Date.now()}`;
-                const agentName = message.author?.displayName || 'Agent';
-                
-                console.log(`🎯 [WEBSOCKET] Agent: ${agentName}, Text: ${text.substring(0, 100)}...`);
-                
-                // Remove loading indicator if present
-                removeLoadingIndicator();
-                
-                // Check for duplicates
-                if (!displayedMessageIds.has(messageId)) {
-                    displayedMessageIds.add(messageId);
-                    
-                    // Handle agent join messages
-                    const lowerText = text.toLowerCase();
-                    if (lowerText.includes('connected') || lowerText.includes('joined')) {
-                        if (!agentJoinAnnounced) {
-                            agentJoinAnnounced = true;
-                            localStorage.setItem('chat_agentJoinAnnounced', 'true');
-                            localStorage.setItem('chat_agentName', agentName);
-                            
-                            // Update header
-                            chatHeaderTitle.textContent = agentName;
-                            
-                            // Show system message
-                            appendMessage(`${agentName} has joined the chat`, 'system-message');
-                        }
-                    }
-                    
-                    // Render the message
-                    appendMessage(text, 'bot-message', agentName);
-                    scrollToBottom();
-                    
-                    // Show visual indicator
-                    showMessageReceivedIndicator();
-                    
-                } else {
-                    console.log('⚠️ [WEBSOCKET] Duplicate message ID, skipping:', messageId);
-                }
-            } else {
+
+            if (!isAgent) {
                 console.log('⚠️ [WEBSOCKET] Not an agent message:', message.author?.type, message.source);
+                return;
             }
+
+            // Extract text content
+            const text = message.content?.text || message.text || '';
+            const messageId = message.id || `agent_${Date.now()}`;
+            const agentName = message.author?.displayName || 'Agent';
+
+            console.log(`🎯 [WEBSOCKET] Agent: ${agentName}, Text: ${text.substring(0, 100)}...`);
+
+            // Skip duplicates
+            if (displayedMessageIds.has(messageId)) {
+                console.log('⚠️ [WEBSOCKET] Duplicate message ID, skipping:', messageId);
+                return;
+            }
+
+            // First agent message: replace loading indicator with single agent announcement
+            if (!agentJoinAnnounced) {
+                removeLoadingIndicator();
+                appendMessage(agentName, 'system-message');
+                agentJoinAnnounced = true;
+                localStorage.setItem('chat_agentJoinAnnounced', 'true');
+                localStorage.setItem('chat_agentName', agentName);
+                chatInputArea.style.display = 'flex';
+                chatHeaderTitle.textContent = agentName;
+                console.log(`🎯 [WEBSOCKET] Announced agent: ${agentName}`);
+            }
+
+            // Render the agent message (no per-message agent name)
+            displayedMessageIds.add(messageId);
+            appendMessage(text, 'bot-message');
+            scrollToBottom();
+            showMessageReceivedIndicator();
         }
 
         reconnect() {
@@ -505,15 +494,24 @@ document.addEventListener('DOMContentLoaded', function () {
                             appendFileMessage(fileName, formatFileSize(msg.content.size || 0), 'bot-message', text);
                         }
                     } else if (msg.content?.type === 'text') {
-                        const isSystem = msg.author?.type === 'system';
-                        const isAgent = msg.author?.type === 'business' || msg.author?.type === 'agent';
-                        const senderName = isAgent ? (msg.author.displayName || 'Agent') : null;
-                        
-                        console.log(`📨 [MESSAGES] Text message from ${senderName || msg.author?.type}: ${msg.content.text.substring(0, 50)}...`);
-                        
-                        appendMessage(msg.content.text, 
-                            isSystem ? 'system-message' : 'bot-message', 
-                            senderName);
+                            const isSystem = msg.author?.type === 'system';
+                            const isAgent = msg.author?.type === 'business' || msg.author?.type === 'agent';
+                            const senderName = isAgent ? (msg.author.displayName || 'Agent') : null;
+
+                            console.log(`📨 [MESSAGES] Text message from ${senderName || msg.author?.type}: ${msg.content.text.substring(0, 50)}...`);
+
+                            // If this is the first agent message seen via fetch, announce agent once
+                            if (isAgent && !agentJoinAnnounced) {
+                                removeLoadingIndicator();
+                                appendMessage(senderName || 'Agent', 'system-message');
+                                agentJoinAnnounced = true;
+                                localStorage.setItem('chat_agentJoinAnnounced', 'true');
+                                localStorage.setItem('chat_agentName', senderName || 'Agent');
+                                chatInputArea.style.display = 'flex';
+                                chatHeaderTitle.textContent = senderName || 'Agent';
+                            }
+
+                            appendMessage(msg.content.text, isSystem ? 'system-message' : 'bot-message');
                     }
                     
                     // Log every 5th message
@@ -626,7 +624,8 @@ document.addEventListener('DOMContentLoaded', function () {
             })
             .then(data => {
                 console.log("✅ [ESCALATE] Success:", data);
-                appendMessage("Connecting to agent...", 'system-message');
+                // Keep only the loading indicator shown by `showLoadingIndicator()`.
+                // The one-time agent announcement will replace it when the agent first sends a message.
             })
             .catch(error => {
                 console.error('❌ [ESCALATE] Error:', error);
@@ -933,16 +932,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function appendMessage(text, className, senderName = null) {
         console.log(`💬 [UI] Appending ${className} from ${senderName || 'unknown'}:`, text.substring(0, 50) + '...');
-        
-        if (senderName && className === 'bot-message') {
-            const nameDiv = document.createElement('div');
-            nameDiv.textContent = senderName;
-            nameDiv.style.fontSize = '0.75rem';
-            nameDiv.style.color = '#666';
-            nameDiv.style.marginBottom = '2px';
-            nameDiv.style.marginLeft = '5px';
-            messagesContainer.appendChild(nameDiv);
-        }
+        // Agent name is shown once as a system announcement; do not prefix each message with the agent name.
 
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', className);
