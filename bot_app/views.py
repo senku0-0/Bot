@@ -589,6 +589,8 @@ def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseFor
         # 2. Handle Switchboard Events (Agent Control)
         elif trigger == "switchboard:passControl":
             logger.info("[SUNSHINE-WEBHOOK] Control passed to switchboard integration.")
+            # Try to extract ticket ID from metadata when agent takes control
+            handle_agent_take_control(evt)
             
         elif trigger == "switchboard:releaseControl":
             logger.info("[SUNSHINE-WEBHOOK] Control released by switchboard integration (Agent ended chat).")
@@ -625,6 +627,48 @@ def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseFor
             logger.info(f"[SUNSHINE-WEBHOOK] Unhandled trigger type: {trigger}")
 
     return JsonResponse({"status": "received"})
+
+def handle_agent_take_control(event_data: Dict[str, Any]) -> None:
+    """
+    Handle when agent takes control of conversation.
+    Extract ticket ID from metadata if available.
+    """
+    conversation = event_data.get("payload", {}).get("conversation", {})
+    conversation_id = conversation.get("id")
+    
+    if not conversation_id:
+        return
+    
+    # Check for metadata that might contain ticket ID
+    metadata = event_data.get("payload", {}).get("metadata", {})
+    
+    if metadata:
+        # Try to extract ticket ID from metadata
+        ticket_id = None
+        
+        # Look for ticket ID in various metadata formats
+        if 'dataCapture' in metadata:
+            ticket_data = metadata.get('dataCapture', {}).get('ticketField', {})
+            if ticket_data:
+                ticket_id = ticket_data.get('id')
+        
+        # Also check for any ticket references in the entire metadata
+        if not ticket_id:
+            metadata_str = json.dumps(metadata)
+            ticket_match = re.search(r'ticket[_-]?id["\']?\s*:\s*["\']?(\d+)', metadata_str, re.IGNORECASE)
+            if ticket_match:
+                ticket_id = ticket_match.group(1)
+            
+            # Also check for "id" field in ticketField
+            if not ticket_id and 'ticketField' in metadata.get('dataCapture', {}):
+                ticket_id = metadata['dataCapture']['ticketField'].get('id')
+        
+        if ticket_id:
+            # Store the mapping
+            store_conversation_ticket_mapping(conversation_id, ticket_id)
+            logger.info(f"[AGENT-CONTROL] Stored mapping from metadata: conversation={conversation_id} -> ticket={ticket_id}")
+        else:
+            logger.info(f"[AGENT-CONTROL] No ticket ID found in metadata for conversation {conversation_id}")
 
 def handle_user_typing(event_data: Dict[str, Any]) -> None:
     """
@@ -667,7 +711,7 @@ def handle_agent_accepted_control(event_data: Dict[str, Any]) -> None:
     """
     Handle when agent accepts control of the conversation.
     """
-    conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
+    conversation_id = event_data.get("payload", {}).get("conversation", {}).get("id")
     if not conversation_id:
         return
 
@@ -721,12 +765,12 @@ def handle_participant_join(event_data: Dict[str, Any]) -> None:
     """
     Notify user when an agent joins the conversation.
     """
-    conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
+    conversation_id = event_data.get("payload", {}).get("conversation", {}).get("id")
     if not conversation_id:
         return
 
-    participants = event_data.get("participants", [])
-    single_participant = event_data.get("participant")
+    participants = event_data.get("payload", {}).get("participants", [])
+    single_participant = event_data.get("payload", {}).get("participant")
     if single_participant:
         participants.append(single_participant)
 
@@ -751,12 +795,12 @@ def handle_participant_leave(event_data: Dict[str, Any]) -> None:
     """
     Notify user when an agent leaves the conversation.
     """
-    conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
+    conversation_id = event_data.get("payload", {}).get("conversation", {}).get("id")
     if not conversation_id:
         return
 
-    participants = event_data.get("participants", [])
-    single_participant = event_data.get("participant")
+    participants = event_data.get("payload", {}).get("participants", [])
+    single_participant = event_data.get("payload", {}).get("participant")
     if single_participant:
         participants.append(single_participant)
 
@@ -782,113 +826,150 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
     Handle incoming messages from Sunshine webhook.
     This includes both user messages AND agent messages.
     """
-    conversation = event_data.get("conversation", {})
-    conversation_id = conversation.get("_id") or conversation.get("id")
-    app_user = event_data.get("appUser", {})
-    app_user_id = app_user.get("_id") or app_user.get("id")
-    
-    # Check who is currently in control
-    sb_integration = conversation.get("activeSwitchboardIntegration", {})
-    current_integration_name = sb_integration.get("name")
-
-    # When agent (Zendesk) takes control, extract ticket ID from metadata
-    if current_integration_name in ["next", "zendesk"]:
-        # Try to extract Zendesk ticket ID from metadata
-        metadata = conversation.get("metadata", {})
-        if metadata:
-            ticket_id = None
-            
-            # Check Sunshine's standard metadata format
-            if 'dataCapture' in metadata:
-                ticket_data = metadata.get('dataCapture', {}).get('ticketField', {})
-                if ticket_data:
-                    ticket_id = ticket_data.get('id')
-            
-            # Also check for any ticket references in the entire metadata
-            if not ticket_id:
-                metadata_str = json.dumps(metadata)
-                ticket_match = re.search(r'ticket[_-]?id["\']?\s*:\s*["\']?(\d+)', metadata_str, re.IGNORECASE)
-                if ticket_match:
-                    ticket_id = ticket_match.group(1)
-            
-            if ticket_id:
-                # Store the mapping
-                store_conversation_ticket_mapping(conversation_id, ticket_id)
-                logger.info(f"[TICKET-MAPPING] Stored mapping from metadata: conversation={conversation_id} -> ticket={ticket_id}")
+    try:
+        payload = event_data.get("payload", {})
+        conversation = payload.get("conversation", {})
+        conversation_id = conversation.get("id")
         
-    messages = event_data.get("messages", [])
-    if not messages:
-        return
-
-    message = messages[0]
-    author = message.get("author", {})
-    author_type = author.get("type")
-    source_type = message.get("source", {}).get("type")
-    
-    # Check if this is an AGENT/BUSINESS message from Sunshine
-    if author_type == "business" or source_type == "zendesk" or current_integration_name in ["next", "zendesk"]:
-        # THIS IS AN AGENT MESSAGE FROM SUNSHINE!
-        text = message.get("text") or message.get("content", {}).get("text")
+        if not conversation_id:
+            logger.error("[SUNSHINE-AGENT] No conversation ID in message event")
+            return
         
-        if text:
-            # Get agent name
+        # Check active switchboard integration
+        active_integration = conversation.get("activeSwitchboardIntegration", {})
+        integration_name = active_integration.get("name", "")
+        integration_type = active_integration.get("integrationType", "")
+        
+        logger.info(f"[SUNSHINE-AGENT] Active integration: {integration_name} ({integration_type})")
+        
+        # Get the message
+        message = payload.get("message", {})
+        if not message:
+            logger.error("[SUNSHINE-AGENT] No message in payload")
+            return
+        
+        # Get message details
+        author = message.get("author", {})
+        author_type = author.get("type")
+        source = message.get("source", {})
+        source_type = source.get("type")
+        source_integration_id = source.get("integrationId")
+        
+        # Get message text
+        text = message.get("text")
+        if not text:
+            content = message.get("content", {})
+            if content and content.get("type") == "text":
+                text = content.get("text")
+        
+        if not text:
+            logger.warning("[SUNSHINE-AGENT] No text in message")
+            return
+        
+        logger.info(f"[SUNSHINE-AGENT] Message details: author_type={author_type}, source_type={source_type}, integration={integration_name}")
+        
+        # ============================================================================
+        # DETECT AGENT MESSAGES
+        # ============================================================================
+        is_agent_message = False
+        agent_name = "Agent"
+        
+        # Method 1: Check if author is business type
+        if author_type == "business":
+            is_agent_message = True
             agent_name = author.get("displayName", "Agent")
-            if not agent_name or agent_name == "":
-                # Try to get from source
-                agent_name = message.get("source", {}).get("name", "Support Agent")
-            
-            logger.info(f"[SUNSHINE-AGENT] Agent message received via Sunshine: {agent_name}: {text[:100]}")
+            logger.info(f"[SUNSHINE-AGENT] Detected via author_type=business: {agent_name}")
+        
+        # Method 2: Check if source is Zendesk
+        elif source_type == "zendesk" or "zd-" in integration_name or "zendesk" in integration_type.lower():
+            is_agent_message = True
+            agent_name = author.get("displayName") or source.get("name") or "Support Agent"
+            logger.info(f"[SUNSHINE-AGENT] Detected via zendesk source: {agent_name}")
+        
+        # Method 3: Check if current integration is agent workspace
+        elif integration_name in ["zd-agentWorkspace", "next", "agentWorkspace"]:
+            is_agent_message = True
+            agent_name = author.get("displayName") or "Support Agent"
+            logger.info(f"[SUNSHINE-AGENT] Detected via agent workspace integration: {agent_name}")
+        
+        # Method 4: Check if message has business metadata
+        elif message.get("role") == "business" or message.get("business"):
+            is_agent_message = True
+            agent_name = author.get("displayName") or "Business"
+            logger.info(f"[SUNSHINE-AGENT] Detected via business role/metadata: {agent_name}")
+        
+        # Method 5: Check if it's from a switchboard integration (not answerBot)
+        elif integration_name and "answerBot" not in integration_name and author_type != "user":
+            is_agent_message = True
+            agent_name = author.get("displayName") or integration_name.replace("zd-", "").title()
+            logger.info(f"[SUNSHINE-AGENT] Detected via non-bot integration: {agent_name}")
+        
+        # If this is an AGENT message
+        if is_agent_message:
+            logger.info(f"[SUNSHINE-AGENT] ✅ AGENT MESSAGE DETECTED: {agent_name}: {text[:100]}")
             
             # Forward to WebSocket
             forward_agent_message_to_websocket(conversation_id, text, agent_name)
             
             # Don't create a ticket for agent messages
             return
-    
-    # If we reach here, this is a USER message
-    # Only create tickets for user messages when bot is in control
-    text = message.get("text") or message.get("content", {}).get("text")
-    if text and current_integration_name not in ["next", "zendesk"]:
-        try:
-            # Attempt to infer app-related sub-category from the message text
-            def get_app_related_tag_from_text(t: str) -> Optional[str]:
-                if not t:
+        
+        # ============================================================================
+        # If we reach here, this is a USER message
+        # ============================================================================
+        logger.info(f"[SUNSHINE-USER] User message: {text[:100]}")
+        
+        # Only create tickets for user messages when bot is in control
+        if integration_name and "answerBot" in integration_name:
+            try:
+                # Get app user ID for ticket description
+                app_user = payload.get("user", {})
+                app_user_id = app_user.get("id")
+                
+                # Attempt to infer app-related sub-category from the message text
+                def get_app_related_tag_from_text(t: str) -> Optional[str]:
+                    if not t:
+                        return None
+                    s = t.lower()
+                    mapping = {
+                        "location not found or inaccurate": "location_not_found_or_inaccurate",
+                        "unable to login": "unable_to_login",
+                        "my app is not responding": "my_app_is_not_responding",
+                        "others": "others",
+                        # allow matching by tag as well
+                        "location_not_found_or_inaccurate": "location_not_found_or_inaccurate",
+                        "unable_to_login": "unable_to_login",
+                        "my_app_is_not_responding": "my_app_is_not_responding",
+                        "others": "others",
+                    }
+                    # Check for exact phrase or tag in the text
+                    for k, v in mapping.items():
+                        if k in s:
+                            return v
+                    # Additional heuristic: look for keywords
+                    if "location" in s:
+                        return "location_not_found_or_inaccurate"
+                    if "login" in s or "sign in" in s:
+                        return "unable_to_login"
+                    if "respond" in s or "not responding" in s or "crash" in s:
+                        return "my_app_is_not_responding"
                     return None
-                s = t.lower()
-                mapping = {
-                    "location not found or inaccurate": "location_not_found_or_inaccurate",
-                    "unable to login": "unable_to_login",
-                    "my app is not responding": "my_app_is_not_responding",
-                    "others": "others",
-                    # allow matching by tag as well
-                    "location_not_found_or_inaccurate": "location_not_found_or_inaccurate",
-                    "unable_to_login": "unable_to_login",
-                    "my_app_is_not_responding": "my_app_is_not_responding",
-                    "others": "others",
-                }
-                # Check for exact phrase or tag in the text
-                for k, v in mapping.items():
-                    if k in s:
-                        return v
-                # Additional heuristic: look for keywords
-                if "location" in s:
-                    return "location_not_found_or_inaccurate"
-                if "login" in s or "sign in" in s:
-                    return "unable_to_login"
-                if "respond" in s or "not responding" in s or "crash" in s:
-                    return "my_app_is_not_responding"
-                return None
 
-            app_related_tag = get_app_related_tag_from_text(text)
+                app_related_tag = get_app_related_tag_from_text(text)
 
-            create_zendesk_ticket(
-                subject=f"Conversation {conversation_id}",
-                description=f"User {app_user_id} said: {text}",
-                conversation_id=conversation_id,
-                app_related_sub_category=app_related_tag
-            )
-        except Exception as e:
-            logger.error(f"Failed to create ticket: {e}")
+                create_zendesk_ticket(
+                    subject=f"Conversation {conversation_id}",
+                    description=f"User {app_user_id} said: {text}",
+                    conversation_id=conversation_id,
+                    app_related_sub_category=app_related_tag
+                )
+            except Exception as e:
+                logger.error(f"Failed to create ticket: {e}")
+        else:
+            logger.info(f"[SUNSHINE-USER] Not creating ticket - integration is {integration_name}")
+            
+    except Exception as e:
+        logger.exception(f"[SUNSHINE-AGENT] Error processing message event: {str(e)}")
 
 @csrf_exempt
 def send_to_zendesk(request: HttpRequest) -> JsonResponse:
@@ -978,7 +1059,7 @@ def handle_agent_end_session(event_data: Dict[str, Any]) -> None:
     """
     Send a system message when agent ends the chat.
     """
-    conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
+    conversation_id = event_data.get("payload", {}).get("conversation", {}).get("id")
     if not conversation_id:
         return
 
