@@ -295,39 +295,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         showConnectionStatus(status) {
-            // Create or update debug status indicator
-            let statusElement = document.getElementById('websocket-debug-status');
-            if (!statusElement) {
-                statusElement = document.createElement('div');
-                statusElement.id = 'websocket-debug-status';
-                statusElement.style.position = 'fixed';
-                statusElement.style.bottom = '50px';
-                statusElement.style.right = '10px';
-                statusElement.style.padding = '8px 12px';
-                statusElement.style.borderRadius = '5px';
-                statusElement.style.fontSize = '12px';
-                statusElement.style.zIndex = '99999';
-                statusElement.style.backgroundColor = 'rgba(0,0,0,0.8)';
-                statusElement.style.color = 'white';
-                statusElement.style.fontFamily = 'monospace';
-                statusElement.style.maxWidth = '300px';
-                statusElement.style.wordBreak = 'break-all';
-                document.body.appendChild(statusElement);
-            }
-            
-            const statusConfig = {
-                connected: { text: '🟢 WEBSOCKET LIVE', color: '#4CAF50', bg: '#1B5E20' },
-                disconnected: { text: '🔴 WEBSOCKET OFFLINE', color: '#F44336', bg: '#B71C1C' },
-                error: { text: '⚠️ WEBSOCKET ERROR', color: '#FF9800', bg: '#E65100' }
-            };
-            
-            const config = statusConfig[status] || statusConfig.disconnected;
-            statusElement.textContent = `${config.text} - Conv: ${this.conversationId || 'none'}`;
-            statusElement.style.color = config.color;
-            statusElement.style.backgroundColor = config.bg;
-            
-            // Log status change
-            console.log(`📊 [WEBSOCKET-STATUS] ${config.text}`);
+            // Debug status indicator removed
         }
 
         // Test function to verify WebSocket is working
@@ -655,59 +623,7 @@ document.addEventListener('DOMContentLoaded', function () {
     // Helper Functions
     // ============================================================================
 
-    function addWebSocketDebugButton() {
-        // Remove existing button if any
-        const existingBtn = document.getElementById('ws-debug-btn');
-        if (existingBtn) existingBtn.remove();
-        
-        // Create debug button
-        const debugBtn = document.createElement('button');
-        debugBtn.id = 'ws-debug-btn';
-        debugBtn.innerHTML = '🔧 WS Debug';
-        debugBtn.style.position = 'fixed';
-        debugBtn.style.bottom = '10px';
-        debugBtn.style.right = '10px';
-        debugBtn.style.padding = '8px 12px';
-        debugBtn.style.backgroundColor = '#007bff';
-        debugBtn.style.color = 'white';
-        debugBtn.style.border = 'none';
-        debugBtn.style.borderRadius = '5px';
-        debugBtn.style.cursor = 'pointer';
-        debugBtn.style.zIndex = '99999';
-        debugBtn.style.fontSize = '12px';
-        debugBtn.style.fontFamily = 'monospace';
-        
-        debugBtn.addEventListener('click', () => {
-            console.log('🔧 [DEBUG] WebSocket Status:', {
-                instance: !!sunshineSocket,
-                connected: sunshineSocket?.connected,
-                readyState: sunshineSocket?.socket?.readyState,
-                conversationId: conversationId,
-                webSocketConnected: webSocketConnected
-            });
-            
-            if (sunshineSocket) {
-                sunshineSocket.testConnection();
-            }
-            
-            // Also test with a direct message
-            if (conversationId) {
-                console.log('🔧 [DEBUG] Testing with debug endpoint...');
-                fetch('/api/debug/group_send', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        conversationId: conversationId,
-                        text: 'Debug test message from button'
-                    })
-                }).then(r => r.json()).then(data => {
-                    console.log('🔧 [DEBUG] Debug endpoint response:', data);
-                });
-            }
-        });
-        
-        document.body.appendChild(debugBtn);
-    }
+    // Debug button removed
 
     function showMessageReceivedIndicator() {
         // Add visual indicator that a message was received

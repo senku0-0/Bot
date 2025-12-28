@@ -516,7 +516,6 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
 
         # Send a message on behalf of the user to trigger ticket creation
-        # BUT THIS TIME: Send it without displaying in UI
         if app_user_id:
             msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/messages"
             msg_payload = {
@@ -526,18 +525,10 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
                 },
                 "content": {
                     "type": "text",
-                    "text": f"Connecting to agent. Reason: {reason}"
+                    "text": f"Conversation escalated to agent. Reason: {reason}"
                 }
             }
             requests.post(msg_url, json=msg_payload, auth=auth)
-            
-            # Also send a hidden system message that won't be shown to user
-            # This helps track the escalation in the conversation history
-            system_payload = {
-                "author": {"type": "business", "displayName": "System"},
-                "content": {"type": "text", "text": f"Conversation escalated to agent. Reason: {reason}"}
-            }
-            requests.post(msg_url, json=system_payload, auth=auth)
 
         return JsonResponse({
             "status": "escalated",
