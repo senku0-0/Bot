@@ -53,7 +53,6 @@ SUNSHINE_API_BASE_URL = os.getenv("SUNSHINE_API_BASE_URL", "https://api.smooch.i
 def forward_agent_message_to_websocket(conversation_id: str, message_text: str, agent_name: str = "Agent") -> bool:
     """
     Forward agent messages to WebSocket for instant UI updates.
-    This is called from zendesk_webhook when agents reply.
     """
     try:
         # Get the channel layer
@@ -517,6 +516,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
 
         # Send a message on behalf of the user to trigger ticket creation
+        # BUT THIS TIME: Send it without displaying in UI
         if app_user_id:
             msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/messages"
             msg_payload = {
@@ -530,6 +530,14 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
                 }
             }
             requests.post(msg_url, json=msg_payload, auth=auth)
+            
+            # Also send a hidden system message that won't be shown to user
+            # This helps track the escalation in the conversation history
+            system_payload = {
+                "author": {"type": "business", "displayName": "System"},
+                "content": {"type": "text", "text": f"Conversation escalated to agent. Reason: {reason}"}
+            }
+            requests.post(msg_url, json=system_payload, auth=auth)
 
         return JsonResponse({
             "status": "escalated",
@@ -594,7 +602,7 @@ def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseFor
             
         elif trigger == "switchboard:releaseControl":
             logger.info("[SUNSHINE-WEBHOOK] Control released by switchboard integration (Agent ended chat).")
-            handle_agent_end_session(evt)
+            handle_agent_end_session(evt, show_to_user=False)  # Don't show immediately
 
         elif trigger == "switchboard:acceptControl":
             logger.info("[SUNSHINE-WEBHOOK] Agent accepted control of conversation.")
@@ -667,6 +675,8 @@ def handle_agent_take_control(event_data: Dict[str, Any]) -> None:
             # Store the mapping
             store_conversation_ticket_mapping(conversation_id, ticket_id)
             logger.info(f"[AGENT-CONTROL] Stored mapping from metadata: conversation={conversation_id} -> ticket={ticket_id}")
+            # Store ticket status as active
+            cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
         else:
             logger.info(f"[AGENT-CONTROL] No ticket ID found in metadata for conversation {conversation_id}")
 
@@ -749,7 +759,7 @@ def handle_conversation_read(event_data: Dict[str, Any]) -> None:
         if is_business or reader_id != app_user_id:
             agent_name = "An agent"
             
-            # Send system message
+            # Send system message (but not to user UI)
             try:
                 auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
                 url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
@@ -778,7 +788,7 @@ def handle_participant_join(event_data: Dict[str, Any]) -> None:
         if p.get("type") == "business":
             agent_name = p.get("displayName", "An agent")
             
-            # Send a system message to notify the user
+            # Send a system message to notify the user (but not shown in UI)
             try:
                 auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
                 url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
@@ -808,7 +818,7 @@ def handle_participant_leave(event_data: Dict[str, Any]) -> None:
         if p.get("type") == "business":
             agent_name = p.get("displayName", "An agent")
             
-            # Send a system message to notify the user
+            # Send a system message to notify the user (but not shown in UI)
             try:
                 auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
                 url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
@@ -870,38 +880,32 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
         logger.info(f"[SUNSHINE-AGENT] Message details: author_type={author_type}, author_name={author_display_name}, source_type={source_type}, integration={integration_name}")
         
         # ============================================================================
-        # FIX 1: IGNORE SYSTEM MESSAGES
+        # CRITICAL FIX: IGNORE ALL SYSTEM AND ESCALATION MESSAGES IN UI
         # ============================================================================
-        if author_display_name == "System":
-            logger.info(f"[SUNSHINE-AGENT] Ignoring System message: {text[:100]}")
+        if author_display_name == "System" or "Connecting to agent" in text:
+            logger.info(f"[SUNSHINE-AGENT] Ignoring System/escalation message: {text[:100]}")
             return
         
         # ============================================================================
-        # FIX 2: CORRECT AGENT MESSAGE DETECTION
+        # AGENT MESSAGE DETECTION (for real human agents only)
         # ============================================================================
         is_agent_message = False
         agent_name = "Agent"
         
-        # Method 1: Check if author is business type AND NOT "System" or "Guest"
-        if author_type == "business" and author_display_name not in ["System", "Guest"]:
+        # Method 1: Check if author is business type AND NOT "System" 
+        if author_type == "business" and author_display_name != "System":
             is_agent_message = True
             agent_name = author_display_name or "Agent"
             logger.info(f"[SUNSHINE-AGENT] Detected as agent via author_type=business and name={agent_name}")
         
-        # Method 2: Check if source is Zendesk agent workspace (not answerBot)
+        # Method 2: Check if source is Zendesk agent workspace
         elif source_type == "zd:agentWorkspace":
             is_agent_message = True
             agent_name = author_display_name or "Support Agent"
             logger.info(f"[SUNSHINE-AGENT] Detected as agent via zd:agentWorkspace source: {agent_name}")
         
-        # Method 3: Check if current integration is agent workspace AND author is not user
-        elif integration_name == "zd-agentWorkspace" and author_type != "user":
-            is_agent_message = True
-            agent_name = author_display_name or "Support Agent"
-            logger.info(f"[SUNSHINE-AGENT] Detected as agent via agent workspace integration: {agent_name}")
-        
         # ============================================================================
-        # If this is an AGENT message (from a real human agent, not System/Guest)
+        # If this is an AGENT message (from a real human agent)
         # ============================================================================
         if is_agent_message:
             logger.info(f"[SUNSHINE-AGENT] ✅ REAL AGENT MESSAGE DETECTED: {agent_name}: {text[:100]}")
@@ -1060,34 +1064,64 @@ def send_to_zendesk(request: HttpRequest) -> JsonResponse:
         logger.exception(f"Exception in send_to_zendesk: {str(e)}")
         return JsonResponse({"error": "Internal Server Error", "status": "fail", "details": str(e)}, status=500)
 
-def handle_agent_end_session(event_data: Dict[str, Any]) -> None:
+def handle_agent_end_session(event_data: Dict[str, Any], show_to_user: bool = False) -> None:
     """
     Send a system message when agent ends the chat.
+    Only show to user if show_to_user=True (when ticket is solved).
     """
     conversation_id = event_data.get("payload", {}).get("conversation", {}).get("id")
     if not conversation_id:
         return
 
-    # Send a message to the user confirming the session has ended
-    try:
-        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
-        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
-        payload = {
-            "author": {"type": "business", "displayName": "System"},
-            "content": {"type": "text", "text": "The agent has ended the session. Type a message to start a new ticket."}
-        }
-        requests.post(url, json=payload, auth=auth)
-    except Exception as e:
-        logger.error(f"Failed to send end-session message: {e}")
+    # Check if there's an associated ticket
+    ticket_id = cache.get(f'conversation_{conversation_id}')
+    
+    if ticket_id:
+        # Check ticket status from Zendesk
+        try:
+            z_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+            z_resp = requests.get(z_url, auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN), timeout=10)
+            
+            if z_resp.status_code == 200:
+                z_json = z_resp.json()
+                ticket_status = z_json.get('ticket', {}).get('status', '')
+                
+                # Only show "agent ended session" message if ticket is solved
+                if ticket_status == 'solved':
+                    show_to_user = True
+                    logger.info(f"[AGENT-END] Ticket {ticket_id} is solved - showing end session message to user")
+                else:
+                    logger.info(f"[AGENT-END] Ticket {ticket_id} status is {ticket_status} - not showing end session message")
+            else:
+                logger.warning(f"[AGENT-END] Failed to fetch ticket {ticket_id}: {z_resp.status_code}")
+        except Exception as e:
+            logger.error(f"[AGENT-END] Error checking ticket status: {e}")
+    
+    if show_to_user:
+        # Send a message to the user confirming the session has ended
+        try:
+            auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+            url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+            payload = {
+                "author": {"type": "business", "displayName": "System"},
+                "content": {"type": "text", "text": "The agent has ended the session. Type a message to start a new ticket."}
+            }
+            requests.post(url, json=payload, auth=auth)
+            logger.info(f"[AGENT-END] Sent end-session message to user for conversation {conversation_id}")
+        except Exception as e:
+            logger.error(f"Failed to send end-session message: {e}")
+    else:
+        # Just log that agent ended session without showing to user
+        logger.info(f"[AGENT-END] Agent ended session for conversation {conversation_id} - not showing to user (ticket not solved)")
 
 # ============================================================================
 # CRITICAL FIX: Corrected zendesk_webhook function
+# Now handles ticket.solved events
 # ============================================================================
 @csrf_exempt
 def zendesk_webhook(request: HttpRequest) -> JsonResponse:
     """
-    Handle Zendesk webhook notifications when agents reply.
-    This is kept as a fallback method, but agent messages should come via Sunshine webhooks.
+    Handle Zendesk webhook notifications when agents reply or tickets are solved.
     """
     if request.method != "POST":
         logger.error("[ZENDESK-WEBHOOK] Method not allowed")
@@ -1375,11 +1409,49 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                     "error": response.text
                 }, status=500)
         
+        # Handle ticket.solved event - SHOW "agent ended session" message
+        elif 'ticket.solved' in event_type:
+            logger.info("[NOTIFICATION-WEBHOOK] Ticket solved event - showing agent ended session message")
+            
+            # Extract ticket ID
+            ticket_id = None
+            if 'ticket' in event_data:
+                ticket_id = str(event_data['ticket'].get('id', ''))
+            elif 'ticket_id' in event_data:
+                ticket_id = str(event_data['ticket_id'])
+            
+            if not ticket_id:
+                ticket_id = extract_ticket_id_from_data(data)
+            
+            if not ticket_id:
+                logger.error("[NOTIFICATION-WEBHOOK] No ticket ID found in solved notification")
+                return JsonResponse({"status": "no_ticket_id"})
+            
+            # Resolve conversation ID
+            conversation_id = resolve_conversation_id_for_ticket(ticket_id)
+            
+            if conversation_id:
+                # Send "agent ended session" message to Sunshine
+                auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+                url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+                
+                payload = {
+                    "author": {"type": "business", "displayName": "System"},
+                    "content": {"type": "text", "text": "The agent has ended the session. Type a message to start a new ticket."}
+                }
+                
+                response = requests.post(url, json=payload, auth=auth)
+                
+                if response.status_code in [200, 201]:
+                    logger.info(f"[NOTIFICATION-WEBHOOK] Successfully sent agent ended session message for conversation {conversation_id}")
+                else:
+                    logger.error(f"[NOTIFICATION-WEBHOOK] Failed to send agent ended session message: {response.status_code} - {response.text}")
+            
+            return JsonResponse({"status": "ticket_solved_processed", "ticket_id": ticket_id})
+        
         # Handle other event types if needed
         elif 'ticket.created' in event_type:
             logger.info("[NOTIFICATION-WEBHOOK] Ticket created event")
-        elif 'ticket.solved' in event_type:
-            logger.info("[NOTIFICATION-WEBHOOK] Ticket solved event")
         else:
             logger.info(f"[NOTIFICATION-WEBHOOK] Unhandled event type: {event_type}")
         
