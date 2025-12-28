@@ -544,6 +544,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
 def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseForbidden]:
     """
     Webhook endpoint to receive events from Sunshine.
+    This now handles agent messages directly from Sunshine webhooks.
     """
     # Try different casing for the header
     sig = request.headers.get("X-Hub-Signature") or request.headers.get("x-hub-signature")
@@ -566,6 +567,8 @@ def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseFor
     except json.JSONDecodeError:
         return HttpResponseForbidden("Invalid JSON")
     
+    logger.info(f"[SUNSHINE-WEBHOOK] Received event: {json.dumps(event)[:500]}")
+    
     # Handle Sunshine v2 "events" array structure if present
     events_list = event.get("events", [])
     if not events_list and "trigger" in event:
@@ -577,27 +580,109 @@ def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseFor
     for evt in events_list:
         trigger = evt.get("trigger") or evt.get("type")
         
-        # 1. Handle Messages
+        logger.info(f"[SUNSHINE-WEBHOOK] Processing trigger: {trigger}")
+        
+        # 1. Handle Messages (CRITICAL: This includes agent messages!)
         if trigger == "conversation:message":
             process_message_event(evt)
         
         # 2. Handle Switchboard Events (Agent Control)
         elif trigger == "switchboard:passControl":
-            logger.info("Control passed to switchboard integration.")
+            logger.info("[SUNSHINE-WEBHOOK] Control passed to switchboard integration.")
             
         elif trigger == "switchboard:releaseControl":
-            logger.info("Control released by switchboard integration (Agent ended chat).")
+            logger.info("[SUNSHINE-WEBHOOK] Control released by switchboard integration (Agent ended chat).")
             handle_agent_end_session(evt)
+
+        elif trigger == "switchboard:acceptControl":
+            logger.info("[SUNSHINE-WEBHOOK] Agent accepted control of conversation.")
+            handle_agent_accepted_control(evt)
+
+        elif trigger == "switchboard:offerControl":
+            logger.info("[SUNSHINE-WEBHOOK] Agent was offered control of conversation.")
 
         # 3. Handle Participant Join (Agent Joined)
         elif trigger == "participant:join":
             handle_participant_join(evt)
 
-        # 4. Handle Conversation Read (Agent Opened Ticket)
+        # 4. Handle Participant Leave (Agent Left)
+        elif trigger == "participant:leave":
+            handle_participant_leave(evt)
+
+        # 5. Handle Conversation Read (Agent Opened Ticket)
         elif trigger == "conversation:read":
             handle_conversation_read(evt)
 
+        # 6. Handle User Typing (Agent is typing)
+        elif trigger == "user:typing":
+            handle_user_typing(evt)
+
+        # 7. Handle User Updated (Agent profile updated)
+        elif trigger == "user:updated":
+            logger.info("[SUNSHINE-WEBHOOK] User profile updated.")
+
+        else:
+            logger.info(f"[SUNSHINE-WEBHOOK] Unhandled trigger type: {trigger}")
+
     return JsonResponse({"status": "received"})
+
+def handle_user_typing(event_data: Dict[str, Any]) -> None:
+    """
+    Handle user typing indicator from Sunshine webhook.
+    This can be used to show "Agent is typing..." in the UI.
+    """
+    conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
+    if not conversation_id:
+        return
+
+    # Check if this is an agent typing
+    participant = event_data.get("participant", {})
+    if participant.get("type") == "business":
+        # Agent is typing - forward to WebSocket
+        try:
+            channel_layer = get_channel_layer()
+            if channel_layer:
+                websocket_message = {
+                    'type': 'agent_typing',
+                    'payload': {
+                        'conversationId': conversation_id,
+                        'isTyping': event_data.get("isTyping", True),
+                        'agentName': participant.get("displayName", "Agent")
+                    }
+                }
+                
+                group_name = f'chat_{conversation_id}'
+                async_to_sync(channel_layer.group_send)(
+                    group_name,
+                    {
+                        'type': 'send_webhook_message',
+                        'message': websocket_message
+                    }
+                )
+                logger.info(f"[TYPING] Sent agent typing indicator for conversation {conversation_id}")
+        except Exception as e:
+            logger.error(f"[TYPING] Failed to forward typing indicator: {e}")
+
+def handle_agent_accepted_control(event_data: Dict[str, Any]) -> None:
+    """
+    Handle when agent accepts control of the conversation.
+    """
+    conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
+    if not conversation_id:
+        return
+
+    # Send a system message to notify the user
+    try:
+        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+        payload = {
+            "author": {"type": "business", "displayName": "System"},
+            "content": {"type": "text", "text": "An agent has accepted your request and will be with you shortly."}
+        }
+        requests.post(url, json=payload, auth=auth)
+        logger.info(f"[AGENT-ACCEPTED] Sent acceptance notification for conversation {conversation_id}")
+    except Exception as e:
+        logger.error(f"[AGENT-ACCEPTED] Failed to send acceptance notification: {e}")
 
 def handle_conversation_read(event_data: Dict[str, Any]) -> None:
     """
@@ -655,15 +740,47 @@ def handle_participant_join(event_data: Dict[str, Any]) -> None:
                 url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
                 payload = {
                     "author": {"type": "business", "displayName": "System"},
-                    "content": {"type": "text", "text": f"{agent_name} connected"}
+                    "content": {"type": "text", "text": f"{agent_name} has joined the conversation"}
                 }
                 requests.post(url, json=payload, auth=auth)
+                logger.info(f"[AGENT-JOIN] Sent join notification for {agent_name}")
             except Exception as e:
                 logger.error(f"Failed to send agent join notification: {e}")
 
+def handle_participant_leave(event_data: Dict[str, Any]) -> None:
+    """
+    Notify user when an agent leaves the conversation.
+    """
+    conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
+    if not conversation_id:
+        return
+
+    participants = event_data.get("participants", [])
+    single_participant = event_data.get("participant")
+    if single_participant:
+        participants.append(single_participant)
+
+    for p in participants:
+        if p.get("type") == "business":
+            agent_name = p.get("displayName", "An agent")
+            
+            # Send a system message to notify the user
+            try:
+                auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+                url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+                payload = {
+                    "author": {"type": "business", "displayName": "System"},
+                    "content": {"type": "text", "text": f"{agent_name} has left the conversation"}
+                }
+                requests.post(url, json=payload, auth=auth)
+                logger.info(f"[AGENT-LEAVE] Sent leave notification for {agent_name}")
+            except Exception as e:
+                logger.error(f"Failed to send agent leave notification: {e}")
+
 def process_message_event(event_data: Dict[str, Any]) -> None:
     """
-    Handle incoming user messages and optionally create tickets.
+    Handle incoming messages from Sunshine webhook.
+    This includes both user messages AND agent messages.
     """
     conversation = event_data.get("conversation", {})
     conversation_id = conversation.get("_id") or conversation.get("id")
@@ -697,16 +814,41 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
             if ticket_id:
                 # Store the mapping
                 store_conversation_ticket_mapping(conversation_id, ticket_id)
+                logger.info(f"[TICKET-MAPPING] Stored mapping from metadata: conversation={conversation_id} -> ticket={ticket_id}")
         
-        # Don't create additional tickets when agent is in control
-        return
-
     messages = event_data.get("messages", [])
     if not messages:
         return
 
-    text = messages[0].get("text")
-    if text:
+    message = messages[0]
+    author = message.get("author", {})
+    author_type = author.get("type")
+    source_type = message.get("source", {}).get("type")
+    
+    # Check if this is an AGENT/BUSINESS message from Sunshine
+    if author_type == "business" or source_type == "zendesk" or current_integration_name in ["next", "zendesk"]:
+        # THIS IS AN AGENT MESSAGE FROM SUNSHINE!
+        text = message.get("text") or message.get("content", {}).get("text")
+        
+        if text:
+            # Get agent name
+            agent_name = author.get("displayName", "Agent")
+            if not agent_name or agent_name == "":
+                # Try to get from source
+                agent_name = message.get("source", {}).get("name", "Support Agent")
+            
+            logger.info(f"[SUNSHINE-AGENT] Agent message received via Sunshine: {agent_name}: {text[:100]}")
+            
+            # Forward to WebSocket
+            forward_agent_message_to_websocket(conversation_id, text, agent_name)
+            
+            # Don't create a ticket for agent messages
+            return
+    
+    # If we reach here, this is a USER message
+    # Only create tickets for user messages when bot is in control
+    text = message.get("text") or message.get("content", {}).get("text")
+    if text and current_integration_name not in ["next", "zendesk"]:
         try:
             # Attempt to infer app-related sub-category from the message text
             def get_app_related_tag_from_text(t: str) -> Optional[str]:
@@ -859,6 +1001,7 @@ def handle_agent_end_session(event_data: Dict[str, Any]) -> None:
 def zendesk_webhook(request: HttpRequest) -> JsonResponse:
     """
     Handle Zendesk webhook notifications when agents reply.
+    This is kept as a fallback method, but agent messages should come via Sunshine webhooks.
     """
     if request.method != "POST":
         logger.error("[ZENDESK-WEBHOOK] Method not allowed")
@@ -875,7 +1018,6 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
             return JsonResponse({"status": "invalid_json"}, status=400)
         
         logger.info(f"[ZENDESK-WEBHOOK] Received webhook. Top-level keys: {list(data.keys())}")
-        logger.info(f"[ZENDESK-WEBHOOK] Full data structure: {json.dumps(data, indent=2)}")
         
         # Handle Zendesk's webhook format for AGENT COMMENTS
         
