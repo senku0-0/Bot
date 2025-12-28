@@ -83,7 +83,7 @@ def forward_agent_message_to_websocket(conversation_id: str, message_text: str, 
         }
 
         group_name = f'chat_{conversation_id}'
-        logger.info(f"Forwarding agent message to group {group_name} - text: {str(message_text)[:200]}")
+        logger.info(f"[WEBSOCKET] Forwarding agent message to group {group_name} - text: {str(message_text)[:200]}")
 
         try:
             async_to_sync(channel_layer.group_send)(
@@ -93,14 +93,14 @@ def forward_agent_message_to_websocket(conversation_id: str, message_text: str, 
                     'message': websocket_message
                 }
             )
-            logger.info(f"group_send to {group_name} succeeded")
+            logger.info(f"[WEBSOCKET] group_send to {group_name} succeeded")
             return True
         except Exception as send_exc:
-            logger.exception(f"group_send failed for {group_name}: {send_exc}")
+            logger.exception(f"[WEBSOCKET] group_send failed for {group_name}: {send_exc}")
             return False
 
     except Exception as e:
-        logger.exception(f"Error preparing to forward agent message to WebSocket: {str(e)}")
+        logger.exception(f"[WEBSOCKET] Error preparing to forward agent message to WebSocket: {str(e)}")
         return False
 
 # ============================================================================
@@ -114,10 +114,10 @@ def store_conversation_ticket_mapping(conversation_id: str, ticket_id: str) -> b
         # Store mapping both ways for easy lookup
         cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)  # 24 hours
         cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
-        
+        logger.info(f"[MAPPING] Stored mapping: conversation={conversation_id} -> ticket={ticket_id}")
         return True
     except Exception as e:
-        logger.error(f"Failed to store conversation-ticket mapping: {str(e)}")
+        logger.error(f"[MAPPING] Failed to store conversation-ticket mapping: {str(e)}")
         return False
 
 # Index route (frontend entry point)
@@ -212,13 +212,13 @@ def create_zendesk_ticket(subject: str, description: str, conversation_id: Optio
             if ticket_id and conversation_id:
                 try:
                     store_conversation_ticket_mapping(str(conversation_id), str(ticket_id))
-                    logger.info(f"Stored mapping after ticket create: conversation={conversation_id} ticket={ticket_id}")
+                    logger.info(f"[TICKET] Stored mapping after ticket create: conversation={conversation_id} ticket={ticket_id}")
                 except Exception:
-                    logger.exception("Failed to store conversation-ticket mapping after create")
+                    logger.exception("[TICKET] Failed to store conversation-ticket mapping after create")
         except Exception:
-            logger.exception("Error extracting ticket id after create")
+            logger.exception("[TICKET] Error extracting ticket id after create")
     else:
-        logger.error(f"Zendesk ticket create failed: {response.status_code} - {resp_json}")
+        logger.error(f"[TICKET] Zendesk ticket create failed: {response.status_code} - {resp_json}")
 
     return resp_json
 
@@ -861,6 +861,7 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
     Handle Zendesk webhook notifications when agents reply.
     """
     if request.method != "POST":
+        logger.error("[ZENDESK-WEBHOOK] Method not allowed")
         return JsonResponse({"error": "Method not allowed"}, status=405)
     
     try:
@@ -870,41 +871,48 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
         try:
             data = json.loads(body_str)
         except json.JSONDecodeError:
-            logger.error("Body is not valid JSON")
+            logger.error("[ZENDESK-WEBHOOK] Body is not valid JSON")
             return JsonResponse({"status": "invalid_json"}, status=400)
         
-        logger.info(f"Received Zendesk webhook with keys: {list(data.keys())}")
+        logger.info(f"[ZENDESK-WEBHOOK] Received webhook. Top-level keys: {list(data.keys())}")
+        logger.info(f"[ZENDESK-WEBHOOK] Full data structure: {json.dumps(data, indent=2)}")
+        
         # Handle Zendesk's webhook format for AGENT COMMENTS
         
-        # Format 1: Direct ticket comment format
-        if 'ticket' in data and 'comment' in data:
-            return handle_ticket_comment_webhook(data)
-        
-        # Format 2: Event-based webhook (more common)
-        elif 'events' in data:
-            return handle_event_webhook(data)
-        
-        # Format 3: Simple notification format
-        elif 'type' in data:
+        # Format 1: Notification format (most common)
+        if 'event' in data:
+            logger.info("[ZENDESK-WEBHOOK] Processing notification format")
             return handle_notification_webhook(data)
         
+        # Format 2: Direct ticket comment format
+        elif 'ticket' in data and 'comment' in data:
+            logger.info("[ZENDESK-WEBHOOK] Processing direct ticket format")
+            return handle_ticket_comment_webhook(data)
+        
+        # Format 3: Event-based webhook
+        elif 'events' in data:
+            logger.info("[ZENDESK-WEBHOOK] Processing events format")
+            return handle_event_webhook(data)
+        
         else:
-            # Unknown format
+            # Unknown format - try to extract ticket ID anyway
             ticket_id = extract_ticket_id_from_data(data)
             if ticket_id:
+                logger.warning(f"[ZENDESK-WEBHOOK] Unknown format but found ticket_id: {ticket_id}")
                 return JsonResponse({
                     "status": "unknown_format",
                     "ticket_id": ticket_id,
                     "message": "Received webhook but format not recognized"
                 })
             
+            logger.warning("[ZENDESK-WEBHOOK] Unknown format, no ticket_id found")
             return JsonResponse({
                 "status": "unknown_format",
                 "message": "Webhook format not recognized"
             })
         
     except Exception as e:
-        logger.exception(f"Exception in zendesk_webhook: {str(e)}")
+        logger.exception(f"[ZENDESK-WEBHOOK] Exception in zendesk_webhook: {str(e)}")
         return JsonResponse({"error": str(e)}, status=500)
 
 def handle_ticket_comment_webhook(data: Dict[str, Any]) -> JsonResponse:
@@ -916,27 +924,30 @@ def handle_ticket_comment_webhook(data: Dict[str, Any]) -> JsonResponse:
         ticket_id = ticket.get('id')
         
         if not ticket_id:
-            logger.error("No ticket ID in webhook")
+            logger.error("[TICKET-COMMENT] No ticket ID in webhook")
             return JsonResponse({"status": "no_ticket_id"}, status=400)
         
         comment = ticket.get('comment', {})
         comment_body = comment.get('body', '')
         comment_author = comment.get('author', {})
-        logger.info(f"Zendesk comment webhook: ticket={ticket_id} author={comment_author.get('name')} role={comment_author.get('role')} body={str(comment_body)[:300]}")
         author_role = comment_author.get('role', '')
+        
+        logger.info(f"[TICKET-COMMENT] Processing: ticket={ticket_id}, role={author_role}, body={str(comment_body)[:100]}")
         
         # Only process agent/admin comments
         if author_role not in ['agent', 'admin']:
+            logger.info(f"[TICKET-COMMENT] Ignoring non-agent comment from role: {author_role}")
             return JsonResponse({"status": "ignored_non_agent"})
         
         if not comment_body or comment_body.strip() == '':
+            logger.info("[TICKET-COMMENT] Ignoring empty comment")
             return JsonResponse({"status": "ignored_empty"})
         
         # Resolve conversation id from cache or Zendesk ticket custom field
         conversation_id = resolve_conversation_id_for_ticket(ticket_id)
 
         if not conversation_id:
-            logger.error(f"Cannot forward agent message - no conversation mapping for ticket {ticket_id}")
+            logger.error(f"[TICKET-COMMENT] Cannot forward agent message - no conversation mapping for ticket {ticket_id}")
             return JsonResponse({
                 "status": "no_conversation_mapping",
                 "ticket_id": ticket_id
@@ -946,6 +957,8 @@ def handle_ticket_comment_webhook(data: Dict[str, Any]) -> JsonResponse:
         agent_name = comment_author.get('name', 'Agent')
         if not agent_name or agent_name.lower() == 'zendesk':
             agent_name = "Support Agent"
+        
+        logger.info(f"[TICKET-COMMENT] Forwarding to Sunshine: ticket={ticket_id}, conversation={conversation_id}, agent={agent_name}")
         
         # Forward agent message to Sunshine
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
@@ -964,11 +977,11 @@ def handle_ticket_comment_webhook(data: Dict[str, Any]) -> JsonResponse:
         
         response = requests.post(url, json=payload, auth=auth)
 
-        logger.info(f"Posted agent comment to Sunshine conversation {conversation_id} (status={response.status_code})")
+        logger.info(f"[TICKET-COMMENT] Posted agent comment to Sunshine conversation {conversation_id} (status={response.status_code})")
 
         if response.status_code in [200, 201]:
             # ALSO forward to WebSocket for instant UI update
-            logger.info(f"Forwarding agent comment body to websocket for conv {conversation_id}")
+            logger.info(f"[TICKET-COMMENT] Forwarding agent comment to websocket for conv {conversation_id}")
             forward_agent_message_to_websocket(conversation_id, comment_body, agent_name)
             
             return JsonResponse({
@@ -978,7 +991,7 @@ def handle_ticket_comment_webhook(data: Dict[str, Any]) -> JsonResponse:
                 "agent_name": agent_name
             })
         else:
-            logger.error(f"Failed to forward agent message: {response.status_code} - {response.text}")
+            logger.error(f"[TICKET-COMMENT] Failed to forward agent message: {response.status_code} - {response.text}")
             return JsonResponse({
                 "status": "forward_failed",
                 "ticket_id": ticket_id,
@@ -986,7 +999,7 @@ def handle_ticket_comment_webhook(data: Dict[str, Any]) -> JsonResponse:
             }, status=500)
             
     except Exception as e:
-        logger.exception(f"Exception in handle_ticket_comment_webhook: {str(e)}")
+        logger.exception(f"[TICKET-COMMENT] Exception in handle_ticket_comment_webhook: {str(e)}")
         return JsonResponse({"error": str(e)}, status=500)
 
 def handle_event_webhook(data: Dict[str, Any]) -> JsonResponse:
@@ -1034,63 +1047,152 @@ def handle_event_webhook(data: Dict[str, Any]) -> JsonResponse:
         return JsonResponse({"status": "processed_events"})
         
     except Exception as e:
-        logger.exception(f"Exception in handle_event_webhook: {str(e)}")
+        logger.exception(f"[EVENT-WEBHOOK] Exception in handle_event_webhook: {str(e)}")
         return JsonResponse({"error": str(e)}, status=500)
     
 def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
     """
     Handle Zendesk webhook format 3: Notification format
+    This is the MOST COMMON format for Zendesk webhooks
     """
     try:
-        event_type = data.get('type', '')
+        logger.info(f"[NOTIFICATION-WEBHOOK] Processing notification: {data.get('type', 'unknown')}")
         
+        event_type = data.get('type', '')
+        event_data = data.get('event', {})
+        
+        # Check for ticket comment added event
         if 'ticket.comment_added' in event_type:
-            # 🆕 ADD THIS CHECK:
-            comment_author = data.get('event', {}).get('comment', {}).get('author', {})
+            comment = event_data.get('comment', {})
+            comment_body = comment.get('body', '')
+            comment_author = comment.get('author', {})
+            
+            # IMPORTANT: Check if this is from an agent (staff) or customer
+            is_staff = comment_author.get('is_staff', False)
+            
+            logger.info(f"[NOTIFICATION-WEBHOOK] Comment added - is_staff: {is_staff}, author: {comment_author.get('name')}")
             
             # Skip if not staff/agent
-            if not comment_author.get('is_staff', False):
+            if not is_staff:
+                logger.info("[NOTIFICATION-WEBHOOK] Ignoring user comment (not staff)")
                 return JsonResponse({"status": "ignored_user_comment"})
             
-            # Only process staff comments
-            ticket_id = extract_ticket_id_from_data(data)
+            # Extract ticket ID
+            ticket_id = None
+            if 'ticket' in event_data:
+                ticket_id = str(event_data['ticket'].get('id', ''))
+            elif 'ticket_id' in event_data:
+                ticket_id = str(event_data['ticket_id'])
             
-            if ticket_id:
-                return handle_ticket_comment_webhook(data)
+            if not ticket_id:
+                ticket_id = extract_ticket_id_from_data(data)
+            
+            if not ticket_id:
+                logger.error("[NOTIFICATION-WEBHOOK] No ticket ID found in notification")
+                return JsonResponse({"status": "no_ticket_id"})
+            
+            if not comment_body or comment_body.strip() == '':
+                logger.info("[NOTIFICATION-WEBHOOK] Empty comment body")
+                return JsonResponse({"status": "ignored_empty"})
+            
+            # Resolve conversation ID
+            conversation_id = resolve_conversation_id_for_ticket(ticket_id)
+            
+            if not conversation_id:
+                logger.error(f"[NOTIFICATION-WEBHOOK] No conversation mapping for ticket {ticket_id}")
+                return JsonResponse({
+                    "status": "no_conversation_mapping",
+                    "ticket_id": ticket_id
+                })
+            
+            # Get agent name
+            agent_name = comment_author.get('name', 'Support Agent')
+            if not agent_name or agent_name.lower() == 'zendesk':
+                agent_name = "Support Agent"
+            
+            logger.info(f"[NOTIFICATION-WEBHOOK] Forwarding agent comment: ticket={ticket_id}, conv={conversation_id}")
+            
+            # Forward to Sunshine
+            auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+            url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+            
+            payload = {
+                "author": {
+                    "type": "business",
+                    "displayName": agent_name
+                },
+                "content": {
+                    "type": "text",
+                    "text": comment_body
+                }
+            }
+            
+            response = requests.post(url, json=payload, auth=auth)
+            
+            if response.status_code in [200, 201]:
+                # Forward to WebSocket
+                forward_agent_message_to_websocket(conversation_id, comment_body, agent_name)
+                logger.info(f"[NOTIFICATION-WEBHOOK] Successfully forwarded comment to conversation {conversation_id}")
+                
+                return JsonResponse({
+                    "status": "forwarded",
+                    "ticket_id": ticket_id,
+                    "conversation_id": conversation_id,
+                    "agent_name": agent_name
+                })
+            else:
+                logger.error(f"[NOTIFICATION-WEBHOOK] Failed to forward: {response.status_code} - {response.text}")
+                return JsonResponse({
+                    "status": "forward_failed",
+                    "error": response.text
+                }, status=500)
+        
+        # Handle other event types if needed
+        elif 'ticket.created' in event_type:
+            logger.info("[NOTIFICATION-WEBHOOK] Ticket created event")
+        elif 'ticket.solved' in event_type:
+            logger.info("[NOTIFICATION-WEBHOOK] Ticket solved event")
+        else:
+            logger.info(f"[NOTIFICATION-WEBHOOK] Unhandled event type: {event_type}")
         
         return JsonResponse({"status": "processed_notification"})
         
     except Exception as e:
-        logger.exception(f"Exception in handle_notification_webhook: {str(e)}")
-        return JsonResponse({"error": str(e)}, status=500)
-        
-    except Exception as e:
-        logger.exception(f"Exception in handle_notification_webhook: {str(e)}")
+        logger.exception(f"[NOTIFICATION-WEBHOOK] Exception in handle_notification_webhook: {str(e)}")
         return JsonResponse({"error": str(e)}, status=500)
 
 def extract_ticket_id_from_data(data: Dict[str, Any]) -> Optional[str]:
     """
     Extract ticket ID from any Zendesk webhook format.
     """
-    # Try different possible locations for ticket ID
     ticket_id = None
     
-    # Location 1: Direct ticket.id
-    if 'ticket' in data and 'id' in data['ticket']:
-        ticket_id = str(data['ticket']['id'])
+    # Try different possible locations for ticket ID
+    if 'ticket' in data:
+        ticket_obj = data['ticket']
+        if isinstance(ticket_obj, dict) and 'id' in ticket_obj:
+            ticket_id = str(ticket_obj['id'])
     
-    # Location 2: In detail object
-    elif 'detail' in data and 'id' in data['detail']:
+    if not ticket_id and 'event' in data:
+        event_data = data['event']
+        if isinstance(event_data, dict):
+            if 'ticket' in event_data:
+                ticket_obj = event_data['ticket']
+                if isinstance(ticket_obj, dict) and 'id' in ticket_obj:
+                    ticket_id = str(ticket_obj['id'])
+            elif 'ticket_id' in event_data:
+                ticket_id = str(event_data['ticket_id'])
+    
+    if not ticket_id and 'detail' in data and 'id' in data['detail']:
         ticket_id = str(data['detail']['id'])
     
-    # Location 3: In events array
-    elif 'events' in data and data['events']:
+    if not ticket_id and 'events' in data and data['events']:
         for event in data['events']:
             if 'ticket_id' in event:
                 ticket_id = str(event['ticket_id'])
                 break
     
-    # Location 4: Search recursively in the entire data
+    # Last resort: search recursively
     if not ticket_id:
         data_str = json.dumps(data)
         matches = re.findall(r'"ticket[_-]?id":\s*"?(\d+)"?', data_str, re.IGNORECASE)
@@ -1100,8 +1202,10 @@ def extract_ticket_id_from_data(data: Dict[str, Any]) -> Optional[str]:
             # Look for any numeric ID that looks like a ticket ID
             matches = re.findall(r'"id":\s*"?(\d+)"?', data_str)
             if matches:
-                ticket_id = matches[0]
+                # Try to determine which one is the ticket ID
+                ticket_id = matches[-1]  # Usually the last one
     
+    logger.info(f"[EXTRACT-TICKET] Extracted ticket_id: {ticket_id}")
     return ticket_id
 
 
@@ -1112,42 +1216,62 @@ def resolve_conversation_id_for_ticket(ticket_id: str) -> Optional[str]:
     and read the `ZENDESK_CHAT_CONVERSATION_FIELD_ID` custom field.
     If found, stores the mapping via `store_conversation_ticket_mapping`.
     """
+    logger.info(f"[RESOLVE-CONV] Resolving conversation for ticket {ticket_id}")
+    
     try:
         # Fast path: cached mapping
         conv = cache.get(f'ticket_{ticket_id}')
         if conv:
+            logger.info(f"[RESOLVE-CONV] Found in cache: {conv}")
             return conv
 
+        logger.info(f"[RESOLVE-CONV] Not in cache, checking Zendesk...")
+        
         # Try to fetch ticket details from Zendesk and inspect custom fields
         if not all([ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, ZENDESK_API_TOKEN, ZENDESK_CHAT_CONVERSATION_FIELD_ID]):
+            logger.error("[RESOLVE-CONV] Missing Zendesk credentials or custom field ID")
             return None
 
         z_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
         z_resp = requests.get(z_url, auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN), timeout=10)
+        
         if z_resp.status_code != 200:
-            logger.warning(f"Zendesk ticket fetch failed for {ticket_id}: {z_resp.status_code}")
+            logger.warning(f"[RESOLVE-CONV] Zendesk ticket fetch failed for {ticket_id}: {z_resp.status_code}")
             return None
 
         z_json = z_resp.json()
         ticket_obj = z_json.get('ticket', {})
         cfs = ticket_obj.get('custom_fields', []) or []
+        
+        logger.info(f"[RESOLVE-CONV] Found {len(cfs)} custom fields")
+        
         for cf in cfs:
             try:
-                if str(cf.get('id')) == str(ZENDESK_CHAT_CONVERSATION_FIELD_ID):
-                    val = cf.get('value')
-                    if val:
-                        conv_id = str(val)
-                        # persist mapping for future webhooks
-                        try:
-                            store_conversation_ticket_mapping(conv_id, str(ticket_id))
-                        except Exception:
-                            logger.exception("Failed to store mapping after Zendesk lookup")
-                        return conv_id
-            except Exception:
+                cf_id = cf.get('id')
+                cf_value = cf.get('value')
+                logger.info(f"[RESOLVE-CONV] Checking custom field: id={cf_id}, value={cf_value}")
+                
+                if str(cf_id) == str(ZENDESK_CHAT_CONVERSATION_FIELD_ID) and cf_value:
+                    conv_id = str(cf_value)
+                    logger.info(f"[RESOLVE-CONV] Found conversation ID in custom field: {conv_id}")
+                    
+                    # persist mapping for future webhooks
+                    try:
+                        store_conversation_ticket_mapping(conv_id, str(ticket_id))
+                    except Exception as e:
+                        logger.exception(f"[RESOLVE-CONV] Failed to store mapping after Zendesk lookup: {e}")
+                    
+                    return conv_id
+            except Exception as e:
+                logger.error(f"[RESOLVE-CONV] Error processing custom field: {e}")
                 continue
+        
+        logger.warning(f"[RESOLVE-CONV] No conversation ID found in custom fields for ticket {ticket_id}")
+        return None
+        
     except Exception as e:
-        logger.exception(f"Error resolving conversation for ticket {ticket_id}: {e}")
-    return None
+        logger.exception(f"[RESOLVE-CONV] Error resolving conversation for ticket {ticket_id}: {e}")
+        return None
 
 
 @csrf_exempt
