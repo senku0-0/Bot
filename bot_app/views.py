@@ -474,7 +474,6 @@ def send_message_to_sunshine(request: HttpRequest) -> JsonResponse:
 def escalate_to_agent(request: HttpRequest) -> JsonResponse:
     """
     Escalates the conversation to the next switchboard integration (e.g., Agent Workspace).
-    THIS FUNCTION SENDS THE "Connecting to agent" MESSAGE - WE NEED TO STOP THAT!
     """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
@@ -517,21 +516,20 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             logger.error(f"Failed to escalate conversation: {pc_response.status_code} - {pc_response.text}")
             return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
 
-        # REMOVED: Don't send the "Connecting to agent" message from user
-        # This was causing the duplicate message issue
-        # if app_user_id:
-        #     msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/messages"
-        #     msg_payload = {
-        #         "author": {
-        #             "type": "user",
-        #             "userId": app_user_id
-        #         },
-        #         "content": {
-        #             "type": "text",
-        #             "text": f"Connecting to agent. Reason: {reason}"
-        #         }
-        #     }
-        #     requests.post(msg_url, json=msg_payload, auth=auth)
+        # Send a message on behalf of the user to trigger ticket creation
+        if app_user_id:
+            msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/messages"
+            msg_payload = {
+                "author": {
+                    "type": "user",
+                    "userId": app_user_id
+                },
+                "content": {
+                    "type": "text",
+                    "text": f"Connecting to agent. Reason: {reason}"
+                }
+            }
+            requests.post(msg_url, json=msg_payload, auth=auth)
 
         return JsonResponse({
             "status": "escalated",
@@ -596,8 +594,7 @@ def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseFor
             
         elif trigger == "switchboard:releaseControl":
             logger.info("[SUNSHINE-WEBHOOK] Control released by switchboard integration (Agent ended chat).")
-            # REMOVED: Don't send system message when agent ends session
-            # handle_agent_end_session(evt)
+            handle_agent_end_session(evt)
 
         elif trigger == "switchboard:acceptControl":
             logger.info("[SUNSHINE-WEBHOOK] Agent accepted control of conversation.")
@@ -678,12 +675,12 @@ def handle_user_typing(event_data: Dict[str, Any]) -> None:
     Handle user typing indicator from Sunshine webhook.
     This can be used to show "Agent is typing..." in the UI.
     """
-    conversation_id = event_data.get("payload", {}).get("conversation", {}).get("id")
+    conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
     if not conversation_id:
         return
 
     # Check if this is an agent typing
-    participant = event_data.get("payload", {}).get("participant", {})
+    participant = event_data.get("participant", {})
     if participant.get("type") == "business":
         # Agent is typing - forward to WebSocket
         try:
@@ -693,7 +690,7 @@ def handle_user_typing(event_data: Dict[str, Any]) -> None:
                     'type': 'agent_typing',
                     'payload': {
                         'conversationId': conversation_id,
-                        'isTyping': event_data.get("payload", {}).get("isTyping", True),
+                        'isTyping': event_data.get("isTyping", True),
                         'agentName': participant.get("displayName", "Agent")
                     }
                 }
@@ -735,19 +732,19 @@ def handle_conversation_read(event_data: Dict[str, Any]) -> None:
     """
     Notify user when an agent reads the conversation (opens ticket).
     """
-    conversation_id = event_data.get("payload", {}).get("conversation", {}).get("id")
+    conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
     if not conversation_id:
         return
 
-    app_user = event_data.get("payload", {}).get("user", {})
-    app_user_id = app_user.get("id")
-    reader_id = event_data.get("payload", {}).get("userId")
+    app_user = event_data.get("appUser", {})
+    app_user_id = app_user.get("_id") or app_user.get("id")
+    reader_id = event_data.get("userId")
     
     if not reader_id:
-        reader_id = event_data.get("payload", {}).get("source", {}).get("from", {}).get("id")
+        reader_id = event_data.get("source", {}).get("from", {}).get("id")
 
     if reader_id and app_user_id and reader_id != app_user_id:
-        is_business = event_data.get("payload", {}).get("role") == "business"
+        is_business = event_data.get("role") == "business"
         
         if is_business or reader_id != app_user_id:
             agent_name = "An agent"
@@ -854,6 +851,7 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
         # Get message details
         author = message.get("author", {})
         author_type = author.get("type")
+        author_display_name = author.get("displayName", "")
         source = message.get("source", {})
         source_type = source.get("type")
         source_integration_id = source.get("integrationId")
@@ -869,52 +867,44 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
             logger.warning("[SUNSHINE-AGENT] No text in message")
             return
         
-        logger.info(f"[SUNSHINE-AGENT] Message details: author_type={author_type}, source_type={source_type}, integration={integration_name}")
+        logger.info(f"[SUNSHINE-AGENT] Message details: author_type={author_type}, author_name={author_display_name}, source_type={source_type}, integration={integration_name}")
         
         # ============================================================================
-        # DETECT AGENT MESSAGES - FIXED LOGIC
+        # FIX 1: IGNORE SYSTEM MESSAGES
+        # ============================================================================
+        if author_display_name == "System":
+            logger.info(f"[SUNSHINE-AGENT] Ignoring System message: {text[:100]}")
+            return
+        
+        # ============================================================================
+        # FIX 2: CORRECT AGENT MESSAGE DETECTION
         # ============================================================================
         is_agent_message = False
         agent_name = "Agent"
         
-        # Method 1: Check if author is business type AND not "System"
-        if author_type == "business":
-            display_name = author.get("displayName", "")
-            # Check if it's NOT a system message
-            if display_name.lower() != "system" and display_name != "":
-                is_agent_message = True
-                agent_name = display_name
-                logger.info(f"[SUNSHINE-AGENT] Detected via author_type=business (non-system): {agent_name}")
-            else:
-                # System messages - we should NOT forward these
-                logger.info(f"[SUNSHINE-AGENT] Ignoring system message from: {display_name}")
-                return
+        # Method 1: Check if author is business type AND NOT "System" or "Guest"
+        if author_type == "business" and author_display_name not in ["System", "Guest"]:
+            is_agent_message = True
+            agent_name = author_display_name or "Agent"
+            logger.info(f"[SUNSHINE-AGENT] Detected as agent via author_type=business and name={agent_name}")
         
-        # Method 2: Check if source is Zendesk agent workspace
+        # Method 2: Check if source is Zendesk agent workspace (not answerBot)
         elif source_type == "zd:agentWorkspace":
             is_agent_message = True
-            agent_name = author.get("displayName") or source.get("name") or "Support Agent"
-            logger.info(f"[SUNSHINE-AGENT] Detected via zendesk agent workspace: {agent_name}")
+            agent_name = author_display_name or "Support Agent"
+            logger.info(f"[SUNSHINE-AGENT] Detected as agent via zd:agentWorkspace source: {agent_name}")
         
-        # Method 3: Check if current integration is agent workspace and author is business
-        elif integration_name == "zd-agentWorkspace" and author_type == "business":
-            display_name = author.get("displayName", "")
-            if display_name.lower() != "system" and display_name != "":
-                is_agent_message = True
-                agent_name = display_name
-                logger.info(f"[SUNSHINE-AGENT] Detected via agent workspace integration: {agent_name}")
+        # Method 3: Check if current integration is agent workspace AND author is not user
+        elif integration_name == "zd-agentWorkspace" and author_type != "user":
+            is_agent_message = True
+            agent_name = author_display_name or "Support Agent"
+            logger.info(f"[SUNSHINE-AGENT] Detected as agent via agent workspace integration: {agent_name}")
         
-        # Method 4: Check if message has business metadata (not user)
-        elif message.get("role") == "business" and author_type != "user":
-            display_name = author.get("displayName", "")
-            if display_name.lower() != "system" and display_name != "":
-                is_agent_message = True
-                agent_name = display_name or "Business"
-                logger.info(f"[SUNSHINE-AGENT] Detected via business role/metadata: {agent_name}")
-        
-        # If this is an AGENT message
+        # ============================================================================
+        # If this is an AGENT message (from a real human agent, not System/Guest)
+        # ============================================================================
         if is_agent_message:
-            logger.info(f"[SUNSHINE-AGENT] ✅ AGENT MESSAGE DETECTED: {agent_name}: {text[:100]}")
+            logger.info(f"[SUNSHINE-AGENT] ✅ REAL AGENT MESSAGE DETECTED: {agent_name}: {text[:100]}")
             
             # Forward to WebSocket
             forward_agent_message_to_websocket(conversation_id, text, agent_name)
@@ -924,8 +914,15 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
         
         # ============================================================================
         # If we reach here, this is a USER message
+        # We should NOT forward user messages to WebSocket (they're already shown in UI)
         # ============================================================================
-        logger.info(f"[SUNSHINE-USER] User message: {text[:100]}")
+        logger.info(f"[SUNSHINE-USER] User message (author_type={author_type}): {text[:100]}")
+        
+        # If this is a user message with author_type="user", do NOT forward to WebSocket
+        # The message is already displayed in the UI when the user sends it
+        if author_type == "user":
+            logger.info(f"[SUNSHINE-USER] User message from UI - not forwarding to WebSocket")
+            return
         
         # Only create tickets for user messages when bot is in control
         if integration_name and "answerBot" in integration_name:
@@ -1066,23 +1063,22 @@ def send_to_zendesk(request: HttpRequest) -> JsonResponse:
 def handle_agent_end_session(event_data: Dict[str, Any]) -> None:
     """
     Send a system message when agent ends the chat.
-    THIS FUNCTION IS NOW DISABLED - WE DON'T WANT SYSTEM MESSAGES
     """
     conversation_id = event_data.get("payload", {}).get("conversation", {}).get("id")
     if not conversation_id:
         return
 
-    # REMOVED: Don't send system messages when agent ends session
-    # try:
-    #     auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
-    #     url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
-    #     payload = {
-    #         "author": {"type": "business", "displayName": "System"},
-    #         "content": {"type": "text", "text": "The agent has ended the session. Type a message to start a new ticket."}
-    #     }
-    #     requests.post(url, json=payload, auth=auth)
-    # except Exception as e:
-    #     logger.error(f"Failed to send end-session message: {e}")
+    # Send a message to the user confirming the session has ended
+    try:
+        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+        payload = {
+            "author": {"type": "business", "displayName": "System"},
+            "content": {"type": "text", "text": "The agent has ended the session. Type a message to start a new ticket."}
+        }
+        requests.post(url, json=payload, auth=auth)
+    except Exception as e:
+        logger.error(f"Failed to send end-session message: {e}")
 
 # ============================================================================
 # CRITICAL FIX: Corrected zendesk_webhook function
