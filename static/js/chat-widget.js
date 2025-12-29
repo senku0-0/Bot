@@ -243,7 +243,7 @@ document.addEventListener('DOMContentLoaded', function () {
             // First agent message: replace loading indicator with single agent announcement
             if (!agentJoinAnnounced) {
                 removeLoadingIndicator();
-                appendMessage(agentName, 'system-message');
+                appendMessage(`${agentName} will help you now.`, 'system-message');
                 agentJoinAnnounced = true;
                 localStorage.setItem('chat_agentJoinAnnounced', 'true');
                 localStorage.setItem('chat_agentName', agentName);
@@ -292,10 +292,6 @@ document.addEventListener('DOMContentLoaded', function () {
             this.connected = false;
             webSocketConnected = false;
             this.showConnectionStatus('disconnected');
-        }
-
-        showConnectionStatus(status) {
-            // Debug status indicator removed
         }
 
         // Test function to verify WebSocket is working
@@ -375,7 +371,7 @@ document.addEventListener('DOMContentLoaded', function () {
             })
             .catch(error => {
                 console.error('❌ [CHAT] Error initializing:', error);
-                appendMessage("Connection error. Please try again.", 'system-message');
+                // Removed UI display of connection error message as per request.
             });
     }
 
