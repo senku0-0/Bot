@@ -50,7 +50,7 @@ document.addEventListener('DOMContentLoaded', function () {
             this.maxReconnectAttempts = 10;
             this.pingInterval = null;
             this.messageHandler = null;
-            
+
             console.log(`🎯 [WEBSOCKET] Manager created for conversation: ${conversationId}`);
         }
 
@@ -78,16 +78,16 @@ document.addEventListener('DOMContentLoaded', function () {
                 this.connected = true;
                 this.reconnectAttempts = 0;
                 webSocketConnected = true;
-                
+
                 // Start ping interval (25 seconds for keepalive)
                 this.startPingInterval();
-                
+
                 // Show connection status
                 this.showConnectionStatus('connected');
-                
+
                 // Log success
                 console.log(`✅ [WEBSOCKET] ReadyState: ${this.socket.readyState} (OPEN=1)`);
-                
+
                 // Send connection established test message
                 this.send({
                     type: 'echo',
@@ -100,10 +100,10 @@ document.addEventListener('DOMContentLoaded', function () {
                 try {
                     const data = JSON.parse(event.data);
                     console.log('📨 [WEBSOCKET] Received:', data.type || 'unknown');
-                    
+
                     // Handle different message types
                     this.handleIncomingMessage(data);
-                    
+
                 } catch (error) {
                     console.error('❌ [WEBSOCKET] Error parsing message:', error);
                 }
@@ -118,15 +118,15 @@ document.addEventListener('DOMContentLoaded', function () {
                 console.log(`🔌 [WEBSOCKET] CLOSED: Code ${event.code}, Reason: ${event.reason}`);
                 this.connected = false;
                 webSocketConnected = false;
-                
+
                 // Clear ping interval
                 if (this.pingInterval) {
                     clearInterval(this.pingInterval);
                     this.pingInterval = null;
                 }
-                
+
                 this.showConnectionStatus('disconnected');
-                
+
                 // Auto-reconnect (except for normal closure)
                 if (!sessionEnded && event.code !== 1000) {
                     this.reconnect();
@@ -139,7 +139,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (this.pingInterval) {
                 clearInterval(this.pingInterval);
             }
-            
+
             // Send ping every 25 seconds to keep connection alive
             this.pingInterval = setInterval(() => {
                 if (this.socket && this.socket.readyState === WebSocket.OPEN) {
@@ -175,38 +175,38 @@ document.addEventListener('DOMContentLoaded', function () {
                 console.log('✅ [WEBSOCKET] Group:', data.group_name);
                 return;
             }
-            
+
             // Handle pong response
             if (data.type === 'pong') {
                 console.log('🏓 [WEBSOCKET] Pong received');
                 return;
             }
-            
+
             // Handle echo response
             if (data.type === 'echo_response') {
                 console.log('📨 [WEBSOCKET] Echo response received');
                 return;
             }
-            
+
             // Handle keepalive
             if (data.type === 'keepalive') {
                 console.log('💓 [WEBSOCKET] Keepalive received');
                 return;
             }
-            
+
             // 🎯 CRITICAL: Handle agent messages
             if (data.type === 'agent_message') {
                 console.log('🎯 [WEBSOCKET] AGENT MESSAGE received!');
                 this.processAgentMessage(data.payload || data);
                 return;
             }
-            
+
             // Handle error
             if (data.type === 'error') {
                 console.error('❌ [WEBSOCKET] Error from server:', data.message);
                 return;
             }
-            
+
             // Handle other message types
             console.log('📨 [WEBSOCKET] Unhandled type:', data.type, 'Data:', JSON.stringify(data).substring(0, 200));
         }
@@ -216,7 +216,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
             // Check if this is an agent message
             const isAgent = message.author && (
-                message.author.type === 'business' || 
+                message.author.type === 'business' ||
                 message.author.type === 'agent' ||
                 message.source === 'zendesk' ||
                 message.author.role === 'agent'
@@ -264,12 +264,12 @@ document.addEventListener('DOMContentLoaded', function () {
                 console.log('❌ [WEBSOCKET] Max reconnection attempts reached');
                 return;
             }
-            
+
             this.reconnectAttempts++;
             const delay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 10000);
-            
+
             console.log(`🔄 [WEBSOCKET] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
-            
+
             setTimeout(() => {
                 console.log('🔄 [WEBSOCKET] Attempting reconnect...');
                 this.connect();
@@ -278,17 +278,17 @@ document.addEventListener('DOMContentLoaded', function () {
 
         disconnect() {
             console.log('🔌 [WEBSOCKET] Disconnecting...');
-            
+
             if (this.pingInterval) {
                 clearInterval(this.pingInterval);
                 this.pingInterval = null;
             }
-            
+
             if (this.socket) {
                 this.socket.close(1000, 'User disconnected');
                 this.socket = null;
             }
-            
+
             this.connected = false;
             webSocketConnected = false;
             this.showConnectionStatus('disconnected');
@@ -300,14 +300,14 @@ document.addEventListener('DOMContentLoaded', function () {
                 console.log('❌ [WEBSOCKET-TEST] Not connected');
                 return false;
             }
-            
+
             // Send test message
             const testResult = this.send({
                 type: 'test_agent_message',
                 message: 'Test message from debug function',
                 timestamp: Date.now()
             });
-            
+
             console.log(`✅ [WEBSOCKET-TEST] Test message ${testResult ? 'sent' : 'failed to send'}`);
             return testResult;
         }
@@ -319,7 +319,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function initializeChatSession() {
         console.log('🚀 [CHAT] Initializing chat session...');
-        
+
         const storedUserId = localStorage.getItem('chat_user_id');
         const payload = storedUserId ? { userId: storedUserId } : {};
 
@@ -343,9 +343,9 @@ document.addEventListener('DOMContentLoaded', function () {
                         localStorage.setItem('chat_user_id', data.externalId);
                     }
 
-                    console.log("✅ [CHAT] Initialized:", { 
-                        appUserId: appUserId.substring(0, 10) + '...', 
-                        conversationId: conversationId.substring(0, 10) + '...' 
+                    console.log("✅ [CHAT] Initialized:", {
+                        appUserId: appUserId.substring(0, 10) + '...',
+                        conversationId: conversationId.substring(0, 10) + '...'
                     });
 
                     if (isAgentConnected) {
@@ -357,13 +357,13 @@ document.addEventListener('DOMContentLoaded', function () {
                     // Initialize WebSocket
                     sunshineSocket = new SunshineWebSocketManager(conversationId);
                     sunshineSocket.connect();
-                    
+
                     // Fetch initial messages
                     fetchMessages();
-                    
+
                     // Add WebSocket test button for debugging
                     addWebSocketDebugButton();
-                    
+
                 } else {
                     console.error("❌ [CHAT] Failed to initialize:", data);
                     appendMessage("Failed to initialize chat. Please refresh the page.", 'system-message');
@@ -392,7 +392,7 @@ document.addEventListener('DOMContentLoaded', function () {
             })
             .then(data => {
                 console.log('📨 [MESSAGES] Received response');
-                
+
                 // Check agent status
                 if (data.conversation && data.conversation.id) {
                     const activeIntegration = data.conversation.activeSwitchboardIntegration;
@@ -431,7 +431,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
                 sortedMessages.forEach((msg, index) => {
                     if (!msg || !msg.id) return;
-                    
+
                     // Skip if already displayed
                     if (displayedMessageIds.has(msg.id)) {
                         console.log(`⚠️ [MESSAGES] Duplicate: ${msg.id.substring(0, 10)}...`);
@@ -446,11 +446,11 @@ document.addEventListener('DOMContentLoaded', function () {
                         const mediaUrl = msg.content.mediaUrl;
                         const text = msg.content.text || '';
                         const fileName = mediaUrl?.split('/').pop() || 'file';
-                        
+
                         if (displayedImageFileNames.has(fileName)) return;
-                        
-                        if (mediaUrl && (mediaUrl.includes('.jpg') || mediaUrl.includes('.jpeg') || 
-                            mediaUrl.includes('.png') || mediaUrl.includes('.gif') || 
+
+                        if (mediaUrl && (mediaUrl.includes('.jpg') || mediaUrl.includes('.jpeg') ||
+                            mediaUrl.includes('.png') || mediaUrl.includes('.gif') ||
                             mediaUrl.includes('.webp'))) {
                             displayedImageFileNames.add(fileName);
                             appendImageMessage(mediaUrl, text, 'bot-message');
@@ -458,26 +458,26 @@ document.addEventListener('DOMContentLoaded', function () {
                             appendFileMessage(fileName, formatFileSize(msg.content.size || 0), 'bot-message', text);
                         }
                     } else if (msg.content?.type === 'text') {
-                            const isSystem = msg.author?.type === 'system';
-                            const isAgent = msg.author?.type === 'business' || msg.author?.type === 'agent';
-                            const senderName = isAgent ? (msg.author.displayName || 'Agent') : null;
+                        const isSystem = msg.author?.type === 'system';
+                        const isAgent = msg.author?.type === 'business' || msg.author?.type === 'agent';
+                        const senderName = isAgent ? (msg.author.displayName || 'Agent') : null;
 
-                            console.log(`📨 [MESSAGES] Text message from ${senderName || msg.author?.type}: ${msg.content.text.substring(0, 50)}...`);
+                        console.log(`📨 [MESSAGES] Text message from ${senderName || msg.author?.type}: ${msg.content.text.substring(0, 50)}...`);
 
-                            // If this is the first agent message seen via fetch, announce agent once
-                            if (isAgent && !agentJoinAnnounced) {
-                                removeLoadingIndicator();
-                                appendMessage(senderName || 'Agent', 'system-message');
-                                agentJoinAnnounced = true;
-                                localStorage.setItem('chat_agentJoinAnnounced', 'true');
-                                localStorage.setItem('chat_agentName', senderName || 'Agent');
-                                chatInputArea.style.display = 'flex';
-                                chatHeaderTitle.textContent = senderName || 'Agent';
-                            }
+                        // If this is the first agent message seen via fetch, announce agent once
+                        if (isAgent && !agentJoinAnnounced) {
+                            removeLoadingIndicator();
+                            appendMessage(senderName || 'Agent', 'system-message');
+                            agentJoinAnnounced = true;
+                            localStorage.setItem('chat_agentJoinAnnounced', 'true');
+                            localStorage.setItem('chat_agentName', senderName || 'Agent');
+                            chatInputArea.style.display = 'flex';
+                            chatHeaderTitle.textContent = senderName || 'Agent';
+                        }
 
-                            appendMessage(msg.content.text, isSystem ? 'system-message' : 'bot-message');
+                        appendMessage(msg.content.text, isSystem ? 'system-message' : 'bot-message');
                     }
-                    
+
                     // Log every 5th message
                     if (index % 5 === 0) {
                         console.log(`📨 [MESSAGES] Processed ${index + 1}/${sortedMessages.length} messages`);
@@ -495,12 +495,12 @@ document.addEventListener('DOMContentLoaded', function () {
                     let isLastMsgEndSession = false;
 
                     if (lastMsg.content?.type === 'text') {
-                        const senderName = lastMsg.author.type === 'user' ? null : 
-                                          (lastMsg.author.displayName || 'Agent');
+                        const senderName = lastMsg.author.type === 'user' ? null :
+                            (lastMsg.author.displayName || 'Agent');
                         const text = lastMsg.content.text.toLowerCase();
                         isLastMsgEndSession = senderName === 'System' ||
-                                             text.includes("messaging session ended") ||
-                                             text.includes("the agent has ended the session");
+                            text.includes("messaging session ended") ||
+                            text.includes("the agent has ended the session");
                     } else if (lastMsg.source?.type === 'system') {
                         isLastMsgEndSession = true;
                     }
@@ -513,7 +513,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         endSession();
                     }
                 }
-                
+
                 console.log('✅ [MESSAGES] Fetch complete');
             })
             .catch(error => {
@@ -527,7 +527,7 @@ document.addEventListener('DOMContentLoaded', function () {
         agentJoinAnnounced = false;
         hasConfirmedAgentActivity = false;
         sessionEnded = true;
-        
+
         if (sunshineSocket) {
             sunshineSocket.disconnect();
         }
@@ -540,7 +540,7 @@ document.addEventListener('DOMContentLoaded', function () {
         chatHeaderTitle.textContent = "Yatri Bandhu";
         appendMessage("What can I help you with?", 'bot-message');
         showMainOptions();
-        
+
         console.log('✅ [SESSION] Session ended');
     }
 
@@ -558,7 +558,7 @@ document.addEventListener('DOMContentLoaded', function () {
         localStorage.setItem('chat_isAgentConnected', 'true');
         localStorage.setItem('chat_lastAgentRequestTime', lastAgentRequestTime.toString());
         localStorage.setItem('chat_agentJoinAnnounced', 'false');
-        
+
         if (sunshineSocket) {
             if (!sunshineSocket.connected) {
                 console.log('🔄 [ESCALATE] WebSocket not connected, reconnecting...');
@@ -567,7 +567,7 @@ document.addEventListener('DOMContentLoaded', function () {
         } else {
             console.error('❌ [ESCALATE] No WebSocket instance!');
         }
-        
+
         showLoadingIndicator();
         chatInputArea.style.display = 'flex';
 
@@ -631,11 +631,11 @@ document.addEventListener('DOMContentLoaded', function () {
         indicator.style.right = '10px';
         indicator.style.fontSize = '20px';
         indicator.style.animation = 'pulse 1s';
-        
+
         const chatBoxHeader = document.querySelector('.chat-header');
         if (chatBoxHeader) {
             chatBoxHeader.appendChild(indicator);
-            
+
             // Remove after animation
             setTimeout(() => {
                 indicator.remove();
@@ -674,7 +674,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     try {
                         const echoedText = data.data.messages[0].content?.text;
                         if (echoedText) pendingLocalMessages.delete(echoedText);
-                    } catch (e) {}
+                    } catch (e) { }
                 }
             })
             .catch(error => console.error('❌ [SEND] Error:', error));
@@ -690,13 +690,13 @@ document.addEventListener('DOMContentLoaded', function () {
             if (messagesContainer.children.length <= 1) {
                 showMainOptions();
             }
-            
+
             console.log('💬 [CHAT] Opened chat');
         } else {
             chatBox.style.display = 'none';
             toggleBtn.innerHTML = '💬';
             toggleBtn.setAttribute('aria-label', 'Open chat');
-            
+
             console.log('💬 [CHAT] Closed chat');
         }
     }
@@ -743,6 +743,9 @@ document.addEventListener('DOMContentLoaded', function () {
         appendMessage(option, 'user-message');
         lastContext = option;
 
+        // Store the selected category globally for escalation
+        window.lastAppRelatedCategory = option;  // NEW: Store category
+
         if (option === "Others") {
             appendMessage("Please describe your issue below.", 'bot-message');
             chatInputArea.style.display = 'flex';
@@ -759,6 +762,61 @@ document.addEventListener('DOMContentLoaded', function () {
                 askForFeedback();
             }, 500);
         }
+    }
+
+    function escalateToAgent(reason) {
+        if (!conversationId) {
+            console.warn("⚠️ [ESCALATE] Cannot escalate: Chat not initialized");
+            return;
+        }
+
+        console.log("🚀 [ESCALATE] Escalating to agent with reason:", reason);
+        console.log("🚀 [ESCALATE] App-related category:", window.lastAppRelatedCategory);  // NEW: Log category
+
+        isAgentConnected = true;
+        lastAgentRequestTime = Date.now();
+        agentJoinAnnounced = false;
+        localStorage.setItem('chat_isAgentConnected', 'true');
+        localStorage.setItem('chat_lastAgentRequestTime', lastAgentRequestTime.toString());
+        localStorage.setItem('chat_agentJoinAnnounced', 'false');
+
+        if (sunshineSocket) {
+            if (!sunshineSocket.connected) {
+                console.log('🔄 [ESCALATE] WebSocket not connected, reconnecting...');
+                sunshineSocket.connect();
+            }
+        } else {
+            console.error('❌ [ESCALATE] No WebSocket instance!');
+        }
+
+        showLoadingIndicator();
+        chatInputArea.style.display = 'flex';
+
+        fetch('/api/chat/escalate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                conversationId: conversationId,
+                appUserId: appUserId,
+                reason: reason || lastContext,
+                appRelatedCategory: window.lastAppRelatedCategory  // NEW: Send category
+            })
+        })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log("✅ [ESCALATE] Success:", data);
+                // Keep only the loading indicator shown by `showLoadingIndicator()`.
+                // The one-time agent announcement will replace it when the agent first sends a message.
+            })
+            .catch(error => {
+                console.error('❌ [ESCALATE] Error:', error);
+                appendMessage("Error connecting to agent. Please try again.", 'system-message');
+            });
     }
 
     function askForFeedback() {
@@ -802,7 +860,7 @@ document.addEventListener('DOMContentLoaded', function () {
         `;
         messagesContainer.appendChild(loaderDiv);
         scrollToBottom();
-        
+
         console.log('⏳ [UI] Showing loading indicator');
     }
 
@@ -856,7 +914,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function appendImageMessage(imageUrl, caption, className) {
         console.log('🖼️ [UI] Appending image:', imageUrl.substring(0, 50) + '...');
-        
+
         if (imageUrl.includes('zendesk.com')) return;
 
         const messageDiv = document.createElement('div');
@@ -884,7 +942,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function appendFileMessage(fileName, fileSize, className, caption = '') {
         console.log('📎 [UI] Appending file:', fileName);
-        
+
         const bubble = document.createElement('div');
         bubble.classList.add('message', className, 'file-bubble');
 
@@ -926,7 +984,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function appendOptions(options, callback) {
         console.log('📋 [UI] Appending options:', options);
-        
+
         const optionsDiv = document.createElement('div');
         optionsDiv.classList.add('options-container');
 
@@ -950,13 +1008,13 @@ document.addEventListener('DOMContentLoaded', function () {
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
 
-       // ============================================================================
+    // ============================================================================
     // File Handling Functions (with added logging)
     // ============================================================================
 
     function showDocumentPreviewModal(file) {
         console.log('📎 [FILE] Previewing file:', file.name, file.type);
-        
+
         const modal = document.createElement('div');
         modal.classList.add('document-preview-modal');
 
@@ -1066,7 +1124,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const chatBox = document.querySelector('.chat-box');
         chatBox.appendChild(modal);
-        
+
         console.log('📎 [FILE] Preview modal displayed');
     }
 
@@ -1106,7 +1164,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function sendDocument(file, message) {
         console.log('📎 [FILE] Sending document:', file.name, 'Size:', formatFileSize(file.size));
-        
+
         if (!appUserId || !conversationId) {
             console.error("❌ [FILE] Cannot send document: Chat not initialized");
             appendMessage("Error: Chat not initialized. Please refresh and try again.", 'system-message');
@@ -1164,7 +1222,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         xhr.addEventListener('load', function () {
             console.log('📎 [FILE] Upload complete. Status:', xhr.status);
-            
+
             if (xhr.status === 200) {
                 try {
                     const data = JSON.parse(xhr.responseText);
@@ -1224,14 +1282,14 @@ document.addEventListener('DOMContentLoaded', function () {
 
         xhr.open('POST', '/api/send-to-zendesk');
         xhr.send(formData);
-        
+
         fileInput.value = '';
         console.log('📎 [FILE] File input cleared');
     }
 
     function showImageZoomModal(imageUrl) {
         console.log('🖼️ [FILE] Showing image zoom modal');
-        
+
         const modal = document.createElement('div');
         modal.classList.add('zoom-modal');
 
@@ -1257,7 +1315,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function showImagePreviewInInput(file) {
         console.log('🖼️ [FILE] Showing image preview in input');
-        
+
         const previewContainer = document.createElement('div');
         previewContainer.id = 'image-preview-container';
         previewContainer.classList.add('image-preview-container');
@@ -1277,13 +1335,13 @@ document.addEventListener('DOMContentLoaded', function () {
         chatInputArea.insertBefore(previewContainer, chatInput);
         chatInput.placeholder = 'Add a caption (optional)...';
         pendingImage = file;
-        
+
         console.log('🖼️ [FILE] Image preview added to input');
     }
 
     function clearImagePreview() {
         console.log('🖼️ [FILE] Clearing image preview');
-        
+
         const preview = document.getElementById('image-preview-container');
         if (preview) {
             preview.remove();
@@ -1296,7 +1354,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function showDeleteAccountModal() {
         console.log('🗑️ [UI] Showing delete account modal');
-        
+
         const modal = document.createElement('div');
         modal.classList.add('chat-modal');
 
@@ -1341,7 +1399,7 @@ document.addEventListener('DOMContentLoaded', function () {
             radio.addEventListener('change', function () {
                 selectedReason = this.value;
                 console.log('🗑️ [UI] Selected reason:', selectedReason);
-                
+
                 if (selectedReason === "Others") {
                     otherInput.style.display = 'block';
                     otherInput.focus();
@@ -1384,7 +1442,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         function validateDeleteButton() {
             console.log('🗑️ [UI] Validating delete button, selectedReason:', selectedReason);
-            
+
             if (selectedReason === "Others") {
                 const hasText = otherInput.value.trim() !== "";
                 deleteBtn.disabled = !hasText;
@@ -1404,7 +1462,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         deleteBtn.addEventListener('click', function () {
             console.log('🗑️ [UI] Delete button clicked');
-            
+
             let reasonText = selectedReason;
             if (selectedReason === "Others") {
                 const otherText = otherInput.value.trim();
@@ -1504,6 +1562,6 @@ document.addEventListener('DOMContentLoaded', function () {
             console.log('Displayed message IDs:', Array.from(displayedMessageIds));
         }
     };
-    
+
     console.log('✅ [APP] Chat widget initialized, debug functions available at window.debugChat');
 });

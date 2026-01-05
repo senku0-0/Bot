@@ -481,7 +481,8 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         data = json.loads(request.body)
         conversation_id = data.get("conversationId")
         app_user_id = data.get("appUserId")
-        reason = data.get("reason", "User requested agent support") 
+        reason = data.get("reason", "User requested agent support")
+        app_related_category = data.get("appRelatedCategory")  # NEW: Get the category from frontend
         
         if not conversation_id:
             return JsonResponse({"error": "Missing conversationId"}, status=400)
@@ -490,6 +491,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         cache.set(f'pending_escalation_{conversation_id}', {
             'app_user_id': app_user_id,
             'reason': reason,
+            'app_related_category': app_related_category,  # Store category
             'timestamp': datetime.now().isoformat()
         }, timeout=300)  # 5 minutes for ticket creation
 
@@ -497,16 +499,42 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         app_id = SUNSHINE_APP_ID
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
 
+        # Prepare metadata for custom field
+        metadata = {
+            "dataCapture.systemField.tags": "escalated_from_bot",
+            "dataCapture.systemField.requester.name": "Guest User",
+            "dataCapture.ticketField.description": f"Conversation ID: {conversation_id}\nEscalation Reason: {reason}"
+        }
+        
+        # CRITICAL: Add custom field mapping if category exists
+        if app_related_category and APP_RELATED_SUB_CATEGORY:
+            try:
+                # Map the category to the correct value from your CSV
+                category_mapping = {
+                    "Location Not Found or Inaccurate": "location_not_found_or_inaccurate",
+                    "Unable to Login": "unable_to_login",
+                    "My App is Not Responding": "my_app_is_not_responding",
+                    "Others": "others"
+                }
+                
+                # Get the tag value from the mapping
+                tag_value = category_mapping.get(app_related_category, "others")
+                
+                # Add custom field to metadata
+                # IMPORTANT: Use the format "dataCapture.ticketField.customField_<FIELD_ID>"
+                metadata[f"dataCapture.ticketField.customField_{APP_RELATED_SUB_CATEGORY}"] = tag_value
+                
+                logger.info(f"[ESCALATE] Setting custom field {APP_RELATED_SUB_CATEGORY} to {tag_value}")
+                
+            except Exception as e:
+                logger.error(f"[ESCALATE] Error setting custom field: {str(e)}")
+
         # Pass Control to Zendesk ("next")
         pass_control_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/passControl"
 
         pass_control_payload = {
             "switchboardIntegration": "next",
-            "metadata": {
-                "dataCapture.systemField.tags": "escalated_from_bot",
-                "dataCapture.systemField.requester.name": "Guest User",
-                "dataCapture.ticketField.description": f"Conversation ID: {conversation_id}\nEscalation Reason: {reason}"
-            }
+            "metadata": metadata  # Use updated metadata
         }
 
         pc_response = requests.post(pass_control_url, json=pass_control_payload, auth=auth)
@@ -532,7 +560,8 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
 
         return JsonResponse({
             "status": "escalated",
-            "conversation_id": conversation_id
+            "conversation_id": conversation_id,
+            "app_related_category_set": bool(app_related_category)
         })
 
     except Exception as e:
