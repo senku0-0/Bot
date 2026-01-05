@@ -692,13 +692,80 @@ def handle_agent_take_control(event_data: Dict[str, Any]) -> None:
                 ticket_id = metadata['dataCapture']['ticketField'].get('id')
         
         if ticket_id:
+            # Get the app-related category from cache
+            pending_data = cache.get(f'pending_escalation_{conversation_id}')
+            app_related_category = None
+            if pending_data:
+                app_related_category = pending_data.get('app_related_category')
+            
             # Store the mapping
             store_conversation_ticket_mapping(conversation_id, ticket_id)
             logger.info(f"[AGENT-CONTROL] Stored mapping from metadata: conversation={conversation_id} -> ticket={ticket_id}")
+            
+            # NEW: Update the ticket custom field if we have a category
+            if app_related_category and APP_RELATED_SUB_CATEGORY:
+                update_ticket_custom_field(ticket_id, app_related_category)
+            
             # Store ticket status as active
             cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
         else:
             logger.info(f"[AGENT-CONTROL] No ticket ID found in metadata for conversation {conversation_id}")
+
+def update_ticket_custom_field(ticket_id: str, category: str) -> bool:
+    """
+    Update the APP_RELATED_SUB_CATEGORY custom field in Zendesk ticket.
+    """
+    try:
+        # Map category display name to tag value
+        category_mapping = {
+            "Location Not Found or Inaccurate": "location_not_found_or_inaccurate",
+            "Unable to Login": "unable_to_login",
+            "My App is Not Responding": "my_app_is_not_responding",
+            "Others": "others",
+            "location_not_found_or_inaccurate": "location_not_found_or_inaccurate",
+            "unable_to_login": "unable_to_login",
+            "my_app_is_not_responding": "my_app_is_not_responding",
+            "others": "others"
+        }
+        
+        # Get tag value (handle both display name and tag format)
+        tag_value = category_mapping.get(category)
+        if not tag_value:
+            tag_value = "others"  # Default fallback
+        
+        # Update ticket custom field
+        url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+        headers = {"Content-Type": "application/json"}
+        
+        data = {
+            "ticket": {
+                "custom_fields": [
+                    {
+                        "id": int(APP_RELATED_SUB_CATEGORY),
+                        "value": tag_value
+                    }
+                ]
+            }
+        }
+        
+        response = requests.put(
+            url,
+            json=data,
+            headers=headers,
+            auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+            timeout=15
+        )
+        
+        if response.status_code == 200:
+            logger.info(f"[TICKET-UPDATE] Successfully updated ticket {ticket_id} custom field to {tag_value}")
+            return True
+        else:
+            logger.error(f"[TICKET-UPDATE] Failed to update ticket {ticket_id}: {response.status_code} - {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"[TICKET-UPDATE] Error updating ticket custom field: {str(e)}")
+        return False
 
 def handle_user_typing(event_data: Dict[str, Any]) -> None:
     """
@@ -1429,6 +1496,130 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                     "error": response.text
                 }, status=500)
         
+        # ============================================================================
+        # NEW CRITICAL SECTION: Handle ticket.created event to update custom field
+        # ============================================================================
+        elif 'ticket.created' in event_type:
+            logger.info("[NOTIFICATION-WEBHOOK] Ticket created event - ATTEMPTING TO SET CUSTOM FIELD")
+            
+            # Extract ticket ID
+            ticket_id = None
+            if 'ticket' in event_data:
+                ticket_id = str(event_data['ticket'].get('id', ''))
+            elif 'ticket_id' in event_data:
+                ticket_id = str(event_data['ticket_id'])
+            
+            if not ticket_id:
+                ticket_id = extract_ticket_id_from_data(data)
+            
+            if not ticket_id:
+                logger.error("[NOTIFICATION-WEBHOOK] No ticket ID found in created ticket notification")
+                return JsonResponse({"status": "no_ticket_id_in_created"})
+            
+            logger.info(f"[NOTIFICATION-WEBHOOK] Ticket created with ID: {ticket_id}")
+            
+            # ============================================================================
+            # CRITICAL: Find which conversation this ticket belongs to
+            # ============================================================================
+            conversation_id = None
+            
+            # Method 1: Check if ticket description contains conversation ID
+            ticket_description = ""
+            try:
+                if 'ticket' in event_data:
+                    ticket_description = event_data['ticket'].get('description', '')
+                elif 'comment' in event_data and 'body' in event_data['comment']:
+                    ticket_description = event_data['comment'].get('body', '')
+                
+                # Look for conversation ID in description (format from your metadata)
+                import re
+                conv_match = re.search(r'Conversation ID:\s*(\S+)', ticket_description)
+                if conv_match:
+                    conversation_id = conv_match.group(1)
+                    logger.info(f"[NOTIFICATION-WEBHOOK] Found conversation ID in description: {conversation_id}")
+            except Exception as e:
+                logger.error(f"[NOTIFICATION-WEBHOOK] Error parsing ticket description: {e}")
+            
+            # Method 2: Check cache for pending escalations
+            if not conversation_id:
+                try:
+                    # Get all cache keys that start with 'pending_escalation_'
+                    # Note: This depends on your cache implementation
+                    # For Redis, you might need to use cache.keys('pending_escalation_*')
+                    # For simpler approach, we'll check if we stored conversation in ticket metadata
+                    pass
+                except Exception as e:
+                    logger.error(f"[NOTIFICATION-WEBHOOK] Error searching cache: {e}")
+            
+            # Method 3: Search all cache keys for this ticket (if you stored it)
+            if not conversation_id:
+                # Check if we already stored a mapping
+                conversation_id = cache.get(f'ticket_{ticket_id}')
+                if conversation_id:
+                    logger.info(f"[NOTIFICATION-WEBHOOK] Found conversation in cache mapping: {conversation_id}")
+            
+            if not conversation_id:
+                logger.error(f"[NOTIFICATION-WEBHOOK] Cannot find conversation for ticket {ticket_id}")
+                return JsonResponse({
+                    "status": "no_conversation_found",
+                    "ticket_id": ticket_id,
+                    "message": "Ticket created but no conversation mapping found"
+                })
+            
+            # ============================================================================
+            # Get the app_related_category from cache and update ticket
+            # ============================================================================
+            pending_data = cache.get(f'pending_escalation_{conversation_id}')
+            app_related_category = None
+            
+            if pending_data:
+                app_related_category = pending_data.get('app_related_category')
+                logger.info(f"[NOTIFICATION-WEBHOOK] Found pending data for conversation {conversation_id}: {app_related_category}")
+            else:
+                logger.warning(f"[NOTIFICATION-WEBHOOK] No pending data found for conversation {conversation_id}")
+                # Check if we stored it elsewhere
+                app_related_category = cache.get(f'category_{conversation_id}')
+            
+            # Update ticket custom field if we have the category
+            if app_related_category and APP_RELATED_SUB_CATEGORY:
+                logger.info(f"[NOTIFICATION-WEBHOOK] Updating ticket {ticket_id} with category: {app_related_category}")
+                
+                # Call the update function
+                try:
+                    update_ticket_custom_field(ticket_id, app_related_category)
+                    
+                    # Store the permanent mapping
+                    store_conversation_ticket_mapping(conversation_id, ticket_id)
+                    
+                    # Clean up pending escalation data
+                    cache.delete(f'pending_escalation_{conversation_id}')
+                    
+                    logger.info(f"[NOTIFICATION-WEBHOOK] Successfully updated ticket {ticket_id} custom field")
+                    
+                    return JsonResponse({
+                        "status": "ticket_updated",
+                        "ticket_id": ticket_id,
+                        "conversation_id": conversation_id,
+                        "app_related_category": app_related_category,
+                        "message": "Custom field updated successfully"
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"[NOTIFICATION-WEBHOOK] Failed to update ticket custom field: {str(e)}")
+                    return JsonResponse({
+                        "status": "update_failed",
+                        "ticket_id": ticket_id,
+                        "error": str(e)
+                    }, status=500)
+            else:
+                logger.warning(f"[NOTIFICATION-WEBHOOK] Cannot update ticket {ticket_id}: Missing category or field ID")
+                return JsonResponse({
+                    "status": "missing_data",
+                    "ticket_id": ticket_id,
+                    "conversation_id": conversation_id,
+                    "message": "Missing app_related_category or APP_RELATED_SUB_CATEGORY env var"
+                })
+        
         # Handle ticket.solved event - SHOW "agent ended session" message
         elif 'ticket.solved' in event_type:
             logger.info("[NOTIFICATION-WEBHOOK] Ticket solved event - showing agent ended session message")
@@ -1470,8 +1661,8 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
             return JsonResponse({"status": "ticket_solved_processed", "ticket_id": ticket_id})
         
         # Handle other event types if needed
-        elif 'ticket.created' in event_type:
-            logger.info("[NOTIFICATION-WEBHOOK] Ticket created event")
+        elif 'ticket.updated' in event_type:
+            logger.info("[NOTIFICATION-WEBHOOK] Ticket updated event")
         else:
             logger.info(f"[NOTIFICATION-WEBHOOK] Unhandled event type: {event_type}")
         
