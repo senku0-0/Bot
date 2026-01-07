@@ -495,6 +495,17 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             cache.set(f'category_{conversation_id}', app_related_category, timeout=3600)
             logger.info(f"[ESCALATE] 📤 Cached category for conversation {conversation_id}")
 
+        # Store pending escalation data for ticket.created webhook to find
+        pending_data = {
+            'conversation_id': conversation_id,
+            'app_user_id': app_user_id,
+            'reason': reason,
+            'app_related_category': app_related_category,
+            'timestamp': datetime.now().isoformat()
+        }
+        cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=300)  # 5 minutes
+        logger.info(f"[ESCALATE] 📤 Stored pending_escalation_{conversation_id} for webhook lookup")
+
         # Use global SUNSHINE_APP_ID
         app_id = SUNSHINE_APP_ID
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
@@ -534,14 +545,16 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         # ============================================================================
         # Send a simple escalation message BEFORE passControl
         # This ensures there's conversation history when Zendesk creates the ticket
+        # CRITICAL: Include conversation ID so ticket.created webhook can find it
         # ============================================================================
         if app_user_id:
             msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/messages"
             
-            # Simple, clean message - no embedded IDs
+            # Include conversation ID in message so it can be parsed from ticket description
             escalation_message = f"Escalation Reason: {reason}"
             if app_related_category:
                 escalation_message += f"\nCategory: {app_related_category}"
+            escalation_message += f"\n[Sunshine Conversation: {conversation_id}]"
             
             msg_payload = {
                 "author": {
