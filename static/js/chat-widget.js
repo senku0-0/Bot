@@ -381,9 +381,10 @@ document.addEventListener('DOMContentLoaded', function () {
             return;
         }
 
-        console.log('📨 [MESSAGES] Fetching messages for:', conversationId.substring(0, 10) + '...');
+        console.log('📨 [MESSAGES] Fetching full history for:', conversationId.substring(0, 10) + '...');
 
-        fetch(`/api/chat/messages?conversationId=${conversationId}`)
+        // Use the new full-history endpoint that leverages Zendesk Conversation Log API
+        fetch(`/api/chat/full-history?conversationId=${conversationId}`)
             .then(response => {
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}`);
@@ -391,32 +392,19 @@ document.addEventListener('DOMContentLoaded', function () {
                 return response.json();
             })
             .then(data => {
-                console.log('📨 [MESSAGES] Received response');
+                console.log(`📨 [MESSAGES] Received ${data.messages?.length || 0} messages from ${data.source}`);
 
-                // Check agent status
-                if (data.conversation && data.conversation.id) {
-                    const activeIntegration = data.conversation.activeSwitchboardIntegration;
-                    const isAgentActive = activeIntegration && (
-                        activeIntegration.name === 'next' ||
-                        activeIntegration.name === 'zendesk' ||
-                        activeIntegration.integrationType === 'zendesk'
-                    );
-
-                    if (isAgentActive) {
-                        if (!isAgentConnected) {
-                            isAgentConnected = true;
-                            localStorage.setItem('chat_isAgentConnected', 'true');
-                            chatInputArea.style.display = 'flex';
-                            console.log('✅ [MESSAGES] Agent is active, showing input');
-                        }
-                        if (!hasConfirmedAgentActivity) {
-                            hasConfirmedAgentActivity = true;
-                            localStorage.setItem('chat_hasConfirmedAgentActivity', 'true');
-                        }
+                // If we have a ticket ID, we're in an escalated session
+                if (data.ticket_id) {
+                    console.log(`📨 [MESSAGES] Ticket ID: ${data.ticket_id}`);
+                    if (!isAgentConnected) {
+                        isAgentConnected = true;
+                        localStorage.setItem('chat_isAgentConnected', 'true');
+                        chatInputArea.style.display = 'flex';
                     }
                 }
 
-                if (!data.messages) {
+                if (!data.messages || data.messages.length === 0) {
                     console.log('📨 [MESSAGES] No messages in response');
                     return;
                 }
@@ -434,53 +422,68 @@ document.addEventListener('DOMContentLoaded', function () {
 
                     // Skip if already displayed
                     if (displayedMessageIds.has(msg.id)) {
-                        console.log(`⚠️ [MESSAGES] Duplicate: ${msg.id.substring(0, 10)}...`);
                         return;
                     }
 
                     displayedMessageIds.add(msg.id);
                     hasNewMessages = true;
 
-                    // Process message content
-                    if (msg.content?.type === 'file' && msg.source?.type !== 'whatsapp') {
-                        const mediaUrl = msg.content.mediaUrl;
-                        const text = msg.content.text || '';
-                        const fileName = mediaUrl?.split('/').pop() || 'file';
-
-                        if (displayedImageFileNames.has(fileName)) return;
-
-                        if (mediaUrl && (mediaUrl.includes('.jpg') || mediaUrl.includes('.jpeg') ||
-                            mediaUrl.includes('.png') || mediaUrl.includes('.gif') ||
-                            mediaUrl.includes('.webp'))) {
-                            displayedImageFileNames.add(fileName);
-                            appendImageMessage(mediaUrl, text, 'bot-message');
-                        } else if (mediaUrl) {
-                            appendFileMessage(fileName, formatFileSize(msg.content.size || 0), 'bot-message', text);
-                        }
-                    } else if (msg.content?.type === 'text') {
-                        const isSystem = msg.author?.type === 'system';
-                        const isAgent = msg.author?.type === 'business' || msg.author?.type === 'agent';
-                        const senderName = isAgent ? (msg.author.displayName || 'Agent') : null;
-
-                        console.log(`📨 [MESSAGES] Text message from ${senderName || msg.author?.type}: ${msg.content.text.substring(0, 50)}...`);
-
-                        // If this is the first agent message seen via fetch, announce agent once
-                        if (isAgent && !agentJoinAnnounced) {
-                            removeLoadingIndicator();
-                            appendMessage(senderName || 'Agent', 'system-message');
-                            agentJoinAnnounced = true;
-                            localStorage.setItem('chat_agentJoinAnnounced', 'true');
-                            localStorage.setItem('chat_agentName', senderName || 'Agent');
-                            chatInputArea.style.display = 'flex';
-                            chatHeaderTitle.textContent = senderName || 'Agent';
-                        }
-
-                        appendMessage(msg.content.text, isSystem ? 'system-message' : 'bot-message');
+                    // Determine CSS class based on messageClass from backend
+                    let cssClass = 'bot-message';
+                    if (msg.messageClass === 'user') {
+                        cssClass = 'user-message';
+                    } else if (msg.messageClass === 'agent') {
+                        cssClass = 'bot-message';  // Agent messages styled like bot
+                    } else if (msg.messageClass === 'system') {
+                        cssClass = 'system-message';
                     }
 
-                    // Log every 5th message
-                    if (index % 5 === 0) {
-                        console.log(`📨 [MESSAGES] Processed ${index + 1}/${sortedMessages.length} messages`);
+                    const authorName = msg.author?.displayName || '';
+                    const isAgent = msg.messageClass === 'agent';
+
+                    // Announce agent once
+                    if (isAgent && !agentJoinAnnounced && authorName) {
+                        removeLoadingIndicator();
+                        appendMessage(`${authorName} joined the chat`, 'system-message');
+                        agentJoinAnnounced = true;
+                        localStorage.setItem('chat_agentJoinAnnounced', 'true');
+                        localStorage.setItem('chat_agentName', authorName);
+                        chatInputArea.style.display = 'flex';
+                        chatHeaderTitle.textContent = authorName;
+                    }
+
+                    // Handle attachments (images/files)
+                    if (msg.attachments && msg.attachments.length > 0) {
+                        msg.attachments.forEach(att => {
+                            if (att.type === 'image' && att.url) {
+                                const fileName = att.url.split('/').pop() || 'image';
+                                if (!displayedImageFileNames.has(fileName)) {
+                                    displayedImageFileNames.add(fileName);
+                                    appendImageMessage(att.url, msg.text || '', cssClass);
+                                }
+                            } else if (att.type === 'file' && att.url) {
+                                appendFileMessage(
+                                    att.fileName || 'file',
+                                    formatFileSize(att.size || 0),
+                                    cssClass,
+                                    msg.text || ''
+                                );
+                            }
+                        });
+                        // If there's text with attachment, don't show text again
+                        if (msg.text && msg.attachments.some(a => a.type === 'image')) {
+                            return;
+                        }
+                    }
+
+                    // Display text message
+                    if (msg.text) {
+                        // Skip certain system messages
+                        if (msg.text.includes('Connecting to agent') || 
+                            msg.text.includes('Escalation Reason:')) {
+                            return;
+                        }
+                        appendMessage(msg.text, cssClass);
                     }
                 });
 
@@ -492,25 +495,15 @@ document.addEventListener('DOMContentLoaded', function () {
                 // Session end detection
                 if (sortedMessages.length > 0 && isAgentConnected) {
                     const lastMsg = sortedMessages[sortedMessages.length - 1];
-                    let isLastMsgEndSession = false;
-
-                    if (lastMsg.content?.type === 'text') {
-                        const senderName = lastMsg.author.type === 'user' ? null :
-                            (lastMsg.author.displayName || 'Agent');
-                        const text = lastMsg.content.text.toLowerCase();
-                        isLastMsgEndSession = senderName === 'System' ||
-                            text.includes("messaging session ended") ||
+                    if (lastMsg.text) {
+                        const text = lastMsg.text.toLowerCase();
+                        const isEndSession = text.includes("messaging session ended") ||
                             text.includes("the agent has ended the session");
-                    } else if (lastMsg.source?.type === 'system') {
-                        isLastMsgEndSession = true;
-                    }
-
-                    const msgTime = new Date(lastMsg.received).getTime();
-                    const isTrulyOld = msgTime < (lastAgentRequestTime - 5000);
-
-                    if (isLastMsgEndSession && !isTrulyOld) {
-                        console.log('🔚 [MESSAGES] Detected session end');
-                        endSession();
+                        
+                        if (isEndSession) {
+                            console.log('🔚 [MESSAGES] Detected session end');
+                            endSession();
+                        }
                     }
                 }
 
