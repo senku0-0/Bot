@@ -518,22 +518,16 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         
         category_tag = category_mapping.get(app_related_category, "others") if app_related_category else None
         
-        # Build tags list - include category tag for backup (triggers can use this)
-        tags_list = ["escalated_from_bot"]
-        if category_tag:
-            tags_list.append(f"category_{category_tag}")  # e.g. "category_unable_to_login"
-        
+        # Build metadata - only escalated_from_bot tag (no category tag to avoid trigger issues)
         metadata = {
-            "dataCapture.systemField.tags": ",".join(tags_list),
+            "dataCapture.systemField.tags": "escalated_from_bot",
             "dataCapture.systemField.requester.name": "Guest User"
         }
         
         # Add category dropdown field - CORRECT FORMAT: dataCapture.ticketField.{ID}
-        # NOT "customField_{ID}" - just the raw field ID
         if category_tag and APP_RELATED_SUB_CATEGORY:
             metadata[f"dataCapture.ticketField.{APP_RELATED_SUB_CATEGORY}"] = category_tag
             logger.info(f"[ESCALATE] 📤 Setting category field {APP_RELATED_SUB_CATEGORY} = {category_tag}")
-            logger.info(f"[ESCALATE] 📤 Also added backup tag: category_{category_tag}")
         
         logger.info(f"[ESCALATE] 📤 Final metadata: {metadata}")
 
