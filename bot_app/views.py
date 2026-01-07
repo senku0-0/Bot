@@ -490,109 +490,62 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         if not conversation_id:
             return JsonResponse({"error": "Missing conversationId"}, status=400)
 
-        # ============================================================================
-        # CRITICAL: Store a temporary unique identifier that Zendesk will include
-        # ============================================================================
-        unique_marker = f"SUNSHINE_CONV_{conversation_id}"
-        logger.info(f"[ESCALATE] 📤 Generated unique marker: {unique_marker}")
-        
-        # Store conversation info with multiple access methods
-        pending_data = {
-            'app_user_id': app_user_id,
-            'reason': reason,
-            'app_related_category': app_related_category,
-            'unique_marker': unique_marker,  # This will be in ticket description
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        # Store with conversation ID as key
-        cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=300)
-        logger.info(f"[ESCALATE] 📤 Cached pending_escalation_{conversation_id} (timeout=300s)")
-        
-        # Also store with unique marker for quick lookup
-        cache.set(f'marker_{unique_marker}', conversation_id, timeout=300)
-        logger.info(f"[ESCALATE] 📤 Cached marker_{unique_marker} (timeout=300s)")
-        
-        # Store category separately with longer timeout for reliability
+        # Store category in cache for potential webhook lookup
         if app_related_category:
             cache.set(f'category_{conversation_id}', app_related_category, timeout=3600)
-            logger.info(f"[ESCALATE] 📤 Cached category_{conversation_id}={app_related_category} (timeout=3600s)")
+            logger.info(f"[ESCALATE] 📤 Cached category for conversation {conversation_id}")
 
         # Use global SUNSHINE_APP_ID
         app_id = SUNSHINE_APP_ID
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
 
-        # Prepare metadata - include the unique marker in description
-        ticket_description = f"Sunshine Conversation: {conversation_id}\nMarker: {unique_marker}\nEscalation Reason: {reason}"
-        logger.info(f"[ESCALATE] 📤 Ticket description will be:\n{ticket_description}")
+        # ============================================================================
+        # SIMPLIFIED METADATA - Focus only on Category field
+        # ============================================================================
         
-        metadata = {
-            "dataCapture.systemField.tags": "escalated_from_bot",
-            "dataCapture.systemField.requester.name": "Guest User",
-            "dataCapture.ticketField.description": ticket_description
+        # Map the category to the correct TAG value (must match Zendesk dropdown option tags)
+        category_mapping = {
+            "Location Not Found or Inaccurate": "location_not_found_or_inaccurate",
+            "Unable to Login": "unable_to_login",
+            "My App is Not Responding": "my_app_is_not_responding",
+            "Others": "others",
+            # Also handle if already in tag format
+            "location_not_found_or_inaccurate": "location_not_found_or_inaccurate",
+            "unable_to_login": "unable_to_login",
+            "my_app_is_not_responding": "my_app_is_not_responding",
+            "others": "others"
         }
         
-        # ============================================================================
-        # CRITICAL FIX: Explicitly set the conversation ID custom field
-        # This ensures the conversation ID is available in the ticket immediately
-        # ============================================================================
-        if ZENDESK_CHAT_CONVERSATION_FIELD_ID:
-            try:
-                # Note: sunshine metadata keys for custom fields use "customField_" + ID
-                # This ensures mapped tickets have the conversation ID when created
-                cf_key = f"dataCapture.ticketField.customField_{ZENDESK_CHAT_CONVERSATION_FIELD_ID}"
-                metadata[cf_key] = conversation_id
-                logger.info(f"[ESCALATE] 📤 Adding conversation ID custom field: {cf_key}={conversation_id}")
-            except Exception as e:
-                logger.error(f"[ESCALATE] ❌ Error adding conversation ID to metadata: {e}")
-        else:
-            logger.warning(f"[ESCALATE] ⚠️ ZENDESK_CHAT_CONVERSATION_FIELD_ID not configured!")
-
-        # Add custom field metadata if category exists
-        if app_related_category and APP_RELATED_SUB_CATEGORY:
-            try:
-                # Map the category to the correct value from your CSV
-                category_mapping = {
-                    "Location Not Found or Inaccurate": "location_not_found_or_inaccurate",
-                    "Unable to Login": "unable_to_login",
-                    "My App is Not Responding": "my_app_is_not_responding",
-                    "Others": "others"
-                }
-                
-                tag_value = category_mapping.get(app_related_category, "others")
-                cf_key = f"dataCapture.ticketField.customField_{APP_RELATED_SUB_CATEGORY}"
-                metadata[cf_key] = tag_value
-                
-                logger.info(f"[ESCALATE] 📤 Adding category custom field: {cf_key}={tag_value}")
-                
-            except Exception as e:
-                logger.error(f"[ESCALATE] ❌ Error setting category custom field: {str(e)}")
-        else:
-            if not app_related_category:
-                logger.info(f"[ESCALATE] ℹ️ No app_related_category provided")
-            if not APP_RELATED_SUB_CATEGORY:
-                logger.warning(f"[ESCALATE] ⚠️ APP_RELATED_SUB_CATEGORY env var not configured!")
+        category_tag = category_mapping.get(app_related_category, "others") if app_related_category else None
         
-        logger.info(f"[ESCALATE] 📤 Final metadata keys: {list(metadata.keys())}")
+        # Build tags list - include category tag for backup (triggers can use this)
+        tags_list = ["escalated_from_bot"]
+        if category_tag:
+            tags_list.append(f"category_{category_tag}")  # e.g. "category_unable_to_login"
+        
+        metadata = {
+            "dataCapture.systemField.tags": ",".join(tags_list),
+            "dataCapture.systemField.requester.name": "Guest User"
+        }
+        
+        # Add category dropdown field - CORRECT FORMAT: dataCapture.ticketField.{ID}
+        # NOT "customField_{ID}" - just the raw field ID
+        if category_tag and APP_RELATED_SUB_CATEGORY:
+            metadata[f"dataCapture.ticketField.{APP_RELATED_SUB_CATEGORY}"] = category_tag
+            logger.info(f"[ESCALATE] 📤 Setting category field {APP_RELATED_SUB_CATEGORY} = {category_tag}")
+            logger.info(f"[ESCALATE] 📤 Also added backup tag: category_{category_tag}")
+        
+        logger.info(f"[ESCALATE] 📤 Final metadata: {metadata}")
 
         # ============================================================================
-        # CRITICAL FIX: Send escalation message BEFORE passControl
-        # This ensures the message is in the conversation history when Zendesk
-        # creates the ticket. Otherwise, Zendesk sees "empty_history_on_passcontrol"
-        # and the ticket description won't contain our conversation ID.
+        # Send a simple escalation message BEFORE passControl
+        # This ensures there's conversation history when Zendesk creates the ticket
         # ============================================================================
         if app_user_id:
             msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/messages"
             
-            # Build the escalation message with embedded conversation ID
-            # This message will appear in the Zendesk ticket description
-            escalation_message = (
-                f"[Sunshine Conversation: {conversation_id}]\n"
-                f"[Marker: {unique_marker}]\n"
-                f"---\n"
-                f"Escalation Reason: {reason}"
-            )
-            
+            # Simple, clean message - no embedded IDs
+            escalation_message = f"Escalation Reason: {reason}"
             if app_related_category:
                 escalation_message += f"\nCategory: {app_related_category}"
             
@@ -607,16 +560,16 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
                 }
             }
             
-            logger.info(f"[ESCALATE] 📤 Sending escalation message BEFORE passControl:\n{escalation_message}")
+            logger.info(f"[ESCALATE] 📤 Sending escalation message: {escalation_message}")
             msg_response = requests.post(msg_url, json=msg_payload, auth=auth)
-            logger.info(f"[ESCALATE] 📤 Escalation message sent, status: {msg_response.status_code}")
+            logger.info(f"[ESCALATE] 📤 Message sent, status: {msg_response.status_code}")
             
             if msg_response.status_code not in [200, 201]:
                 logger.error(f"[ESCALATE] ⚠️ Message send failed: {msg_response.text}")
             else:
-                # Wait a tiny bit to ensure message is processed before passControl
-                time.sleep(0.3)
-                logger.info(f"[ESCALATE] ✅ Message confirmed in conversation, proceeding to passControl")
+                # Wait a bit to ensure message is processed before passControl
+                time.sleep(0.5)
+                logger.info(f"[ESCALATE] ✅ Message in conversation, proceeding to passControl")
 
         # Pass Control to Zendesk ("next")
         pass_control_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/passControl"
@@ -635,14 +588,13 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             logger.error(f"[ESCALATE] ❌ Failed to escalate conversation: {pc_response.status_code} - {pc_response.text}")
             return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
         
-        logger.info(f"[ESCALATE] ✅ passControl succeeded! Response: {pc_response.text[:500]}")
+        logger.info(f"[ESCALATE] ✅ passControl succeeded!")
         logger.info(f"[ESCALATE] ✅ Escalation complete for conversation {conversation_id}")
 
         return JsonResponse({
             "status": "escalated",
             "conversation_id": conversation_id,
-            "unique_marker": unique_marker,  # Return for debugging
-            "app_related_category_set": bool(app_related_category)
+            "category": app_related_category
         })
 
     except Exception as e:
