@@ -2010,3 +2010,244 @@ def redis_health(request: HttpRequest) -> JsonResponse:
 
     status = 200 if details.get('cache') == 'ok' and details.get('channel_layer') == 'ok' else 500
     return JsonResponse({"status": "ok" if status == 200 else "degraded", "details": details}, status=status)
+
+
+# ============================================================================
+# NEW: Full Chat History using Zendesk Conversation Log API
+# ============================================================================
+@csrf_exempt
+def get_full_chat_history(request: HttpRequest) -> JsonResponse:
+    """
+    Fetch complete chat history using Zendesk's Conversation Log API.
+    This returns all messages: bot, user, agent, and attachments in chronological order.
+    
+    GET /api/chat/full-history?conversationId=<id>
+    """
+    if request.method != "GET":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    
+    conversation_id = request.GET.get("conversationId")
+    if not conversation_id:
+        return JsonResponse({"error": "Missing conversationId"}, status=400)
+    
+    logger.info(f"[FULL-HISTORY] 📜 Fetching full history for conversation: {conversation_id}")
+    
+    try:
+        # Step 1: Get the Zendesk ticket ID from cache
+        ticket_id = cache.get(f'conversation_{conversation_id}')
+        
+        if not ticket_id:
+            logger.info(f"[FULL-HISTORY] No ticket in cache, checking Zendesk...")
+            # Try to find ticket by searching or return Sunshine messages as fallback
+            return get_sunshine_messages_fallback(conversation_id)
+        
+        logger.info(f"[FULL-HISTORY] Found ticket ID: {ticket_id}")
+        
+        # Step 2: Call the Zendesk Conversation Log API
+        conv_log_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}/conversation_log.json"
+        
+        response = requests.get(
+            conv_log_url,
+            auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+            timeout=15
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"[FULL-HISTORY] Conversation Log API failed: {response.status_code} - {response.text}")
+            # Fallback to Sunshine messages
+            return get_sunshine_messages_fallback(conversation_id)
+        
+        data = response.json()
+        events = data.get("events", [])
+        
+        logger.info(f"[FULL-HISTORY] Received {len(events)} events from Conversation Log")
+        
+        # Step 3: Parse and format messages
+        messages = []
+        for event in events:
+            parsed = parse_conversation_log_event(event)
+            if parsed:
+                messages.append(parsed)
+        
+        # Sort by timestamp
+        messages.sort(key=lambda x: x.get("received", ""))
+        
+        logger.info(f"[FULL-HISTORY] Returning {len(messages)} parsed messages")
+        
+        return JsonResponse({
+            "messages": messages,
+            "source": "zendesk_conversation_log",
+            "ticket_id": ticket_id,
+            "conversation_id": conversation_id
+        })
+        
+    except Exception as e:
+        logger.exception(f"[FULL-HISTORY] Error fetching history: {e}")
+        # Fallback to Sunshine messages
+        return get_sunshine_messages_fallback(conversation_id)
+
+
+def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Parse a single event from the Zendesk Conversation Log API.
+    Returns a standardized message format for the frontend.
+    """
+    try:
+        event_type = event.get("type", "")
+        
+        # Skip non-message events
+        if event_type not in ["Messaging::ConversationMessage", "Comment"]:
+            return None
+        
+        author = event.get("author", {})
+        author_type = author.get("type", "unknown")
+        author_name = author.get("display_name", "") or author.get("name", "")
+        
+        # Get message content
+        content = event.get("content", {})
+        text = content.get("text") or content.get("body", "")
+        
+        # Skip empty messages
+        if not text and not event.get("attachments"):
+            return None
+        
+        # Skip system messages we don't want to show
+        if author_name == "System" and "Connecting to agent" in (text or ""):
+            return None
+        
+        # Determine message type for frontend CSS classes
+        if author_type == "user":
+            message_class = "user"
+        elif author_type == "bot":
+            message_class = "bot"
+        elif author_type in ["agent", "admin"]:
+            message_class = "agent"
+        else:
+            message_class = "system"
+        
+        # Build the standardized message
+        message = {
+            "id": event.get("id", f"evt_{uuid.uuid4().hex[:8]}"),
+            "text": text,
+            "author": {
+                "type": author_type,
+                "displayName": author_name or message_class.capitalize()
+            },
+            "received": event.get("created_at", ""),
+            "messageClass": message_class,
+            "source": "conversation_log"
+        }
+        
+        # Handle attachments (images, files)
+        attachments = event.get("attachments", [])
+        media_url = content.get("media_url")
+        
+        if attachments:
+            message["attachments"] = []
+            for att in attachments:
+                attachment = {
+                    "url": att.get("content_url") or att.get("url", ""),
+                    "fileName": att.get("file_name", ""),
+                    "contentType": att.get("content_type", ""),
+                    "size": att.get("size", 0)
+                }
+                # Check if it's an image
+                if attachment["contentType"].startswith("image/"):
+                    attachment["type"] = "image"
+                else:
+                    attachment["type"] = "file"
+                message["attachments"].append(attachment)
+        
+        # Handle inline media URL (for some message types)
+        if media_url and not attachments:
+            message["attachments"] = [{
+                "url": media_url,
+                "type": "image" if any(ext in media_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']) else "file"
+            }]
+        
+        return message
+        
+    except Exception as e:
+        logger.error(f"[FULL-HISTORY] Error parsing event: {e}")
+        return None
+
+
+def get_sunshine_messages_fallback(conversation_id: str) -> JsonResponse:
+    """
+    Fallback to Sunshine Conversations API when Zendesk Conversation Log is not available.
+    This happens when there's no ticket yet (before escalation).
+    """
+    try:
+        logger.info(f"[FULL-HISTORY] Using Sunshine fallback for {conversation_id}")
+        
+        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+        
+        response = requests.get(url, auth=auth, timeout=15)
+        
+        if response.status_code != 200:
+            logger.error(f"[FULL-HISTORY] Sunshine fallback failed: {response.status_code}")
+            return JsonResponse({"messages": [], "source": "error"})
+        
+        data = response.json()
+        sunshine_messages = data.get("messages", [])
+        
+        # Convert to standardized format
+        messages = []
+        for msg in sunshine_messages:
+            author = msg.get("author", {})
+            author_type = author.get("type", "user")
+            author_name = author.get("displayName", "")
+            
+            content = msg.get("content", {})
+            text = msg.get("text") or content.get("text", "")
+            
+            if author_type == "user":
+                message_class = "user"
+            elif author_type == "business":
+                # Check if it's bot or agent
+                if "answerBot" in str(msg.get("source", {})):
+                    message_class = "bot"
+                else:
+                    message_class = "agent"
+            else:
+                message_class = "bot"
+            
+            message = {
+                "id": msg.get("id", ""),
+                "text": text,
+                "author": {
+                    "type": author_type,
+                    "displayName": author_name or message_class.capitalize()
+                },
+                "received": msg.get("received", ""),
+                "messageClass": message_class,
+                "source": "sunshine"
+            }
+            
+            # Handle attachments
+            if content.get("type") == "image":
+                message["attachments"] = [{
+                    "url": content.get("mediaUrl", ""),
+                    "type": "image"
+                }]
+            elif content.get("type") == "file":
+                message["attachments"] = [{
+                    "url": content.get("mediaUrl", ""),
+                    "fileName": content.get("name", ""),
+                    "type": "file"
+                }]
+            
+            messages.append(message)
+        
+        logger.info(f"[FULL-HISTORY] Sunshine fallback returning {len(messages)} messages")
+        
+        return JsonResponse({
+            "messages": messages,
+            "source": "sunshine_fallback",
+            "conversation_id": conversation_id
+        })
+        
+    except Exception as e:
+        logger.exception(f"[FULL-HISTORY] Sunshine fallback error: {e}")
+        return JsonResponse({"messages": [], "source": "error", "error": str(e)})
