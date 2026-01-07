@@ -110,13 +110,13 @@ def store_conversation_ticket_mapping(conversation_id: str, ticket_id: str) -> b
     Store the mapping between Sunshine conversation and Zendesk ticket.
     """
     try:
-        # Store mapping both ways for easy lookup
-        cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)  # 24 hours
-        cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
-        logger.info(f"[MAPPING] Stored mapping: conversation={conversation_id} -> ticket={ticket_id}")
+        # Store mapping both ways for easy lookup - 7 days timeout
+        cache.set(f'conversation_{conversation_id}', ticket_id, timeout=604800)  # 7 days
+        cache.set(f'ticket_{ticket_id}', conversation_id, timeout=604800)  # 7 days
+        logger.info(f"[MAPPING] ✅ Stored mapping: conversation_{conversation_id} -> {ticket_id}")
         return True
     except Exception as e:
-        logger.error(f"[MAPPING] Failed to store conversation-ticket mapping: {str(e)}")
+        logger.error(f"[MAPPING] ❌ Failed to store conversation-ticket mapping: {str(e)}")
         return False
 
 # Index route (frontend entry point)
@@ -1714,6 +1714,13 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                 })
             
             # ============================================================================
+            # CRITICAL: Store conversation-ticket mapping IMMEDIATELY after finding it
+            # This is required for the Conversation Log API to work on refresh
+            # ============================================================================
+            logger.info(f"[NOTIFICATION-WEBHOOK] 💾 Storing conversation-ticket mapping: {conversation_id} -> {ticket_id}")
+            store_conversation_ticket_mapping(conversation_id, ticket_id)
+            
+            # ============================================================================
             # Get the app_related_category from cache and update ticket
             # ============================================================================
             pending_data = cache.get(f'pending_escalation_{conversation_id}')
@@ -1736,14 +1743,11 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                     success = update_ticket_custom_field(ticket_id, app_related_category)
                     
                     if success:
-                        # Store the permanent mapping
-                        store_conversation_ticket_mapping(conversation_id, ticket_id)
-                        
-                        # Clean up pending data
+                        # Mapping already stored above - just clean up pending data
                         cache.delete(f'pending_escalation_{conversation_id}')
                         
                         # Also clean up marker
-                        if 'unique_marker' in pending_data:
+                        if pending_data and 'unique_marker' in pending_data:
                             cache.delete(f"marker_{pending_data['unique_marker']}")
                         
                         logger.info(f"[NOTIFICATION-WEBHOOK] Successfully updated ticket {ticket_id} custom field")
@@ -1757,19 +1761,23 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                         })
                     else:
                         logger.error(f"[NOTIFICATION-WEBHOOK] update_ticket_custom_field returned False")
+                        # Mapping is already stored, so return partial success
                         return JsonResponse({
-                            "status": "update_failed",
+                            "status": "mapping_stored_but_update_failed",
                             "ticket_id": ticket_id,
+                            "conversation_id": conversation_id,
                             "error": "update_ticket_custom_field returned False"
-                        }, status=500)
+                        })
                     
                 except Exception as e:
                     logger.error(f"[NOTIFICATION-WEBHOOK] Failed to update ticket custom field: {str(e)}")
+                    # Mapping is already stored, so return partial success
                     return JsonResponse({
-                        "status": "update_failed",
+                        "status": "mapping_stored_but_update_failed",
                         "ticket_id": ticket_id,
+                        "conversation_id": conversation_id,
                         "error": str(e)
-                    }, status=500)
+                    })
             else:
                 missing_what = ""
                 if not app_related_category:
@@ -1777,12 +1785,12 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                 if not APP_RELATED_SUB_CATEGORY:
                     missing_what += " and APP_RELATED_SUB_CATEGORY" if missing_what else "APP_RELATED_SUB_CATEGORY"
                 
-                logger.warning(f"[NOTIFICATION-WEBHOOK] Cannot update ticket {ticket_id}: Missing {missing_what}")
+                logger.info(f"[NOTIFICATION-WEBHOOK] ✅ Ticket {ticket_id} mapped to conversation {conversation_id} (no category to update: {missing_what})")
                 return JsonResponse({
-                    "status": "missing_data",
+                    "status": "mapping_stored",
                     "ticket_id": ticket_id,
                     "conversation_id": conversation_id,
-                    "message": f"Missing {missing_what}"
+                    "message": f"Mapping stored successfully (no category update needed: {missing_what})"
                 })
         
         # Handle ticket.solved event - SHOW "agent ended session" message
@@ -2034,14 +2042,46 @@ def get_full_chat_history(request: HttpRequest) -> JsonResponse:
     
     try:
         # Step 1: Get the Zendesk ticket ID from cache
-        ticket_id = cache.get(f'conversation_{conversation_id}')
+        cache_key = f'conversation_{conversation_id}'
+        ticket_id = cache.get(cache_key)
+        logger.info(f"[FULL-HISTORY] Cache lookup key: {cache_key} -> {ticket_id}")
         
         if not ticket_id:
-            logger.info(f"[FULL-HISTORY] No ticket in cache, checking Zendesk...")
-            # Try to find ticket by searching or return Sunshine messages as fallback
-            return get_sunshine_messages_fallback(conversation_id)
+            logger.info(f"[FULL-HISTORY] ❌ No ticket in cache for key: {cache_key}")
+            
+            # Step 1b: Try to find ticket via Zendesk API search
+            logger.info(f"[FULL-HISTORY] 🔍 Searching Zendesk for conversation ID in custom field...")
+            try:
+                search_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/search.json"
+                # Search for the conversation ID in custom field or description
+                search_query = f"custom_field_{ZENDESK_CHAT_CONVERSATION_FIELD_ID}:{conversation_id}"
+                
+                response = requests.get(
+                    search_url,
+                    params={"query": search_query},
+                    auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+                    timeout=15
+                )
+                
+                if response.status_code == 200:
+                    results = response.json().get("results", [])
+                    if results:
+                        ticket_id = str(results[0].get("id"))
+                        logger.info(f"[FULL-HISTORY] ✅ Found ticket via search: {ticket_id}")
+                        # Store in cache for future requests
+                        store_conversation_ticket_mapping(conversation_id, ticket_id)
+                    else:
+                        logger.info(f"[FULL-HISTORY] 🔍 No tickets found in search")
+                else:
+                    logger.error(f"[FULL-HISTORY] ❌ Search failed: {response.status_code}")
+            except Exception as search_err:
+                logger.error(f"[FULL-HISTORY] ❌ Search error: {search_err}")
+            
+            if not ticket_id:
+                logger.info(f"[FULL-HISTORY] Using Sunshine fallback for {conversation_id}")
+                return get_sunshine_messages_fallback(conversation_id)
         
-        logger.info(f"[FULL-HISTORY] Found ticket ID: {ticket_id}")
+        logger.info(f"[FULL-HISTORY] ✅ Using ticket ID: {ticket_id}")
         
         # Step 2: Call the Zendesk Conversation Log API
         conv_log_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}/conversation_log.json"
