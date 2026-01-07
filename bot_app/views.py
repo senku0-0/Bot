@@ -2091,6 +2091,10 @@ def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, An
     """
     Parse a single event from the Zendesk Conversation Log API.
     Returns a standardized message format for the frontend.
+    
+    IMPORTANT: Images can be in TWO locations:
+    1. In 'attachments' array (standard file attachments from agent/user)
+    2. In 'content.media_url' (Sunshine Conversations rich media messages)
     """
     try:
         event_type = event.get("type", "")
@@ -2105,10 +2109,17 @@ def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, An
         
         # Get message content
         content = event.get("content", {})
+        content_type = content.get("type", "text")  # Can be "text", "image", "file", etc.
         text = content.get("text") or content.get("body", "")
         
-        # Skip empty messages
-        if not text and not event.get("attachments"):
+        # Get media_url for Sunshine rich media messages
+        media_url = content.get("media_url")
+        
+        # Get attachments array for standard file attachments
+        attachments_array = event.get("attachments", [])
+        
+        # Skip truly empty messages (no text, no media, no attachments)
+        if not text and not media_url and not attachments_array:
             return None
         
         # Skip system messages we don't want to show
@@ -2138,32 +2149,69 @@ def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, An
             "source": "conversation_log"
         }
         
-        # Handle attachments (images, files)
-        attachments = event.get("attachments", [])
-        media_url = content.get("media_url")
+        # Initialize attachments list
+        parsed_attachments = []
         
-        if attachments:
-            message["attachments"] = []
-            for att in attachments:
-                attachment = {
-                    "url": att.get("content_url") or att.get("url", ""),
-                    "fileName": att.get("file_name", ""),
-                    "contentType": att.get("content_type", ""),
-                    "size": att.get("size", 0)
-                }
-                # Check if it's an image
-                if attachment["contentType"].startswith("image/"):
-                    attachment["type"] = "image"
-                else:
-                    attachment["type"] = "file"
-                message["attachments"].append(attachment)
-        
-        # Handle inline media URL (for some message types)
-        if media_url and not attachments:
-            message["attachments"] = [{
+        # ============================================================================
+        # CASE 1: Check if content itself is an image (Sunshine rich media)
+        # This is common for bot/widget messages
+        # ============================================================================
+        if content_type == "image" and media_url:
+            logger.info(f"[FULL-HISTORY] Found image in content.media_url: {media_url[:100]}")
+            parsed_attachments.append({
                 "url": media_url,
-                "type": "image" if any(ext in media_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']) else "file"
-            }]
+                "type": "image",
+                "fileName": content.get("name", "image"),
+                "contentType": "image/*",
+                "size": content.get("size", 0)
+            })
+        
+        # ============================================================================
+        # CASE 2: Check for standard file attachments (agent uploads, comments)
+        # Use mapped_content_url if available, otherwise content_url
+        # ============================================================================
+        if attachments_array:
+            for att in attachments_array:
+                # Prefer mapped_content_url (more reliable), fallback to content_url
+                att_url = att.get("mapped_content_url") or att.get("content_url") or att.get("url", "")
+                att_content_type = att.get("content_type", "")
+                att_file_name = att.get("file_name", "") or att.get("name", "")
+                
+                if att_url:
+                    logger.info(f"[FULL-HISTORY] Found attachment: {att_file_name} - {att_url[:100]}")
+                    
+                    # Determine if it's an image
+                    is_image = (
+                        att_content_type.startswith("image/") or
+                        any(ext in att_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'])
+                    )
+                    
+                    parsed_attachments.append({
+                        "url": att_url,
+                        "type": "image" if is_image else "file",
+                        "fileName": att_file_name,
+                        "contentType": att_content_type,
+                        "size": att.get("size", 0)
+                    })
+        
+        # ============================================================================
+        # CASE 3: Check for media_url when content type is "file" (Sunshine file messages)
+        # ============================================================================
+        if content_type == "file" and media_url and not parsed_attachments:
+            logger.info(f"[FULL-HISTORY] Found file in content.media_url: {media_url[:100]}")
+            is_image = any(ext in media_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'])
+            parsed_attachments.append({
+                "url": media_url,
+                "type": "image" if is_image else "file",
+                "fileName": content.get("name", "file"),
+                "contentType": content.get("mediaType", ""),
+                "size": content.get("size", 0)
+            })
+        
+        # Add attachments to message if any found
+        if parsed_attachments:
+            message["attachments"] = parsed_attachments
+            logger.info(f"[FULL-HISTORY] Message has {len(parsed_attachments)} attachment(s)")
         
         return message
         

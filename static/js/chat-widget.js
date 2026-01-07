@@ -454,14 +454,18 @@ document.addEventListener('DOMContentLoaded', function () {
 
                     // Handle attachments (images/files)
                     if (msg.attachments && msg.attachments.length > 0) {
+                        console.log(`🖼️ [MESSAGES] Processing ${msg.attachments.length} attachment(s)`);
                         msg.attachments.forEach(att => {
+                            console.log(`🖼️ [MESSAGES] Attachment: type=${att.type}, url=${att.url?.substring(0, 80)}...`);
                             if (att.type === 'image' && att.url) {
                                 const fileName = att.url.split('/').pop() || 'image';
                                 if (!displayedImageFileNames.has(fileName)) {
                                     displayedImageFileNames.add(fileName);
+                                    console.log(`🖼️ [MESSAGES] Appending image: ${fileName}`);
                                     appendImageMessage(att.url, msg.text || '', cssClass);
                                 }
                             } else if (att.type === 'file' && att.url) {
+                                console.log(`📎 [MESSAGES] Appending file: ${att.fileName}`);
                                 appendFileMessage(
                                     att.fileName || 'file',
                                     formatFileSize(att.size || 0),
