@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from django.http import JsonResponse, HttpResponseForbidden, HttpRequest, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
-import json, hmac, hashlib, os, base64, logging, sys, uuid, re
+import json, hmac, hashlib, os, base64, logging, sys, uuid, re, time
 from typing import Optional, Dict, Any, Union, List
 from dotenv import load_dotenv
 import requests
@@ -575,27 +575,12 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         
         logger.info(f"[ESCALATE] 📤 Final metadata keys: {list(metadata.keys())}")
 
-        # Pass Control to Zendesk ("next")
-        pass_control_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/passControl"
-        pass_control_payload = {
-            "switchboardIntegration": "next",
-            "metadata": metadata
-        }
-        
-        logger.info(f"[ESCALATE] 📤 Calling passControl API: {pass_control_url}")
-
-        pc_response = requests.post(pass_control_url, json=pass_control_payload, auth=auth)
-        
-        logger.info(f"[ESCALATE] 📤 passControl response: {pc_response.status_code}")
-
-        if pc_response.status_code != 200:
-            logger.error(f"[ESCALATE] ❌ Failed to escalate conversation: {pc_response.status_code} - {pc_response.text}")
-            return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
-        
-        logger.info(f"[ESCALATE] ✅ passControl succeeded! Response: {pc_response.text[:500]}")
-
-        # Send a message on behalf of the user to trigger ticket creation
-        # CRITICAL: Include the conversation ID in the message so it appears in the ticket description
+        # ============================================================================
+        # CRITICAL FIX: Send escalation message BEFORE passControl
+        # This ensures the message is in the conversation history when Zendesk
+        # creates the ticket. Otherwise, Zendesk sees "empty_history_on_passcontrol"
+        # and the ticket description won't contain our conversation ID.
+        # ============================================================================
         if app_user_id:
             msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/messages"
             
@@ -622,10 +607,35 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
                 }
             }
             
-            logger.info(f"[ESCALATE] 📤 Sending escalation message with embedded IDs:\n{escalation_message}")
+            logger.info(f"[ESCALATE] 📤 Sending escalation message BEFORE passControl:\n{escalation_message}")
             msg_response = requests.post(msg_url, json=msg_payload, auth=auth)
-            logger.info(f"[ESCALATE] 📤 Sent escalation message, status: {msg_response.status_code}")
+            logger.info(f"[ESCALATE] 📤 Escalation message sent, status: {msg_response.status_code}")
+            
+            if msg_response.status_code not in [200, 201]:
+                logger.error(f"[ESCALATE] ⚠️ Message send failed: {msg_response.text}")
+            else:
+                # Wait a tiny bit to ensure message is processed before passControl
+                time.sleep(0.3)
+                logger.info(f"[ESCALATE] ✅ Message confirmed in conversation, proceeding to passControl")
+
+        # Pass Control to Zendesk ("next")
+        pass_control_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/passControl"
+        pass_control_payload = {
+            "switchboardIntegration": "next",
+            "metadata": metadata
+        }
         
+        logger.info(f"[ESCALATE] 📤 Calling passControl API: {pass_control_url}")
+
+        pc_response = requests.post(pass_control_url, json=pass_control_payload, auth=auth)
+        
+        logger.info(f"[ESCALATE] 📤 passControl response: {pc_response.status_code}")
+
+        if pc_response.status_code != 200:
+            logger.error(f"[ESCALATE] ❌ Failed to escalate conversation: {pc_response.status_code} - {pc_response.text}")
+            return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
+        
+        logger.info(f"[ESCALATE] ✅ passControl succeeded! Response: {pc_response.text[:500]}")
         logger.info(f"[ESCALATE] ✅ Escalation complete for conversation {conversation_id}")
 
         return JsonResponse({
