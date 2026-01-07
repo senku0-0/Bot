@@ -484,6 +484,9 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         reason = data.get("reason", "User requested agent support")
         app_related_category = data.get("appRelatedCategory")
         
+        logger.info(f"[ESCALATE] 📤 Starting escalation for conversation: {conversation_id}")
+        logger.info(f"[ESCALATE] 📤 User: {app_user_id}, Reason: {reason}, Category: {app_related_category}")
+        
         if not conversation_id:
             return JsonResponse({"error": "Missing conversationId"}, status=400)
 
@@ -491,6 +494,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         # CRITICAL: Store a temporary unique identifier that Zendesk will include
         # ============================================================================
         unique_marker = f"SUNSHINE_CONV_{conversation_id}"
+        logger.info(f"[ESCALATE] 📤 Generated unique marker: {unique_marker}")
         
         # Store conversation info with multiple access methods
         pending_data = {
@@ -503,24 +507,47 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         
         # Store with conversation ID as key
         cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=300)
+        logger.info(f"[ESCALATE] 📤 Cached pending_escalation_{conversation_id} (timeout=300s)")
         
         # Also store with unique marker for quick lookup
         cache.set(f'marker_{unique_marker}', conversation_id, timeout=300)
+        logger.info(f"[ESCALATE] 📤 Cached marker_{unique_marker} (timeout=300s)")
         
-        # Store as most recent escalation
-        cache.set('recent_ticket_escalation', conversation_id, timeout=60)
+        # Store category separately with longer timeout for reliability
+        if app_related_category:
+            cache.set(f'category_{conversation_id}', app_related_category, timeout=3600)
+            logger.info(f"[ESCALATE] 📤 Cached category_{conversation_id}={app_related_category} (timeout=3600s)")
 
         # Use global SUNSHINE_APP_ID
         app_id = SUNSHINE_APP_ID
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
 
         # Prepare metadata - include the unique marker in description
+        ticket_description = f"Sunshine Conversation: {conversation_id}\nMarker: {unique_marker}\nEscalation Reason: {reason}"
+        logger.info(f"[ESCALATE] 📤 Ticket description will be:\n{ticket_description}")
+        
         metadata = {
             "dataCapture.systemField.tags": "escalated_from_bot",
             "dataCapture.systemField.requester.name": "Guest User",
-            "dataCapture.ticketField.description": f"Sunshine Conversation: {conversation_id}\nMarker: {unique_marker}\nEscalation Reason: {reason}"
+            "dataCapture.ticketField.description": ticket_description
         }
         
+        # ============================================================================
+        # CRITICAL FIX: Explicitly set the conversation ID custom field
+        # This ensures the conversation ID is available in the ticket immediately
+        # ============================================================================
+        if ZENDESK_CHAT_CONVERSATION_FIELD_ID:
+            try:
+                # Note: sunshine metadata keys for custom fields use "customField_" + ID
+                # This ensures mapped tickets have the conversation ID when created
+                cf_key = f"dataCapture.ticketField.customField_{ZENDESK_CHAT_CONVERSATION_FIELD_ID}"
+                metadata[cf_key] = conversation_id
+                logger.info(f"[ESCALATE] 📤 Adding conversation ID custom field: {cf_key}={conversation_id}")
+            except Exception as e:
+                logger.error(f"[ESCALATE] ❌ Error adding conversation ID to metadata: {e}")
+        else:
+            logger.warning(f"[ESCALATE] ⚠️ ZENDESK_CHAT_CONVERSATION_FIELD_ID not configured!")
+
         # Add custom field metadata if category exists
         if app_related_category and APP_RELATED_SUB_CATEGORY:
             try:
@@ -533,12 +560,20 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
                 }
                 
                 tag_value = category_mapping.get(app_related_category, "others")
-                metadata[f"dataCapture.ticketField.customField_{APP_RELATED_SUB_CATEGORY}"] = tag_value
+                cf_key = f"dataCapture.ticketField.customField_{APP_RELATED_SUB_CATEGORY}"
+                metadata[cf_key] = tag_value
                 
-                logger.info(f"[ESCALATE] Setting custom field {APP_RELATED_SUB_CATEGORY} to {tag_value}")
+                logger.info(f"[ESCALATE] 📤 Adding category custom field: {cf_key}={tag_value}")
                 
             except Exception as e:
-                logger.error(f"[ESCALATE] Error setting custom field: {str(e)}")
+                logger.error(f"[ESCALATE] ❌ Error setting category custom field: {str(e)}")
+        else:
+            if not app_related_category:
+                logger.info(f"[ESCALATE] ℹ️ No app_related_category provided")
+            if not APP_RELATED_SUB_CATEGORY:
+                logger.warning(f"[ESCALATE] ⚠️ APP_RELATED_SUB_CATEGORY env var not configured!")
+        
+        logger.info(f"[ESCALATE] 📤 Final metadata keys: {list(metadata.keys())}")
 
         # Pass Control to Zendesk ("next")
         pass_control_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/passControl"
@@ -546,16 +581,36 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             "switchboardIntegration": "next",
             "metadata": metadata
         }
+        
+        logger.info(f"[ESCALATE] 📤 Calling passControl API: {pass_control_url}")
 
         pc_response = requests.post(pass_control_url, json=pass_control_payload, auth=auth)
+        
+        logger.info(f"[ESCALATE] 📤 passControl response: {pc_response.status_code}")
 
         if pc_response.status_code != 200:
-            logger.error(f"Failed to escalate conversation: {pc_response.status_code} - {pc_response.text}")
+            logger.error(f"[ESCALATE] ❌ Failed to escalate conversation: {pc_response.status_code} - {pc_response.text}")
             return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
+        
+        logger.info(f"[ESCALATE] ✅ passControl succeeded! Response: {pc_response.text[:500]}")
 
         # Send a message on behalf of the user to trigger ticket creation
+        # CRITICAL: Include the conversation ID in the message so it appears in the ticket description
         if app_user_id:
             msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/messages"
+            
+            # Build the escalation message with embedded conversation ID
+            # This message will appear in the Zendesk ticket description
+            escalation_message = (
+                f"[Sunshine Conversation: {conversation_id}]\n"
+                f"[Marker: {unique_marker}]\n"
+                f"---\n"
+                f"Escalation Reason: {reason}"
+            )
+            
+            if app_related_category:
+                escalation_message += f"\nCategory: {app_related_category}"
+            
             msg_payload = {
                 "author": {
                     "type": "user",
@@ -563,10 +618,15 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
                 },
                 "content": {
                     "type": "text",
-                    "text": f"Conversation escalated to agent. Reason: {reason}"
+                    "text": escalation_message
                 }
             }
-            requests.post(msg_url, json=msg_payload, auth=auth)
+            
+            logger.info(f"[ESCALATE] 📤 Sending escalation message with embedded IDs:\n{escalation_message}")
+            msg_response = requests.post(msg_url, json=msg_payload, auth=auth)
+            logger.info(f"[ESCALATE] 📤 Sent escalation message, status: {msg_response.status_code}")
+        
+        logger.info(f"[ESCALATE] ✅ Escalation complete for conversation {conversation_id}")
 
         return JsonResponse({
             "status": "escalated",
@@ -576,7 +636,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         })
 
     except Exception as e:
-        logger.exception("Exception in escalate_to_agent")
+        logger.exception("[ESCALATE] ❌ Exception in escalate_to_agent")
         return JsonResponse({"error": str(e)}, status=500)
 
 @csrf_exempt
@@ -1530,121 +1590,167 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
             logger.info(f"[NOTIFICATION-WEBHOOK] Ticket created with ID: {ticket_id}")
             
             # ============================================================================
-            # CRITICAL: Find which conversation this ticket belongs to
+            # ASSURED NON-CONFLICT METHOD: Always fetch ticket from Zendesk API
+            # This is the ONLY reliable way to get the conversation ID because:
+            # 1. Webhook payloads may be incomplete
+            # 2. Cache can expire or be unreliable
+            # 3. The ticket description contains the conversation ID we set during escalation
             # ============================================================================
             conversation_id = None
-            
-            # Method 1: Look for unique marker in ticket description
             ticket_description = ""
-            if 'ticket' in event_data:
-                ticket_description = event_data['ticket'].get('description', '')
-            elif 'comment' in event_data and 'body' in event_data['comment']:
-                ticket_description = event_data['comment'].get('body', '')
-
-            if ticket_description:
-                # Look for our unique marker pattern
-                import re
-                marker_match = re.search(r'Marker:\s*(SUNSHINE_CONV_\S+)', ticket_description)
-                if marker_match:
-                    unique_marker = marker_match.group(1)
-                    conversation_id = cache.get(f'marker_{unique_marker}')
-                    if conversation_id:
-                        logger.info(f"[NOTIFICATION-WEBHOOK] Found conversation via marker: {conversation_id}")
             
-            # Method 2: Look for conversation ID directly in description
-            if not conversation_id and ticket_description:
-                conv_match = re.search(r'Sunshine Conversation:\s*(\S+)', ticket_description)
-                if conv_match:
-                    conversation_id = conv_match.group(1)
-                    logger.info(f"[NOTIFICATION-WEBHOOK] Found conversation ID in description: {conversation_id}")
-            
-            # Method 3: Extract from event metadata if available
-            if not conversation_id:
-                try:
-                    # Check if there's metadata with conversation info
-                    metadata = event_data.get('metadata', {})
-                    if metadata:
-                        # Try different possible metadata keys
-                        conv_keys = ['conversationId', 'conversation_id', 'conversationId', 'sunshine_conversation_id']
-                        for key in conv_keys:
-                            if key in metadata:
-                                conversation_id = str(metadata[key])
-                                if conversation_id:
-                                    logger.info(f"[NOTIFICATION-WEBHOOK] Found conversation ID in metadata[{key}]: {conversation_id}")
+            try:
+                logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Step 1: Fetching ticket {ticket_id} from Zendesk API...")
+                
+                url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+                logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 API URL: {url}")
+                
+                response = requests.get(
+                    url,
+                    auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+                    timeout=15
+                )
+                
+                logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Zendesk API response status: {response.status_code}")
+                
+                if response.status_code == 200:
+                    ticket_data = response.json().get('ticket', {})
+                    ticket_description = ticket_data.get('description', '')
+                    
+                    logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Fetched ticket description ({len(ticket_description)} chars)")
+                    logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Description preview: {ticket_description[:500] if ticket_description else 'EMPTY'}")
+                    
+                    # ============================================================
+                    # Step 1a: Check custom field first (if Sunshine populated it)
+                    # ============================================================
+                    logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Step 1a: Checking custom field {ZENDESK_CHAT_CONVERSATION_FIELD_ID}...")
+                    
+                    if ZENDESK_CHAT_CONVERSATION_FIELD_ID:
+                        custom_fields = ticket_data.get('custom_fields', [])
+                        logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Found {len(custom_fields)} custom fields in ticket")
+                        
+                        for field in custom_fields:
+                            field_id = str(field.get('id'))
+                            field_value = field.get('value')
+                            
+                            if field_id == str(ZENDESK_CHAT_CONVERSATION_FIELD_ID):
+                                logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Found target custom field! Value: '{field_value}'")
+                                if field_value and str(field_value).strip():
+                                    conversation_id = str(field_value).strip()
+                                    logger.info(f"[NOTIFICATION-WEBHOOK] ✅ Found conversation ID in custom field: {conversation_id}")
                                     break
-                except Exception as e:
-                    logger.error(f"[NOTIFICATION-WEBHOOK] Error checking metadata: {e}")
+                                else:
+                                    logger.warning(f"[NOTIFICATION-WEBHOOK] ⚠️ Custom field {ZENDESK_CHAT_CONVERSATION_FIELD_ID} exists but value is empty/null")
+                        
+                        if not conversation_id:
+                            logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Custom field {ZENDESK_CHAT_CONVERSATION_FIELD_ID} not found or empty, trying description...")
+                    else:
+                        logger.warning(f"[NOTIFICATION-WEBHOOK] ⚠️ ZENDESK_CHAT_CONVERSATION_FIELD_ID not configured!")
+                    
+                    # ============================================================
+                    # Step 1b: Parse the description (this is what we set during escalation)
+                    # ============================================================
+                    if not conversation_id and ticket_description:
+                        logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Step 1b: Parsing description for conversation ID...")
+                        
+                        # Method A: Look for "[Sunshine Conversation: <id>]" or "Sunshine Conversation: <id>"
+                        # The brackets format is from the escalation message we send
+                        conv_match = re.search(r'\[?Sunshine Conversation:\s*(\S+?)\]?(?:\s|$)', ticket_description)
+                        if conv_match:
+                            conversation_id = conv_match.group(1).strip().rstrip(']')
+                            logger.info(f"[NOTIFICATION-WEBHOOK] ✅ Found conversation ID in description: {conversation_id}")
+                        else:
+                            logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Pattern 'Sunshine Conversation:' not found in description")
+                        
+                        # Method B: Look for "[Marker: SUNSHINE_CONV_<id>]" or "Marker: SUNSHINE_CONV_<id>"
+                        if not conversation_id:
+                            logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Trying Marker pattern...")
+                            marker_match = re.search(r'\[?Marker:\s*SUNSHINE_CONV_(\S+?)\]?(?:\s|$)', ticket_description)
+                            if marker_match:
+                                # Extract the conversation ID from the marker
+                                conversation_id = marker_match.group(1).strip().rstrip(']')
+                                logger.info(f"[NOTIFICATION-WEBHOOK] ✅ Extracted conversation ID from marker: {conversation_id}")
+                            else:
+                                logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Pattern 'Marker: SUNSHINE_CONV_' not found in description")
+                    elif not ticket_description:
+                        logger.warning(f"[NOTIFICATION-WEBHOOK] ⚠️ Ticket description is EMPTY!")
+                else:
+                    logger.error(f"[NOTIFICATION-WEBHOOK] ❌ Failed to fetch ticket from Zendesk: {response.status_code}")
+                    logger.error(f"[NOTIFICATION-WEBHOOK] ❌ Response body: {response.text[:500]}")
+                    
+            except Exception as e:
+                logger.exception(f"[NOTIFICATION-WEBHOOK] ❌ Exception fetching ticket from Zendesk: {e}")
             
-            # Method 4: Check ALL pending escalations in cache
+            # ============================================================================
+            # Fallback: Try webhook payload description (less reliable)
+            # ============================================================================
             if not conversation_id:
+                logger.info("[NOTIFICATION-WEBHOOK] 🔍 Step 2: Trying webhook payload as fallback...")
+                
+                webhook_description = ""
+                if 'ticket' in event_data:
+                    webhook_description = event_data['ticket'].get('description', '')
+                    logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Found 'ticket' in event_data, description length: {len(webhook_description)}")
+                elif 'comment' in event_data and 'body' in event_data['comment']:
+                    webhook_description = event_data['comment'].get('body', '')
+                    logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Found 'comment.body' in event_data, length: {len(webhook_description)}")
+                else:
+                    logger.warning(f"[NOTIFICATION-WEBHOOK] ⚠️ No 'ticket' or 'comment' in event_data. Keys: {list(event_data.keys())}")
+                
+                if webhook_description:
+                    logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Webhook description preview: {webhook_description[:300]}")
+                    conv_match = re.search(r'\[?Sunshine Conversation:\s*(\S+?)\]?(?:\s|$)', webhook_description)
+                    if conv_match:
+                        conversation_id = conv_match.group(1).strip().rstrip(']')
+                        logger.info(f"[NOTIFICATION-WEBHOOK] ✅ Found conversation ID in webhook payload: {conversation_id}")
+                    else:
+                        marker_match = re.search(r'\[?Marker:\s*SUNSHINE_CONV_(\S+?)\]?(?:\s|$)', webhook_description)
+                        if marker_match:
+                            conversation_id = marker_match.group(1).strip().rstrip(']')
+                            logger.info(f"[NOTIFICATION-WEBHOOK] ✅ Extracted from marker in webhook payload: {conversation_id}")
+                        else:
+                            logger.warning(f"[NOTIFICATION-WEBHOOK] ⚠️ No conversation ID patterns found in webhook description")
+                else:
+                    logger.warning(f"[NOTIFICATION-WEBHOOK] ⚠️ Webhook description is empty")
+            
+            # ============================================================================
+            # Final fallback: Check cache (least reliable due to potential race conditions)
+            # ============================================================================
+            if not conversation_id:
+                logger.info("[NOTIFICATION-WEBHOOK] 🔍 Step 3: Trying cache lookup as last resort...")
                 try:
-                    logger.info(f"[NOTIFICATION-WEBHOOK] Searching cache for pending escalations...")
+                    has_keys_method = hasattr(cache, 'keys')
+                    logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Cache has 'keys' method: {has_keys_method}")
                     
-                    # Get current timestamp to find recent escalations
+                    cache_keys = cache.keys('pending_escalation_*') if has_keys_method else []
+                    logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Found {len(cache_keys) if cache_keys else 0} pending_escalation_* keys in cache")
+                    
                     current_time = datetime.now()
-                    
-                    # Search for any pending escalation in the last 5 minutes
-                    # Note: This assumes cache.keys() returns all keys
-                    # For production Redis, you might need scan_iter
-                    try:
-                        cache_keys = cache.keys('pending_escalation_*')
-                    except:
-                        cache_keys = []
                     
                     for key in cache_keys:
                         pending_data = cache.get(key)
                         if pending_data:
-                            # Check if this escalation is recent (within 5 minutes)
                             try:
                                 escalation_time = datetime.fromisoformat(pending_data.get('timestamp', '2000-01-01'))
                                 time_diff = (current_time - escalation_time).total_seconds()
+                                logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Checking {key}: age={time_diff:.1f}s, reason='{pending_data.get('reason', '')[:50]}'")
                                 
-                                if time_diff < 300:  # 5 minutes
-                                    # Check if the reason matches ticket description
+                                # Only consider very recent escalations (within 2 minutes)
+                                if time_diff < 120:
                                     pending_reason = pending_data.get('reason', '')
-                                    if pending_reason and pending_reason in ticket_description:
+                                    # Match by reason in description
+                                    if pending_reason and ticket_description and pending_reason in ticket_description:
                                         conversation_id = key.replace('pending_escalation_', '')
-                                        logger.info(f"[NOTIFICATION-WEBHOOK] Matched conversation {conversation_id} by reason: {pending_reason}")
+                                        logger.info(f"[NOTIFICATION-WEBHOOK] Matched by reason from cache: {conversation_id}")
                                         break
-                            except Exception as e:
-                                logger.error(f"[NOTIFICATION-WEBHOOK] Error checking pending data: {e}")
-                    
+                            except Exception:
+                                pass
                 except Exception as e:
-                    logger.error(f"[NOTIFICATION-WEBHOOK] Error searching cache: {e}")
-            
-            # Method 5: Look for conversation ID in custom fields of the ticket
-            if not conversation_id and ZENDESK_CHAT_CONVERSATION_FIELD_ID:
-                try:
-                    # Fetch the ticket to check its custom fields
-                    url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
-                    response = requests.get(
-                        url,
-                        auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
-                        timeout=10
-                    )
-                    
-                    if response.status_code == 200:
-                        ticket_data = response.json().get('ticket', {})
-                        custom_fields = ticket_data.get('custom_fields', [])
-                        
-                        for field in custom_fields:
-                            if str(field.get('id')) == str(ZENDESK_CHAT_CONVERSATION_FIELD_ID):
-                                conversation_id = field.get('value')
-                                if conversation_id:
-                                    logger.info(f"[NOTIFICATION-WEBHOOK] Found conversation ID in ticket custom field: {conversation_id}")
-                                    break
-                except Exception as e:
-                    logger.error(f"[NOTIFICATION-WEBHOOK] Error fetching ticket custom fields: {e}")
-            
-            # Method 6: Last resort - check if we have a VERY recent escalation
-            if not conversation_id:
-                conversation_id = cache.get('recent_ticket_escalation')
-                if conversation_id:
-                    logger.info(f"[NOTIFICATION-WEBHOOK] Using recent escalation mapping: {conversation_id}")
+                    logger.error(f"[NOTIFICATION-WEBHOOK] Cache lookup error: {e}")
             
             if not conversation_id:
-                logger.error(f"[NOTIFICATION-WEBHOOK] Cannot find conversation for ticket {ticket_id}")
-                logger.error(f"[NOTIFICATION-WEBHOOK] Ticket description: {ticket_description[:200]}")
+                logger.error(f"[NOTIFICATION-WEBHOOK] ❌ Cannot find conversation for ticket {ticket_id}")
+                logger.error(f"[NOTIFICATION-WEBHOOK] Description was: {ticket_description[:300] if ticket_description else 'EMPTY'}")
                 return JsonResponse({
                     "status": "no_conversation_found",
                     "ticket_id": ticket_id,
