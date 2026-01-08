@@ -10,6 +10,13 @@ document.addEventListener('DOMContentLoaded', function () {
     const chatHeaderTitle = document.querySelector('.chat-header span');
     const fileAttachBtn = document.querySelector('#file-attach-btn');
     const fileInput = document.querySelector('#file-input');
+    
+    // New conversation list elements
+    const conversationListView = document.querySelector('.conversation-list-view');
+    const conversationList = document.querySelector('.conversation-list');
+    const chatView = document.querySelector('.chat-view');
+    const newConversationBtn = document.querySelector('.new-conversation-btn');
+    const backBtn = document.querySelector('.chat-back-btn');
 
     let isChatOpen = false;
     let awaitingFeedback = false;
@@ -20,6 +27,9 @@ document.addEventListener('DOMContentLoaded', function () {
     let displayedImageFileNames = new Set();
     let pendingImage = null;
     let pendingLocalMessages = new Set();
+    
+    // Current view state
+    let currentView = 'list'; // 'list' or 'chat'
 
     // WebSocket variables
     let sunshineSocket = null;
@@ -37,6 +47,181 @@ document.addEventListener('DOMContentLoaded', function () {
     let mainOptions = [];
     let appRelatedOptions = [];
     let deleteAccountReasons = [];
+
+    // ============================================================================
+    // CONVERSATION LIST MANAGEMENT
+    // ============================================================================
+    
+    function getStoredConversations() {
+        const stored = localStorage.getItem('chat_conversations');
+        return stored ? JSON.parse(stored) : [];
+    }
+    
+    function saveConversation(convId, title, lastMessage, timestamp) {
+        let conversations = getStoredConversations();
+        
+        // Check if conversation already exists
+        const existingIndex = conversations.findIndex(c => c.id === convId);
+        
+        const convData = {
+            id: convId,
+            title: title || 'Conversation',
+            lastMessage: lastMessage || '',
+            timestamp: timestamp || new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        };
+        
+        if (existingIndex >= 0) {
+            conversations[existingIndex] = { ...conversations[existingIndex], ...convData };
+        } else {
+            conversations.unshift(convData);
+        }
+        
+        // Keep only last 50 conversations
+        conversations = conversations.slice(0, 50);
+        
+        localStorage.setItem('chat_conversations', JSON.stringify(conversations));
+        renderConversationList();
+    }
+    
+    function renderConversationList() {
+        const conversations = getStoredConversations();
+        
+        if (conversations.length === 0) {
+            conversationList.innerHTML = `
+                <div class="no-conversations">
+                    <div class="no-conv-icon">💬</div>
+                    <p>No conversations yet</p>
+                    <p class="no-conv-subtext">Start a new conversation to get help</p>
+                </div>
+            `;
+            return;
+        }
+        
+        conversationList.innerHTML = conversations.map(conv => {
+            const timeAgo = getTimeAgo(conv.updatedAt || conv.timestamp);
+            const preview = conv.lastMessage ? conv.lastMessage.substring(0, 40) + (conv.lastMessage.length > 40 ? '...' : '') : 'No messages';
+            
+            return `
+                <div class="conversation-item" data-conv-id="${conv.id}">
+                    <div class="conversation-icon">💬</div>
+                    <div class="conversation-details">
+                        <div class="conversation-title">${conv.title}</div>
+                        <div class="conversation-preview">${preview}</div>
+                    </div>
+                    <div class="conversation-time">${timeAgo}</div>
+                </div>
+            `;
+        }).join('');
+        
+        // Add click handlers
+        conversationList.querySelectorAll('.conversation-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const convId = item.getAttribute('data-conv-id');
+                openExistingConversation(convId);
+            });
+        });
+    }
+    
+    function getTimeAgo(timestamp) {
+        if (!timestamp) return '';
+        const now = new Date();
+        const then = new Date(timestamp);
+        const diffMs = now - then;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+        
+        if (diffMins < 1) return 'Just now';
+        if (diffMins < 60) return `${diffMins}m ago`;
+        if (diffHours < 24) return `${diffHours}h ago`;
+        if (diffDays < 7) return `${diffDays}d ago`;
+        return then.toLocaleDateString();
+    }
+    
+    function showConversationList() {
+        currentView = 'list';
+        conversationListView.style.display = 'flex';
+        chatView.style.display = 'none';
+        backBtn.style.display = 'none';
+        chatHeaderTitle.textContent = 'Yatri Bandhu';
+        renderConversationList();
+    }
+    
+    function showChatView() {
+        currentView = 'chat';
+        conversationListView.style.display = 'none';
+        chatView.style.display = 'flex';
+        backBtn.style.display = 'block';
+    }
+    
+    function openExistingConversation(convId) {
+        console.log('📂 [CONV] Opening existing conversation:', convId);
+        conversationId = convId;
+        localStorage.setItem('chat_current_conversation', convId);
+        
+        // Reset state for this conversation
+        displayedMessageIds.clear();
+        displayedImageFileNames.clear();
+        messagesContainer.innerHTML = '';
+        
+        // Load conversation state
+        const convState = localStorage.getItem(`chat_conv_state_${convId}`);
+        if (convState) {
+            const state = JSON.parse(convState);
+            isAgentConnected = state.isAgentConnected || false;
+            agentJoinAnnounced = state.agentJoinAnnounced || false;
+        }
+        
+        showChatView();
+        
+        // Connect WebSocket
+        if (sunshineSocket) {
+            sunshineSocket.disconnect();
+        }
+        sunshineSocket = new SunshineWebSocketManager(conversationId);
+        sunshineSocket.connect();
+        
+        // Fetch messages
+        fetchMessages();
+        
+        // Show input if agent connected
+        if (isAgentConnected) {
+            chatInputArea.style.display = 'flex';
+        }
+    }
+    
+    function startNewConversation() {
+        console.log('🆕 [CONV] Starting new conversation');
+        
+        // Reset everything
+        conversationId = null;
+        displayedMessageIds.clear();
+        displayedImageFileNames.clear();
+        messagesContainer.innerHTML = '';
+        isAgentConnected = false;
+        agentJoinAnnounced = false;
+        hasConfirmedAgentActivity = false;
+        sessionEnded = false;
+        
+        // Clear current conversation from storage
+        localStorage.removeItem('chat_current_conversation');
+        localStorage.removeItem('chat_isAgentConnected');
+        localStorage.removeItem('chat_agentJoinAnnounced');
+        localStorage.removeItem('chat_hasConfirmedAgentActivity');
+        
+        // Disconnect existing WebSocket
+        if (sunshineSocket) {
+            sunshineSocket.disconnect();
+            sunshineSocket = null;
+        }
+        
+        showChatView();
+        chatInputArea.style.display = 'none';
+        
+        // Initialize new conversation
+        initializeChatSession();
+    }
 
     // ============================================================================
     // FIXED: Sunshine WebSocket Manager - SIMPLIFIED & GUARANTEED TO WORK
@@ -347,19 +532,26 @@ document.addEventListener('DOMContentLoaded', function () {
                         appUserId: appUserId.substring(0, 10) + '...',
                         conversationId: conversationId.substring(0, 10) + '...'
                     });
+                    
+                    // Save to current conversation
+                    localStorage.setItem('chat_current_conversation', conversationId);
+                    
+                    // Save to conversation list
+                    saveConversation(conversationId, 'New Conversation', '', new Date().toISOString());
 
                     if (isAgentConnected) {
                         chatInputArea.style.display = 'flex';
                         chatHeaderTitle.textContent = "Agent";
                         console.log('✅ [CHAT] Agent already connected, showing input');
+                    } else {
+                        // Show welcome message and options for new conversations
+                        appendMessage("Hello! 👋 How can I help you today?", 'bot-message');
+                        showMainOptions();
                     }
 
                     // Initialize WebSocket
                     sunshineSocket = new SunshineWebSocketManager(conversationId);
                     sunshineSocket.connect();
-
-                    // Fetch initial messages
-                    fetchMessages();
 
                     // Add WebSocket test button for debugging
                     addWebSocketDebugButton();
@@ -548,6 +740,9 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         console.log("🚀 [ESCALATE] Escalating to agent with reason:", reason);
+        
+        // Update conversation title with the escalation reason
+        saveConversation(conversationId, reason || 'Support Request', 'Connecting to agent...', new Date().toISOString());
 
         isAgentConnected = true;
         lastAgentRequestTime = Date.now();
@@ -684,15 +879,19 @@ document.addEventListener('DOMContentLoaded', function () {
             toggleBtn.innerHTML = '✖';
             toggleBtn.setAttribute('aria-label', 'Close chat');
 
-            if (messagesContainer.children.length <= 1) {
-                showMainOptions();
-            }
+            // Show conversation list first
+            showConversationList();
 
-            console.log('💬 [CHAT] Opened chat');
+            console.log('💬 [CHAT] Opened chat - showing conversation list');
         } else {
             chatBox.style.display = 'none';
             toggleBtn.innerHTML = '💬';
             toggleBtn.setAttribute('aria-label', 'Open chat');
+            
+            // Disconnect WebSocket when closing
+            if (sunshineSocket) {
+                sunshineSocket.disconnect();
+            }
 
             console.log('💬 [CHAT] Closed chat');
         }
@@ -1490,6 +1689,33 @@ document.addEventListener('DOMContentLoaded', function () {
         e.stopPropagation();
         toggleChat();
     });
+    
+    // New conversation button
+    newConversationBtn.addEventListener('click', function () {
+        console.log('🆕 [UI] New conversation button clicked');
+        startNewConversation();
+    });
+    
+    // Back button
+    backBtn.addEventListener('click', function () {
+        console.log('⬅️ [UI] Back button clicked');
+        
+        // Save current conversation state before going back
+        if (conversationId) {
+            const convState = {
+                isAgentConnected: isAgentConnected,
+                agentJoinAnnounced: agentJoinAnnounced
+            };
+            localStorage.setItem(`chat_conv_state_${conversationId}`, JSON.stringify(convState));
+        }
+        
+        // Disconnect WebSocket
+        if (sunshineSocket) {
+            sunshineSocket.disconnect();
+        }
+        
+        showConversationList();
+    });
 
     fileAttachBtn.addEventListener('click', function () {
         console.log('📎 [UI] File attach clicked');
@@ -1527,7 +1753,13 @@ document.addEventListener('DOMContentLoaded', function () {
         })
         .catch(error => console.error('❌ [APP] Error loading issues:', error));
 
-    initializeChatSession();
+    // Load user ID if exists
+    const storedUserId = localStorage.getItem('chat_user_id');
+    if (storedUserId) {
+        console.log('✅ [APP] Found stored user ID');
+    }
+    
+    // Don't auto-start session - wait for user to open widget and select/create conversation
 
     // Global debug functions
     window.debugChat = {
@@ -1536,6 +1768,8 @@ document.addEventListener('DOMContentLoaded', function () {
             conversationId: conversationId ? conversationId.substring(0, 10) + '...' : null,
             isAgentConnected,
             webSocketConnected,
+            currentView,
+            storedConversations: getStoredConversations().length,
             sunshineSocket: sunshineSocket ? {
                 connected: sunshineSocket.connected,
                 readyState: sunshineSocket.socket?.readyState,
@@ -1558,6 +1792,11 @@ document.addEventListener('DOMContentLoaded', function () {
         },
         logDisplayedMessages: () => {
             console.log('Displayed message IDs:', Array.from(displayedMessageIds));
+        },
+        clearConversations: () => {
+            localStorage.removeItem('chat_conversations');
+            renderConversationList();
+            console.log('✅ Cleared all conversations');
         }
     };
 
