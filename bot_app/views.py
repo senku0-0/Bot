@@ -535,6 +535,15 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             "dataCapture.systemField.requester.name": "Guest User"
         }
         
+        # ============================================================================
+        # CRITICAL: Add conversation ID to custom field for ticket<->conversation mapping
+        # This allows the ticket.created webhook to find the conversation ID
+        # Format: dataCapture.ticketField.{FIELD_ID}
+        # ============================================================================
+        if ZENDESK_CHAT_CONVERSATION_FIELD_ID:
+            metadata[f"dataCapture.ticketField.{ZENDESK_CHAT_CONVERSATION_FIELD_ID}"] = conversation_id
+            logger.info(f"[ESCALATE] 📤 Setting conversation field {ZENDESK_CHAT_CONVERSATION_FIELD_ID} = {conversation_id}")
+        
         # Add category dropdown field - CORRECT FORMAT: dataCapture.ticketField.{ID}
         if category_tag and APP_RELATED_SUB_CATEGORY:
             metadata[f"dataCapture.ticketField.{APP_RELATED_SUB_CATEGORY}"] = category_tag
