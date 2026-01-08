@@ -29,6 +29,24 @@ logger.addHandler(handler)
 # Load environment variables from .env
 load_dotenv()
 
+# ============================================================================
+# Helper: Strip HTML tags from text
+# ============================================================================
+def strip_html_tags(text: str) -> str:
+    """
+    Remove HTML tags from text and clean up whitespace.
+    Zendesk Conversation Log API sometimes returns HTML-formatted content.
+    """
+    if not text:
+        return ""
+    # Remove HTML tags
+    clean = re.sub(r'<[^>]+>', '', text)
+    # Replace multiple whitespace with single space
+    clean = re.sub(r'\s+', ' ', clean)
+    # Trim whitespace
+    clean = clean.strip()
+    return clean
+
 # Sunshine secret for webhook verification
 SECRET = os.getenv("SUNSHINE_WEBHOOK_SIGNING_SECRET")
 if not SECRET:
@@ -2169,10 +2187,23 @@ def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, An
         author_type = author.get("type", "unknown")
         author_name = author.get("display_name", "") or author.get("name", "")
         
+        # Debug: Log author details for troubleshooting
+        logger.info(f"[FULL-HISTORY] Event author: type={author_type}, name={author_name}, raw={author}")
+        
+        # Zendesk Conversation Log API uses different author types
+        # Map "end_user" to "user" and "business" to "agent"
+        if author_type == "end_user":
+            author_type = "user"
+        elif author_type == "business":
+            author_type = "agent"
+        
         # Get message content
         content = event.get("content", {})
         content_type = content.get("type", "text")  # Can be "text", "image", "file", etc.
-        text = content.get("text") or content.get("body", "")
+        raw_text = content.get("text") or content.get("body", "")
+        
+        # Strip HTML tags - Zendesk sometimes returns HTML formatted content
+        text = strip_html_tags(raw_text) if raw_text else ""
         
         # Get media_url for Sunshine rich media messages
         media_url = content.get("media_url")
@@ -2258,17 +2289,23 @@ def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, An
         
         # ============================================================================
         # CASE 3: Check for media_url when content type is "file" (Sunshine file messages)
+        # Also check for content type "image" with media_url that wasn't caught in CASE 1
         # ============================================================================
-        if content_type == "file" and media_url and not parsed_attachments:
-            logger.info(f"[FULL-HISTORY] Found file in content.media_url: {media_url[:100]}")
-            is_image = any(ext in media_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'])
+        if media_url and not parsed_attachments:
+            logger.info(f"[FULL-HISTORY] Found media_url (content_type={content_type}): {media_url[:100]}")
+            # Determine if it's an image based on URL extension or content type
+            is_image = (
+                content_type == "image" or
+                any(ext in media_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'])
+            )
             parsed_attachments.append({
                 "url": media_url,
                 "type": "image" if is_image else "file",
                 "fileName": content.get("name", "file"),
-                "contentType": content.get("mediaType", ""),
+                "contentType": content.get("mediaType", "image/*" if is_image else ""),
                 "size": content.get("size", 0)
             })
+            logger.info(f"[FULL-HISTORY] Added attachment: type={'image' if is_image else 'file'}, url={media_url[:100]}")
         
         # Add attachments to message if any found
         if parsed_attachments:

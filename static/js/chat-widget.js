@@ -912,7 +912,8 @@ document.addEventListener('DOMContentLoaded', function () {
     function appendImageMessage(imageUrl, caption, className) {
         console.log('🖼️ [UI] Appending image:', imageUrl.substring(0, 50) + '...');
 
-        if (imageUrl.includes('zendesk.com')) return;
+        // NOTE: Removed zendesk.com filter - Conversation Log API returns valid Zendesk-hosted image URLs
+        // These URLs are authenticated and should work for display
 
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', className, 'image-bubble');
