@@ -48,6 +48,45 @@ def strip_html_tags(text: str) -> str:
     return clean
 
 # ============================================================================
+# Helper: Check if text is a Zendesk Conversation Log entry
+# ============================================================================
+def is_conversation_log_entry(text: str) -> bool:
+    """
+    Check if the text appears to be a Zendesk Conversation Log entry.
+    These are auto-generated and should NOT be forwarded to users.
+    
+    Patterns include:
+    - Multiple timestamps like (HH:MM:SS) Support Agent: (HH:MM:SS) ...
+    - Answer Bot automated messages
+    - Ticket resolution notifications
+    """
+    if not text:
+        return False
+    
+    conversation_log_patterns = [
+        # Pattern: Multiple timestamps like (HH:MM:SS) repeated
+        r'\(\d{1,2}:\d{2}:\d{2}\)\s+\w+.*\(\d{1,2}:\d{2}:\d{2}\)',
+        # Pattern: Answer Bot messages
+        r'Answer Bot:',
+        # Pattern: Waiting on your response messages
+        r'Waiting on your response',
+        # Pattern: Ticket will be marked as solved
+        r'ticket will be marked as solved',
+        # Pattern: We haven't heard from you
+        r"haven't heard from you",
+        # Pattern: Messaging session ended
+        r'Messaging session ended',
+        # Pattern: This ticket will be marked
+        r'This ticket will be marked',
+    ]
+    
+    for pattern in conversation_log_patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            return True
+    
+    return False
+
+# ============================================================================
 # Helper: Convert Zendesk URLs to proxy URLs for authenticated access
 # ============================================================================
 def get_proxied_image_url(original_url: str) -> str:
@@ -1389,6 +1428,11 @@ def handle_ticket_comment_webhook(data: Dict[str, Any]) -> JsonResponse:
             logger.info("[TICKET-COMMENT] Ignoring empty comment")
             return JsonResponse({"status": "ignored_empty"})
         
+        # Filter out Zendesk Conversation Log entries
+        if is_conversation_log_entry(comment_body):
+            logger.info("[TICKET-COMMENT] Ignoring conversation log entry")
+            return JsonResponse({"status": "ignored_conversation_log"})
+        
         # Resolve conversation id from cache or Zendesk ticket custom field
         conversation_id = resolve_conversation_id_for_ticket(ticket_id)
 
@@ -1462,6 +1506,11 @@ def handle_event_webhook(data: Dict[str, Any]) -> JsonResponse:
                 # This is an agent comment
                 ticket_id = extract_ticket_id_from_data(data)
                 comment_body = event.get('body', '')
+                
+                # Filter out Zendesk Conversation Log entries
+                if is_conversation_log_entry(comment_body):
+                    logger.info("[EVENT-WEBHOOK] Ignoring conversation log entry")
+                    continue
                 
                 if ticket_id and comment_body:
                     # Get conversation ID
@@ -1540,6 +1589,11 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
             if not comment_body or comment_body.strip() == '':
                 logger.info("[NOTIFICATION-WEBHOOK] Empty comment body")
                 return JsonResponse({"status": "ignored_empty"})
+            
+            # Filter out Zendesk Conversation Log entries
+            if is_conversation_log_entry(comment_body):
+                logger.info("[NOTIFICATION-WEBHOOK] Ignoring conversation log entry")
+                return JsonResponse({"status": "ignored_conversation_log"})
             
             # Resolve conversation ID
             conversation_id = resolve_conversation_id_for_ticket(ticket_id)

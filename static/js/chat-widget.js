@@ -276,6 +276,8 @@ document.addEventListener('DOMContentLoaded', function () {
             userId: storedUserId || null,
             forceNew: true  // Signal to backend to create new conversation
         };
+        
+        console.log('🚀 [CHAT] Sending init request with payload:', payload);
 
         fetch('/api/chat/init', {
             method: 'POST',
@@ -283,8 +285,13 @@ document.addEventListener('DOMContentLoaded', function () {
             body: JSON.stringify(payload)
         })
             .then(response => {
+                console.log('🚀 [CHAT] Init response status:', response.status);
                 if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
+                    // Get the error body before throwing
+                    return response.text().then(text => {
+                        console.error('❌ [CHAT] Server error response:', text);
+                        throw new Error(`HTTP ${response.status}: ${text}`);
+                    });
                 }
                 return response.json();
             })
@@ -319,11 +326,16 @@ document.addEventListener('DOMContentLoaded', function () {
                 } else {
                     console.error("❌ [CHAT] Failed to initialize new conversation:", data);
                     appendMessage("Failed to start new conversation. Please try again.", 'system-message');
+                    // Show options anyway so user can retry
+                    showMainOptions();
                 }
             })
             .catch(error => {
                 console.error('❌ [CHAT] Error initializing new conversation:', error);
+                console.error('❌ [CHAT] Error details:', error.message, error.stack);
                 appendMessage("Connection error. Please try again.", 'system-message');
+                // Show options anyway so user can retry
+                showMainOptions();
             });
     }
 
