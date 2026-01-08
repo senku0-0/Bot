@@ -228,9 +228,9 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     
     function startNewConversation() {
-        console.log('🆕 [CONV] Starting new conversation');
+        console.log('🆕 [CONV] Starting new conversation flow (no API call yet)');
         
-        // Reset all state
+        // Reset all state - but DON'T create conversation yet
         conversationId = null;
         appUserId = null;
         displayedMessageIds.clear();
@@ -263,21 +263,22 @@ document.addEventListener('DOMContentLoaded', function () {
         chatInputArea.style.display = 'none';
         chatHeaderTitle.textContent = 'Yatri Bandhu';
         
-        // Initialize new conversation with force new flag
-        initializeNewChatSession();
+        // Show welcome message and options WITHOUT creating a conversation
+        // Conversation will be created only when user clicks "Connect to Agent"
+        appendMessage("Hello! 👋 How can I help you today?", 'bot-message');
+        showMainOptions();
     }
     
-    function initializeNewChatSession() {
-        console.log('🚀 [CHAT] Initializing NEW chat session (forcing new conversation)...');
+    function createConversationAndEscalate(reason, category) {
+        // This function creates the conversation ONLY when user wants to connect to agent
+        console.log('🚀 [CHAT] Creating conversation for escalation...');
+        console.log('🚀 [CHAT] Reason:', reason, 'Category:', category);
 
-        // Get stored user ID but request a NEW conversation
         const storedUserId = localStorage.getItem('chat_user_id');
         const payload = {
             userId: storedUserId || null,
-            forceNew: true  // Signal to backend to create new conversation
+            forceNew: true
         };
-        
-        console.log('🚀 [CHAT] Sending init request with payload:', payload);
 
         fetch('/api/chat/init', {
             method: 'POST',
@@ -285,11 +286,9 @@ document.addEventListener('DOMContentLoaded', function () {
             body: JSON.stringify(payload)
         })
             .then(response => {
-                console.log('🚀 [CHAT] Init response status:', response.status);
                 if (!response.ok) {
-                    // Get the error body before throwing
                     return response.text().then(text => {
-                        console.error('❌ [CHAT] Server error response:', text);
+                        console.error('❌ [CHAT] Server error:', text);
                         throw new Error(`HTTP ${response.status}: ${text}`);
                     });
                 }
@@ -304,38 +303,71 @@ document.addEventListener('DOMContentLoaded', function () {
                         localStorage.setItem('chat_user_id', data.externalId);
                     }
 
-                    console.log("✅ [CHAT] New conversation initialized:", {
-                        appUserId: appUserId.substring(0, 10) + '...',
+                    console.log("✅ [CHAT] Conversation created:", {
                         conversationId: conversationId.substring(0, 10) + '...'
                     });
                     
-                    // Save to current conversation
+                    // Save to storage
                     localStorage.setItem('chat_current_conversation', conversationId);
-                    
-                    // Save to conversation list
-                    saveConversation(conversationId, 'New Conversation', '', new Date().toISOString());
-
-                    // Show welcome message and options
-                    appendMessage("Hello! 👋 How can I help you today?", 'bot-message');
-                    showMainOptions();
+                    saveConversation(conversationId, category || 'Support Request', '', new Date().toISOString());
 
                     // Initialize WebSocket
                     sunshineSocket = new SunshineWebSocketManager(conversationId);
                     sunshineSocket.connect();
+                    
+                    // NOW escalate to agent
+                    performEscalation(reason, category);
 
                 } else {
-                    console.error("❌ [CHAT] Failed to initialize new conversation:", data);
-                    appendMessage("Failed to start new conversation. Please try again.", 'system-message');
-                    // Show options anyway so user can retry
-                    showMainOptions();
+                    console.error("❌ [CHAT] Failed to create conversation:", data);
+                    appendMessage("Failed to connect. Please try again.", 'system-message');
                 }
             })
             .catch(error => {
-                console.error('❌ [CHAT] Error initializing new conversation:', error);
-                console.error('❌ [CHAT] Error details:', error.message, error.stack);
+                console.error('❌ [CHAT] Error creating conversation:', error);
                 appendMessage("Connection error. Please try again.", 'system-message');
-                // Show options anyway so user can retry
-                showMainOptions();
+            });
+    }
+    
+    function performEscalation(reason, category) {
+        // Actually perform the escalation API call
+        console.log('🚀 [ESCALATE] Escalating to agent...');
+        
+        fetch('/api/chat/escalate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                conversationId: conversationId,
+                appUserId: appUserId,
+                reason: reason || lastContext,
+                appRelatedCategory: category || window.lastAppRelatedCategory
+            })
+        })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log("✅ [ESCALATE] Success:", data);
+                
+                // Set agent connected state
+                isAgentConnected = true;
+                lastAgentRequestTime = Date.now();
+                agentJoinAnnounced = false;
+                localStorage.setItem('chat_isAgentConnected', 'true');
+                localStorage.setItem('chat_lastAgentRequestTime', lastAgentRequestTime.toString());
+                localStorage.setItem('chat_agentJoinAnnounced', 'false');
+                
+                // Show loading and enable input
+                showLoadingIndicator();
+                chatInputArea.style.display = 'flex';
+                chatInput.focus();
+            })
+            .catch(error => {
+                console.error('❌ [ESCALATE] Error:', error);
+                appendMessage("Error connecting to agent. Please try again.", 'system-message');
             });
     }
 
@@ -847,78 +879,18 @@ document.addEventListener('DOMContentLoaded', function () {
         console.log('✅ [SESSION] Session ended');
     }
 
-    function escalateToAgent(reason) {
-        if (!conversationId) {
-            console.warn("⚠️ [ESCALATE] Cannot escalate: Chat not initialized");
-            return;
-        }
-
-        console.log("🚀 [ESCALATE] Escalating to agent with reason:", reason);
-        
-        // Update conversation title with the escalation reason
-        saveConversation(conversationId, reason || 'Support Request', 'Connecting to agent...', new Date().toISOString());
-
-        isAgentConnected = true;
-        lastAgentRequestTime = Date.now();
-        agentJoinAnnounced = false;
-        localStorage.setItem('chat_isAgentConnected', 'true');
-        localStorage.setItem('chat_lastAgentRequestTime', lastAgentRequestTime.toString());
-        localStorage.setItem('chat_agentJoinAnnounced', 'false');
-
-        if (sunshineSocket) {
-            if (!sunshineSocket.connected) {
-                console.log('🔄 [ESCALATE] WebSocket not connected, reconnecting...');
-                sunshineSocket.connect();
-            }
-        } else {
-            console.error('❌ [ESCALATE] No WebSocket instance!');
-        }
-
-        showLoadingIndicator();
-        chatInputArea.style.display = 'flex';
-
-        fetch('/api/chat/escalate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                conversationId: conversationId,
-                appUserId: appUserId,
-                reason: reason || lastContext
-            })
-        })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-                return response.json();
-            })
-            .then(data => {
-                console.log("✅ [ESCALATE] Success:", data);
-                // Keep only the loading indicator shown by `showLoadingIndicator()`.
-                // The one-time agent announcement will replace it when the agent first sends a message.
-            })
-            .catch(error => {
-                console.error('❌ [ESCALATE] Error:', error);
-                appendMessage("Error connecting to agent. Please try again.", 'system-message');
-            });
-    }
-
     function handleAgentConnect(option) {
         appendMessage(option, 'user-message');
-        escalateToAgent(lastContext);
-
-        isAgentConnected = true;
-        lastAgentRequestTime = Date.now();
-        agentJoinAnnounced = false;
-        localStorage.setItem('chat_isAgentConnected', 'true');
-        localStorage.setItem('chat_lastAgentRequestTime', lastAgentRequestTime.toString());
-        localStorage.setItem('chat_agentJoinAnnounced', 'false');
-
-        setTimeout(() => {
-            showLoadingIndicator();
-            chatInputArea.style.display = 'flex';
-            chatInput.focus();
-        }, 500);
+        
+        // If conversation doesn't exist yet, create it first then escalate
+        if (!conversationId) {
+            console.log('🆕 [AGENT] No conversation yet, creating one first...');
+            createConversationAndEscalate(lastContext, window.lastAppRelatedCategory);
+        } else {
+            // Conversation already exists, just escalate
+            console.log('🔄 [AGENT] Conversation exists, escalating...');
+            performEscalation(lastContext, window.lastAppRelatedCategory);
+        }
     }
 
     // ============================================================================
@@ -1090,61 +1062,6 @@ document.addEventListener('DOMContentLoaded', function () {
                 askForFeedback();
             }, 500);
         }
-    }
-
-    function escalateToAgent(reason) {
-        if (!conversationId) {
-            console.warn("⚠️ [ESCALATE] Cannot escalate: Chat not initialized");
-            return;
-        }
-
-        console.log("🚀 [ESCALATE] Escalating to agent with reason:", reason);
-        console.log("🚀 [ESCALATE] App-related category:", window.lastAppRelatedCategory);  // NEW: Log category
-
-        isAgentConnected = true;
-        lastAgentRequestTime = Date.now();
-        agentJoinAnnounced = false;
-        localStorage.setItem('chat_isAgentConnected', 'true');
-        localStorage.setItem('chat_lastAgentRequestTime', lastAgentRequestTime.toString());
-        localStorage.setItem('chat_agentJoinAnnounced', 'false');
-
-        if (sunshineSocket) {
-            if (!sunshineSocket.connected) {
-                console.log('🔄 [ESCALATE] WebSocket not connected, reconnecting...');
-                sunshineSocket.connect();
-            }
-        } else {
-            console.error('❌ [ESCALATE] No WebSocket instance!');
-        }
-
-        showLoadingIndicator();
-        chatInputArea.style.display = 'flex';
-
-        fetch('/api/chat/escalate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                conversationId: conversationId,
-                appUserId: appUserId,
-                reason: reason || lastContext,
-                appRelatedCategory: window.lastAppRelatedCategory  // NEW: Send category
-            })
-        })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-                return response.json();
-            })
-            .then(data => {
-                console.log("✅ [ESCALATE] Success:", data);
-                // Keep only the loading indicator shown by `showLoadingIndicator()`.
-                // The one-time agent announcement will replace it when the agent first sends a message.
-            })
-            .catch(error => {
-                console.error('❌ [ESCALATE] Error:', error);
-                appendMessage("Error connecting to agent. Please try again.", 'system-message');
-            });
     }
 
     function askForFeedback() {
