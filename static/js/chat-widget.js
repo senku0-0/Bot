@@ -383,9 +383,6 @@ document.addEventListener('DOMContentLoaded', function () {
                 // Start ping interval (25 seconds for keepalive)
                 this.startPingInterval();
 
-                // Show connection status
-                this.showConnectionStatus('connected');
-
                 // Log success
                 console.log(`✅ [WEBSOCKET] ReadyState: ${this.socket.readyState} (OPEN=1)`);
 
@@ -412,7 +409,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
             this.socket.onerror = (error) => {
                 console.error('❌ [WEBSOCKET] Error:', error);
-                this.showConnectionStatus('error');
             };
 
             this.socket.onclose = (event) => {
@@ -425,8 +421,6 @@ document.addEventListener('DOMContentLoaded', function () {
                     clearInterval(this.pingInterval);
                     this.pingInterval = null;
                 }
-
-                this.showConnectionStatus('disconnected');
 
                 // Auto-reconnect (except for normal closure)
                 if (!sessionEnded && event.code !== 1000) {
@@ -597,7 +591,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
             this.connected = false;
             webSocketConnected = false;
-            this.showConnectionStatus('disconnected');
         }
 
         // Test function to verify WebSocket is working
