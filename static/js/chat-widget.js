@@ -435,12 +435,17 @@ document.addEventListener('DOMContentLoaded', function () {
                 chatInputArea.style.display = 'flex';
                 chatHeaderTitle.textContent = agentName;
                 console.log(`🎯 [WEBSOCKET] Announced agent: ${agentName}`);
+                
+                // Scroll after agent announcement
+                ensureScrollToBottom();
             }
 
             // Render the agent message (no per-message agent name)
             displayedMessageIds.add(messageId);
             appendMessage(text, 'bot-message');
-            scrollToBottom();
+            
+            // Ensure scroll after agent message
+            ensureScrollToBottom();
             showMessageReceivedIndicator();
         }
 
@@ -684,7 +689,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 });
 
                 if (hasNewMessages) {
-                    scrollToBottom();
+                    ensureScrollToBottom();
                     console.log('📨 [MESSAGES] Added new messages, scrolling to bottom');
                 }
 
@@ -1055,7 +1060,7 @@ document.addEventListener('DOMContentLoaded', function () {
             </div>
         `;
         messagesContainer.appendChild(loaderDiv);
-        scrollToBottom();
+        ensureScrollToBottom();
 
         console.log('⏳ [UI] Showing loading indicator');
     }
@@ -1105,7 +1110,9 @@ document.addEventListener('DOMContentLoaded', function () {
         messageDiv.style.whiteSpace = "pre-wrap";
         messageDiv.textContent = text;
         messagesContainer.appendChild(messageDiv);
-        scrollToBottom();
+        
+        // Ensure scroll to bottom after message is added
+        ensureScrollToBottom();
     }
 
     function appendImageMessage(imageUrl, caption, className) {
@@ -1134,7 +1141,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         messagesContainer.appendChild(messageDiv);
-        scrollToBottom();
+        ensureScrollToBottom();
     }
 
     function appendFileMessage(fileName, fileSize, className, caption = '') {
@@ -1176,7 +1183,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         bubble.appendChild(fileContainer);
         messagesContainer.appendChild(bubble);
-        scrollToBottom();
+        ensureScrollToBottom();
     }
 
     function appendOptions(options, callback) {
@@ -1198,11 +1205,26 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         messagesContainer.appendChild(optionsDiv);
-        scrollToBottom();
+        
+        // Scroll after a small delay to ensure options are rendered
+        setTimeout(() => scrollToBottom(), 50);
     }
 
     function scrollToBottom() {
-        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        if (messagesContainer) {
+            // Use requestAnimationFrame for smoother scrolling
+            requestAnimationFrame(() => {
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            });
+        }
+    }
+    
+    // Auto-scroll helper - call this after any content change
+    function ensureScrollToBottom() {
+        // Multiple attempts to ensure scroll happens after render
+        scrollToBottom();
+        setTimeout(scrollToBottom, 100);
+        setTimeout(scrollToBottom, 300);
     }
 
     // ============================================================================
@@ -1398,7 +1420,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 <div class="upload-status">Uploading...</div>
             `;
             messagesContainer.appendChild(progressContainer);
-            scrollToBottom();
+            ensureScrollToBottom();
             console.log('📎 [FILE] Added progress container');
         }
 
