@@ -2213,7 +2213,8 @@ def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, An
         
         # Zendesk Conversation Log API uses different author types
         # Map various user types to "user" and agent types to "agent"
-        user_types = ["end_user", "customer", "visitor", "requester"]
+        # Note: Zendesk uses "end-user" (hyphen) not "end_user" (underscore)
+        user_types = ["end-user", "end_user", "customer", "visitor", "requester", "user"]
         agent_types = ["business", "agent", "admin", "operator"]
         
         if author_type in user_types:
