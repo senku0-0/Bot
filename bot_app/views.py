@@ -47,6 +47,27 @@ def strip_html_tags(text: str) -> str:
     clean = clean.strip()
     return clean
 
+# ============================================================================
+# Helper: Convert Zendesk URLs to proxy URLs for authenticated access
+# ============================================================================
+def get_proxied_image_url(original_url: str) -> str:
+    """
+    Convert Zendesk-hosted image URLs to proxy URLs.
+    This allows the frontend to display images that require authentication.
+    """
+    if not original_url:
+        return ""
+    
+    # Check if it's a Zendesk URL that needs proxying
+    zendesk_domains = ["zendesk.com", "zdassets.com"]
+    if any(domain in original_url for domain in zendesk_domains):
+        # URL-encode the original URL and return proxy URL
+        from urllib.parse import quote
+        return f"/api/image-proxy?url={quote(original_url, safe='')}"
+    
+    # Return original URL for non-Zendesk URLs (Sunshine, etc.)
+    return original_url
+
 # Sunshine secret for webhook verification
 SECRET = os.getenv("SUNSHINE_WEBHOOK_SIGNING_SECRET")
 if not SECRET:
@@ -2191,10 +2212,13 @@ def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, An
         logger.info(f"[FULL-HISTORY] Event author: type={author_type}, name={author_name}, raw={author}")
         
         # Zendesk Conversation Log API uses different author types
-        # Map "end_user" to "user" and "business" to "agent"
-        if author_type == "end_user":
+        # Map various user types to "user" and agent types to "agent"
+        user_types = ["end_user", "customer", "visitor", "requester"]
+        agent_types = ["business", "agent", "admin", "operator"]
+        
+        if author_type in user_types:
             author_type = "user"
-        elif author_type == "business":
+        elif author_type in agent_types:
             author_type = "agent"
         
         # Get message content
@@ -2217,6 +2241,17 @@ def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, An
         
         # Skip system messages we don't want to show
         if author_name == "System" and "Connecting to agent" in (text or ""):
+            return None
+        
+        # Skip ticket description/placeholder messages
+        skip_messages = [
+            "Conversation with Guest",
+            "Conversation with",
+            "Escalation Reason:",
+            "[Sunshine Conversation:",
+        ]
+        if text and any(skip_text in text for skip_text in skip_messages):
+            logger.info(f"[FULL-HISTORY] Skipping message: {text[:50]}")
             return None
         
         # Determine message type for frontend CSS classes
@@ -2252,7 +2287,7 @@ def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, An
         if content_type == "image" and media_url:
             logger.info(f"[FULL-HISTORY] Found image in content.media_url: {media_url[:100]}")
             parsed_attachments.append({
-                "url": media_url,
+                "url": get_proxied_image_url(media_url),
                 "type": "image",
                 "fileName": content.get("name", "image"),
                 "contentType": "image/*",
@@ -2279,8 +2314,11 @@ def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, An
                         any(ext in att_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'])
                     )
                     
+                    # Use proxy URL for Zendesk-hosted images
+                    proxied_url = get_proxied_image_url(att_url) if is_image else att_url
+                    
                     parsed_attachments.append({
-                        "url": att_url,
+                        "url": proxied_url,
                         "type": "image" if is_image else "file",
                         "fileName": att_file_name,
                         "contentType": att_content_type,
@@ -2298,14 +2336,18 @@ def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, An
                 content_type == "image" or
                 any(ext in media_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'])
             )
+            
+            # Use proxy URL for Zendesk-hosted images
+            proxied_url = get_proxied_image_url(media_url) if is_image else media_url
+            
             parsed_attachments.append({
-                "url": media_url,
+                "url": proxied_url,
                 "type": "image" if is_image else "file",
                 "fileName": content.get("name", "file"),
                 "contentType": content.get("mediaType", "image/*" if is_image else ""),
                 "size": content.get("size", 0)
             })
-            logger.info(f"[FULL-HISTORY] Added attachment: type={'image' if is_image else 'file'}, url={media_url[:100]}")
+            logger.info(f"[FULL-HISTORY] Added attachment: type={'image' if is_image else 'file'}, url={proxied_url[:100]}")
         
         # Add attachments to message if any found
         if parsed_attachments:
@@ -2398,3 +2440,50 @@ def get_sunshine_messages_fallback(conversation_id: str) -> JsonResponse:
     except Exception as e:
         logger.exception(f"[FULL-HISTORY] Sunshine fallback error: {e}")
         return JsonResponse({"messages": [], "source": "error", "error": str(e)})
+
+
+# ============================================================================
+# Image Proxy: Fetch Zendesk-hosted images through authenticated backend
+# ============================================================================
+@csrf_exempt
+def proxy_zendesk_image(request: HttpRequest) -> HttpResponse:
+    """
+    Proxy Zendesk-hosted images through our authenticated backend.
+    This is needed because Zendesk attachment URLs require authentication.
+    """
+    image_url = request.GET.get("url", "")
+    
+    if not image_url:
+        return HttpResponse("Missing URL parameter", status=400)
+    
+    # Security: Only allow Zendesk URLs
+    if not any(domain in image_url for domain in ["zendesk.com", "smooch.io", "zdassets.com"]):
+        logger.warning(f"[IMAGE-PROXY] Blocked non-Zendesk URL: {image_url[:100]}")
+        return HttpResponse("Only Zendesk URLs allowed", status=403)
+    
+    try:
+        logger.info(f"[IMAGE-PROXY] Fetching: {image_url[:100]}")
+        
+        response = requests.get(
+            image_url,
+            auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+            timeout=30,
+            stream=True
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"[IMAGE-PROXY] Failed to fetch: {response.status_code}")
+            return HttpResponse(f"Failed to fetch image: {response.status_code}", status=response.status_code)
+        
+        # Get content type from response or guess from URL
+        content_type = response.headers.get("Content-Type", "image/jpeg")
+        
+        # Return the image with proper content type
+        return HttpResponse(
+            response.content,
+            content_type=content_type
+        )
+        
+    except Exception as e:
+        logger.exception(f"[IMAGE-PROXY] Error: {e}")
+        return HttpResponse(f"Error fetching image: {str(e)}", status=500)

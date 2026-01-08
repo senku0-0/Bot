@@ -10,6 +10,7 @@ urlpatterns = [
     path('api/chat/escalate', views.escalate_to_agent, name='escalate_to_agent'),
     path('api/chat/messages', views.get_conversation_messages, name='get_conversation_messages'),
     path('api/chat/full-history', views.get_full_chat_history, name='get_full_chat_history'),  # NEW!
+    path('api/image-proxy', views.proxy_zendesk_image, name='proxy_zendesk_image'),  # Image proxy
     path('api/send-to-zendesk', views.send_to_zendesk, name='send_to_zendesk'),
     path('zendesk/webhook', views.zendesk_webhook, name='zendesk_webhook'),  # CRITICAL!
     path('api/debug/group_send', views.debug_group_send, name='debug_group_send'),
