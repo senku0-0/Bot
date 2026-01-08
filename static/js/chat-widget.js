@@ -140,15 +140,28 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     
     function showConversationList() {
+        console.log('📋 [VIEW] Switching to conversation list view');
         currentView = 'list';
         conversationListView.style.display = 'flex';
         chatView.style.display = 'none';
         backBtn.style.display = 'none';
         chatHeaderTitle.textContent = 'Yatri Bandhu';
+        
+        // Reset current conversation state but keep the data
+        if (conversationId) {
+            // Save state before switching
+            const convState = {
+                isAgentConnected: isAgentConnected,
+                agentJoinAnnounced: agentJoinAnnounced
+            };
+            localStorage.setItem(`chat_conv_state_${conversationId}`, JSON.stringify(convState));
+        }
+        
         renderConversationList();
     }
     
     function showChatView() {
+        console.log('💬 [VIEW] Switching to chat view');
         currentView = 'chat';
         conversationListView.style.display = 'none';
         chatView.style.display = 'flex';
@@ -157,58 +170,48 @@ document.addEventListener('DOMContentLoaded', function () {
     
     function openExistingConversation(convId) {
         console.log('📂 [CONV] Opening existing conversation:', convId);
+        
+        // Set the conversation ID
         conversationId = convId;
         localStorage.setItem('chat_current_conversation', convId);
         
-        // Reset state for this conversation
+        // Clear display state but DON'T clear the container yet
         displayedMessageIds.clear();
         displayedImageFileNames.clear();
-        messagesContainer.innerHTML = '';
         
-        // Load conversation state
+        // Load conversation state from storage
         const convState = localStorage.getItem(`chat_conv_state_${convId}`);
         if (convState) {
-            const state = JSON.parse(convState);
-            isAgentConnected = state.isAgentConnected || false;
-            agentJoinAnnounced = state.agentJoinAnnounced || false;
+            try {
+                const state = JSON.parse(convState);
+                isAgentConnected = state.isAgentConnected || false;
+                agentJoinAnnounced = state.agentJoinAnnounced || false;
+                console.log('📂 [CONV] Restored state:', { isAgentConnected, agentJoinAnnounced });
+            } catch (e) {
+                console.error('❌ [CONV] Failed to parse conversation state:', e);
+                isAgentConnected = false;
+                agentJoinAnnounced = false;
+            }
+        } else {
+            isAgentConnected = false;
+            agentJoinAnnounced = false;
         }
         
+        // Clear messages container BEFORE fetching new messages
+        messagesContainer.innerHTML = '';
+        
+        // Switch to chat view
         showChatView();
         
-        // Connect WebSocket
-        if (sunshineSocket) {
-            sunshineSocket.disconnect();
-        }
-        sunshineSocket = new SunshineWebSocketManager(conversationId);
-        sunshineSocket.connect();
-        
-        // Fetch messages
-        fetchMessages();
-        
-        // Show input if agent connected
+        // Show/hide input based on agent connection
         if (isAgentConnected) {
             chatInputArea.style.display = 'flex';
+            const agentName = localStorage.getItem('chat_agentName') || 'Agent';
+            chatHeaderTitle.textContent = agentName;
+        } else {
+            chatInputArea.style.display = 'none';
+            chatHeaderTitle.textContent = 'Yatri Bandhu';
         }
-    }
-    
-    function startNewConversation() {
-        console.log('🆕 [CONV] Starting new conversation');
-        
-        // Reset everything
-        conversationId = null;
-        displayedMessageIds.clear();
-        displayedImageFileNames.clear();
-        messagesContainer.innerHTML = '';
-        isAgentConnected = false;
-        agentJoinAnnounced = false;
-        hasConfirmedAgentActivity = false;
-        sessionEnded = false;
-        
-        // Clear current conversation from storage
-        localStorage.removeItem('chat_current_conversation');
-        localStorage.removeItem('chat_isAgentConnected');
-        localStorage.removeItem('chat_agentJoinAnnounced');
-        localStorage.removeItem('chat_hasConfirmedAgentActivity');
         
         // Disconnect existing WebSocket
         if (sunshineSocket) {
@@ -216,11 +219,112 @@ document.addEventListener('DOMContentLoaded', function () {
             sunshineSocket = null;
         }
         
+        // Connect new WebSocket
+        sunshineSocket = new SunshineWebSocketManager(conversationId);
+        sunshineSocket.connect();
+        
+        // Fetch messages for this conversation
+        fetchMessages();
+    }
+    
+    function startNewConversation() {
+        console.log('🆕 [CONV] Starting new conversation');
+        
+        // Reset all state
+        conversationId = null;
+        appUserId = null;
+        displayedMessageIds.clear();
+        displayedImageFileNames.clear();
+        isAgentConnected = false;
+        agentJoinAnnounced = false;
+        hasConfirmedAgentActivity = false;
+        sessionEnded = false;
+        lastContext = "General Inquiry";
+        window.lastAppRelatedCategory = null;
+        
+        // Clear current conversation from storage
+        localStorage.removeItem('chat_current_conversation');
+        localStorage.removeItem('chat_isAgentConnected');
+        localStorage.removeItem('chat_agentJoinAnnounced');
+        localStorage.removeItem('chat_hasConfirmedAgentActivity');
+        localStorage.removeItem('chat_agentName');
+        
+        // Disconnect existing WebSocket
+        if (sunshineSocket) {
+            sunshineSocket.disconnect();
+            sunshineSocket = null;
+        }
+        
+        // Clear messages container
+        messagesContainer.innerHTML = '';
+        
+        // Switch to chat view
         showChatView();
         chatInputArea.style.display = 'none';
+        chatHeaderTitle.textContent = 'Yatri Bandhu';
         
-        // Initialize new conversation
-        initializeChatSession();
+        // Initialize new conversation with force new flag
+        initializeNewChatSession();
+    }
+    
+    function initializeNewChatSession() {
+        console.log('🚀 [CHAT] Initializing NEW chat session (forcing new conversation)...');
+
+        // Get stored user ID but request a NEW conversation
+        const storedUserId = localStorage.getItem('chat_user_id');
+        const payload = {
+            userId: storedUserId || null,
+            forceNew: true  // Signal to backend to create new conversation
+        };
+
+        fetch('/api/chat/init', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.appUserId && data.conversationId) {
+                    appUserId = data.appUserId;
+                    conversationId = data.conversationId;
+
+                    if (data.externalId) {
+                        localStorage.setItem('chat_user_id', data.externalId);
+                    }
+
+                    console.log("✅ [CHAT] New conversation initialized:", {
+                        appUserId: appUserId.substring(0, 10) + '...',
+                        conversationId: conversationId.substring(0, 10) + '...'
+                    });
+                    
+                    // Save to current conversation
+                    localStorage.setItem('chat_current_conversation', conversationId);
+                    
+                    // Save to conversation list
+                    saveConversation(conversationId, 'New Conversation', '', new Date().toISOString());
+
+                    // Show welcome message and options
+                    appendMessage("Hello! 👋 How can I help you today?", 'bot-message');
+                    showMainOptions();
+
+                    // Initialize WebSocket
+                    sunshineSocket = new SunshineWebSocketManager(conversationId);
+                    sunshineSocket.connect();
+
+                } else {
+                    console.error("❌ [CHAT] Failed to initialize new conversation:", data);
+                    appendMessage("Failed to start new conversation. Please try again.", 'system-message');
+                }
+            })
+            .catch(error => {
+                console.error('❌ [CHAT] Error initializing new conversation:', error);
+                appendMessage("Connection error. Please try again.", 'system-message');
+            });
     }
 
     // ============================================================================
@@ -884,10 +988,28 @@ document.addEventListener('DOMContentLoaded', function () {
             toggleBtn.innerHTML = '✖';
             toggleBtn.setAttribute('aria-label', 'Close chat');
 
-            // Show conversation list first
-            showConversationList();
-
-            console.log('💬 [CHAT] Opened chat - showing conversation list');
+            // Check if there was an active conversation
+            const activeConvId = localStorage.getItem('chat_current_conversation');
+            const wasInChat = currentView === 'chat' && conversationId;
+            
+            if (activeConvId && wasInChat && messagesContainer.children.length > 0) {
+                // User was in a conversation before closing - just show the chat view again
+                console.log('💬 [CHAT] Restoring active conversation:', activeConvId.substring(0, 10) + '...');
+                showChatView();
+                
+                // Reconnect WebSocket if needed
+                if (!sunshineSocket || !sunshineSocket.socket?.readyState === WebSocket.OPEN) {
+                    sunshineSocket = new SunshineWebSocketManager(conversationId);
+                    sunshineSocket.connect();
+                }
+                
+                // Fetch any new messages
+                fetchMessages();
+            } else {
+                // Show conversation list
+                showConversationList();
+                console.log('💬 [CHAT] Opened chat - showing conversation list');
+            }
         } else {
             chatBox.style.display = 'none';
             toggleBtn.innerHTML = '💬';
