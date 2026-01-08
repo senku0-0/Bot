@@ -2456,7 +2456,7 @@ def proxy_zendesk_image(request: HttpRequest) -> HttpResponse:
     if not image_url:
         return HttpResponse("Missing URL parameter", status=400)
     
-    # Security: Only allow Zendesk URLs
+    # Security: Only allow Zendesk/Sunshine URLs
     if not any(domain in image_url for domain in ["zendesk.com", "smooch.io", "zdassets.com"]):
         logger.warning(f"[IMAGE-PROXY] Blocked non-Zendesk URL: {image_url[:100]}")
         return HttpResponse("Only Zendesk URLs allowed", status=403)
@@ -2464,15 +2464,59 @@ def proxy_zendesk_image(request: HttpRequest) -> HttpResponse:
     try:
         logger.info(f"[IMAGE-PROXY] Fetching: {image_url[:100]}")
         
-        response = requests.get(
-            image_url,
-            auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
-            timeout=30,
-            stream=True
-        )
+        # Sunshine Conversations attachments (/sc/attachments/) need Sunshine auth
+        # Regular Zendesk attachments need Zendesk API auth
+        
+        response = None
+        
+        # Method 1: Try Sunshine Basic Auth for /sc/attachments/ URLs
+        if "/sc/attachments/" in image_url:
+            logger.info(f"[IMAGE-PROXY] Using Sunshine Basic Auth for SC attachment")
+            # Sunshine uses API Key ID and Secret as Basic Auth
+            response = requests.get(
+                image_url,
+                auth=HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET),
+                timeout=30,
+                stream=True
+            )
+            logger.info(f"[IMAGE-PROXY] Sunshine Basic Auth response: {response.status_code}")
+            
+            # If Basic Auth failed, try JWT
+            if response.status_code != 200:
+                logger.info(f"[IMAGE-PROXY] Trying Sunshine JWT auth")
+                jwt_token = get_sunshine_jwt()
+                if jwt_token:
+                    response = requests.get(
+                        image_url,
+                        headers={"Authorization": f"Bearer {jwt_token}"},
+                        timeout=30,
+                        stream=True
+                    )
+                    logger.info(f"[IMAGE-PROXY] Sunshine JWT response: {response.status_code}")
+        
+        # Method 2: Try without auth (some URLs are publicly accessible)
+        if response is None or response.status_code != 200:
+            logger.info(f"[IMAGE-PROXY] Trying without auth")
+            response = requests.get(
+                image_url,
+                timeout=30,
+                stream=True
+            )
+            logger.info(f"[IMAGE-PROXY] No-auth response: {response.status_code}")
+        
+        # Method 3: Try Zendesk API auth as last resort
+        if response.status_code != 200:
+            logger.info(f"[IMAGE-PROXY] Trying Zendesk API auth")
+            response = requests.get(
+                image_url,
+                auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+                timeout=30,
+                stream=True
+            )
+            logger.info(f"[IMAGE-PROXY] Zendesk auth response: {response.status_code}")
         
         if response.status_code != 200:
-            logger.error(f"[IMAGE-PROXY] Failed to fetch: {response.status_code}")
+            logger.error(f"[IMAGE-PROXY] All auth methods failed: {response.status_code}")
             return HttpResponse(f"Failed to fetch image: {response.status_code}", status=response.status_code)
         
         # Get content type from response or guess from URL
