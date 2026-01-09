@@ -91,20 +91,20 @@ def is_conversation_log_entry(text: str) -> bool:
 # ============================================================================
 def get_proxied_image_url(original_url: str) -> str:
     """
-    Convert Zendesk-hosted image URLs to proxy URLs.
+    Convert Zendesk/Sunshine hosted image URLs to proxy URLs.
     This allows the frontend to display images that require authentication.
     """
     if not original_url:
         return ""
     
-    # Check if it's a Zendesk URL that needs proxying
-    zendesk_domains = ["zendesk.com", "zdassets.com"]
-    if any(domain in original_url for domain in zendesk_domains):
+    # Check if it's a URL that needs proxying (Zendesk or Sunshine/Smooch)
+    proxy_domains = ["zendesk.com", "zdassets.com", "smooch.io", "zendesk-eu.com"]
+    if any(domain in original_url for domain in proxy_domains):
         # URL-encode the original URL and return proxy URL
         from urllib.parse import quote
         return f"/api/image-proxy?url={quote(original_url, safe='')}"
     
-    # Return original URL for non-Zendesk URLs (Sunshine, etc.)
+    # Return original URL for non-Zendesk/Sunshine URLs
     return original_url
 
 # Sunshine secret for webhook verification
@@ -2176,6 +2176,11 @@ def get_full_chat_history(request: HttpRequest) -> JsonResponse:
             """Create a fingerprint from message content for deduplication."""
             text = (msg.get("text") or "").strip().lower()[:100]
             author_type = msg.get("author", {}).get("type", "")
+            # Normalize author types: "business" and "agent" are the same
+            if author_type in ["business", "agent", "admin", "operator"]:
+                author_type = "agent"
+            elif author_type in ["end-user", "end_user", "customer", "visitor", "requester"]:
+                author_type = "user"
             # Use first 19 chars of timestamp (YYYY-MM-DDTHH:MM:SS) to ignore milliseconds
             received = (msg.get("received") or "")[:19]
             return f"{author_type}:{received}:{text}"
@@ -2632,7 +2637,7 @@ def proxy_zendesk_image(request: HttpRequest) -> HttpResponse:
         return HttpResponse("Missing URL parameter", status=400)
     
     # Security: Only allow Zendesk/Sunshine URLs
-    if not any(domain in image_url for domain in ["zendesk.com", "smooch.io", "zdassets.com"]):
+    if not any(domain in image_url for domain in ["zendesk.com", "smooch.io", "zdassets.com", "zendesk-eu.com"]):
         logger.warning(f"[IMAGE-PROXY] Blocked non-Zendesk URL: {image_url[:100]}")
         return HttpResponse("Only Zendesk URLs allowed", status=403)
     
