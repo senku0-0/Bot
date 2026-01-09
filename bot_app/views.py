@@ -2169,18 +2169,27 @@ def get_full_chat_history(request: HttpRequest) -> JsonResponse:
     
     try:
         all_messages = []
-        seen_ids = set()
+        # Use content fingerprint for deduplication (IDs differ between APIs)
+        seen_fingerprints = set()
+        
+        def get_message_fingerprint(msg: Dict[str, Any]) -> str:
+            """Create a fingerprint from message content for deduplication."""
+            text = (msg.get("text") or "").strip().lower()[:100]
+            author_type = msg.get("author", {}).get("type", "")
+            # Use first 19 chars of timestamp (YYYY-MM-DDTHH:MM:SS) to ignore milliseconds
+            received = (msg.get("received") or "")[:19]
+            return f"{author_type}:{received}:{text}"
         
         # ========================================================================
         # STEP 1: Always fetch Sunshine messages first (has bot + user messages)
         # ========================================================================
         sunshine_messages = get_sunshine_messages_list(conversation_id)
         for msg in sunshine_messages:
-            msg_id = msg.get("id", "")
-            if msg_id and msg_id not in seen_ids:
-                seen_ids.add(msg_id)
+            fingerprint = get_message_fingerprint(msg)
+            if fingerprint not in seen_fingerprints:
+                seen_fingerprints.add(fingerprint)
                 all_messages.append(msg)
-        logger.info(f"[FULL-HISTORY] Got {len(sunshine_messages)} Sunshine messages")
+        logger.info(f"[FULL-HISTORY] Got {len(sunshine_messages)} Sunshine messages, kept {len(all_messages)}")
         
         # ========================================================================
         # STEP 2: Get the Zendesk ticket ID and fetch Conversation Log
@@ -2231,14 +2240,17 @@ def get_full_chat_history(request: HttpRequest) -> JsonResponse:
                     events = data.get("events", [])
                     logger.info(f"[FULL-HISTORY] Received {len(events)} Conversation Log events")
                     
+                    added_count = 0
                     for event in events:
                         parsed = parse_conversation_log_event(event)
                         if parsed:
-                            msg_id = parsed.get("id", "")
-                            # Only add if not already in Sunshine messages (avoid duplicates)
-                            if msg_id not in seen_ids:
-                                seen_ids.add(msg_id)
+                            fingerprint = get_message_fingerprint(parsed)
+                            # Only add if not already seen (avoid duplicates)
+                            if fingerprint not in seen_fingerprints:
+                                seen_fingerprints.add(fingerprint)
                                 all_messages.append(parsed)
+                                added_count += 1
+                    logger.info(f"[FULL-HISTORY] Added {added_count} unique Conversation Log messages")
                 else:
                     logger.error(f"[FULL-HISTORY] Conversation Log API failed: {response.status_code}")
             except Exception as conv_err:
