@@ -57,37 +57,6 @@ document.addEventListener('DOMContentLoaded', function () {
         return stored ? JSON.parse(stored) : [];
     }
     
-    // ============================================================================
-    // LOCAL MESSAGE STORAGE (for bot messages that aren't sent to Sunshine)
-    // ============================================================================
-    
-    function getLocalMessages(convId) {
-        if (!convId) return [];
-        const stored = localStorage.getItem(`chat_local_messages_${convId}`);
-        return stored ? JSON.parse(stored) : [];
-    }
-    
-    function saveLocalMessage(convId, text, className, timestamp) {
-        if (!convId) return;
-        const messages = getLocalMessages(convId);
-        messages.push({
-            id: `local_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-            text: text,
-            className: className,
-            timestamp: timestamp || new Date().toISOString()
-        });
-        // Keep only last 100 local messages per conversation
-        if (messages.length > 100) {
-            messages.splice(0, messages.length - 100);
-        }
-        localStorage.setItem(`chat_local_messages_${convId}`, JSON.stringify(messages));
-    }
-    
-    function clearLocalMessages(convId) {
-        if (!convId) return;
-        localStorage.removeItem(`chat_local_messages_${convId}`);
-    }
-    
     function saveConversation(convId, title, lastMessage, timestamp) {
         let conversations = getStoredConversations();
         
@@ -756,21 +725,8 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         console.log('📨 [MESSAGES] Fetching full history for:', conversationId.substring(0, 10) + '...');
-        
-        // First, restore local messages (bot/system messages stored in localStorage)
-        const localMessages = getLocalMessages(conversationId);
-        if (localMessages.length > 0) {
-            console.log(`📨 [MESSAGES] Restoring ${localMessages.length} local messages`);
-            localMessages.forEach(msg => {
-                if (!displayedMessageIds.has(msg.id)) {
-                    displayedMessageIds.add(msg.id);
-                    // Use skipLocalSave=true to avoid re-saving when restoring
-                    appendMessage(msg.text, msg.className, null, true);
-                }
-            });
-        }
 
-        // Use the new full-history endpoint that leverages Zendesk Conversation Log API
+        // Use the full-history endpoint that leverages Zendesk Conversation Log API
         fetch(`/api/chat/full-history?conversationId=${conversationId}`)
             .then(response => {
                 if (!response.ok) {
@@ -1194,21 +1150,14 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    function appendMessage(text, className, senderName = null, skipLocalSave = false) {
-        console.log(`💬 [UI] Appending ${className} from ${senderName || 'unknown'}:`, text.substring(0, 50) + '...');
-        // Agent name is shown once as a system announcement; do not prefix each message with the agent name.
+    function appendMessage(text, className, senderName = null) {
+        console.log(`💬 [UI] Appending ${className}:`, text.substring(0, 50) + '...');
 
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', className);
         messageDiv.style.whiteSpace = "pre-wrap";
         messageDiv.textContent = text;
         messagesContainer.appendChild(messageDiv);
-        
-        // Save bot and system messages locally for persistence (not user/agent - those come from Sunshine)
-        // Only save if conversation exists and skipLocalSave is false (to avoid duplicates when restoring)
-        if (!skipLocalSave && conversationId && (className === 'bot-message' || className === 'system-message')) {
-            saveLocalMessage(conversationId, text, className, new Date().toISOString());
-        }
         
         // Ensure scroll to bottom after message is added
         ensureScrollToBottom();
