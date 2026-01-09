@@ -56,14 +56,17 @@ def is_conversation_log_entry(text: str) -> bool:
     These are auto-generated and should NOT be forwarded to users.
     
     Patterns include:
-    - Multiple timestamps like (HH:MM:SS) Support Agent: (HH:MM:SS) ...
+    - Timestamps like (HH:MM:SS) User Name: message
     - Answer Bot automated messages
     - Ticket resolution notifications
+    - Sunshine Conversation references
     """
     if not text:
         return False
     
     conversation_log_patterns = [
+        # Pattern: Single timestamp at start like "(19:57:26) Guest User:"
+        r'^\(\d{1,2}:\d{2}:\d{2}\)\s+\w+',
         # Pattern: Multiple timestamps like (HH:MM:SS) repeated
         r'\(\d{1,2}:\d{2}:\d{2}\)\s+\w+.*\(\d{1,2}:\d{2}:\d{2}\)',
         # Pattern: Answer Bot messages
@@ -78,6 +81,10 @@ def is_conversation_log_entry(text: str) -> bool:
         r'Messaging session ended',
         # Pattern: This ticket will be marked
         r'This ticket will be marked',
+        # Pattern: Sunshine Conversation reference
+        r'\[Sunshine Conversation',
+        # Pattern: Escalation reason in log format
+        r'Escalation Reason:.*Category:',
     ]
     
     for pattern in conversation_log_patterns:
@@ -2549,17 +2556,26 @@ def get_sunshine_messages_list(conversation_id: str) -> List[Dict[str, Any]]:
                         "fileName": content.get("name", "image"),
                         "size": content.get("size", 0)
                     }]
-            # Handle file attachments
+            # Handle file attachments - but check if it's actually an image
             elif content.get("type") == "file":
                 media_url = content.get("mediaUrl", "")
                 if media_url:
-                    logger.info(f"[SUNSHINE-LIST] Found FILE: {content.get('name', '')} - {media_url[:80]}...")
-                    # Check if it's actually an image based on file extension
                     file_name = content.get("name", "")
-                    is_actually_image = any(ext in file_name.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'])
+                    # Check URL for image extensions (URL-decoded)
+                    from urllib.parse import unquote
+                    decoded_url = unquote(media_url).lower()
+                    # Check if it's actually an image based on file extension OR URL
+                    image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic', '.heif']
+                    is_actually_image = (
+                        any(ext in file_name.lower() for ext in image_extensions) or
+                        any(ext in decoded_url for ext in image_extensions) or
+                        'image' in decoded_url or
+                        'whatsapp' in decoded_url  # WhatsApp images often don't have extensions
+                    )
+                    logger.info(f"[SUNSHINE-LIST] Found FILE: name={file_name}, is_image={is_actually_image}, url={media_url[:80]}...")
                     message["attachments"] = [{
                         "url": get_proxied_image_url(media_url),
-                        "fileName": file_name,
+                        "fileName": file_name or ("image" if is_actually_image else "file"),
                         "type": "image" if is_actually_image else "file",
                         "size": content.get("size", 0)
                     }]
