@@ -2150,8 +2150,11 @@ def redis_health(request: HttpRequest) -> JsonResponse:
 @csrf_exempt
 def get_full_chat_history(request: HttpRequest) -> JsonResponse:
     """
-    Fetch complete chat history using Zendesk's Conversation Log API.
-    This returns all messages: bot, user, agent, and attachments in chronological order.
+    Fetch complete chat history combining BOTH:
+    1. Sunshine Conversations API (has bot + user messages from before escalation)
+    2. Zendesk Conversation Log API (has agent messages after ticket creation)
+    
+    This ensures bot messages are preserved after refresh.
     
     GET /api/chat/full-history?conversationId=<id>
     """
@@ -2165,19 +2168,32 @@ def get_full_chat_history(request: HttpRequest) -> JsonResponse:
     logger.info(f"[FULL-HISTORY] 📜 Fetching full history for conversation: {conversation_id}")
     
     try:
-        # Step 1: Get the Zendesk ticket ID from cache
+        all_messages = []
+        seen_ids = set()
+        
+        # ========================================================================
+        # STEP 1: Always fetch Sunshine messages first (has bot + user messages)
+        # ========================================================================
+        sunshine_messages = get_sunshine_messages_list(conversation_id)
+        for msg in sunshine_messages:
+            msg_id = msg.get("id", "")
+            if msg_id and msg_id not in seen_ids:
+                seen_ids.add(msg_id)
+                all_messages.append(msg)
+        logger.info(f"[FULL-HISTORY] Got {len(sunshine_messages)} Sunshine messages")
+        
+        # ========================================================================
+        # STEP 2: Get the Zendesk ticket ID and fetch Conversation Log
+        # ========================================================================
         cache_key = f'conversation_{conversation_id}'
         ticket_id = cache.get(cache_key)
         logger.info(f"[FULL-HISTORY] Cache lookup key: {cache_key} -> {ticket_id}")
         
         if not ticket_id:
-            logger.info(f"[FULL-HISTORY] ❌ No ticket in cache for key: {cache_key}")
-            
-            # Step 1b: Try to find ticket via Zendesk API search
-            logger.info(f"[FULL-HISTORY] 🔍 Searching Zendesk for conversation ID in custom field...")
+            # Try to find ticket via Zendesk API search
+            logger.info(f"[FULL-HISTORY] 🔍 Searching Zendesk for conversation ID...")
             try:
                 search_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/search.json"
-                # Search for the conversation ID in custom field or description
                 search_query = f"custom_field_{ZENDESK_CHAT_CONVERSATION_FIELD_ID}:{conversation_id}"
                 
                 response = requests.get(
@@ -2192,62 +2208,58 @@ def get_full_chat_history(request: HttpRequest) -> JsonResponse:
                     if results:
                         ticket_id = str(results[0].get("id"))
                         logger.info(f"[FULL-HISTORY] ✅ Found ticket via search: {ticket_id}")
-                        # Store in cache for future requests
                         store_conversation_ticket_mapping(conversation_id, ticket_id)
-                    else:
-                        logger.info(f"[FULL-HISTORY] 🔍 No tickets found in search")
-                else:
-                    logger.error(f"[FULL-HISTORY] ❌ Search failed: {response.status_code}")
             except Exception as search_err:
                 logger.error(f"[FULL-HISTORY] ❌ Search error: {search_err}")
-            
-            if not ticket_id:
-                logger.info(f"[FULL-HISTORY] Using Sunshine fallback for {conversation_id}")
-                return get_sunshine_messages_fallback(conversation_id)
         
-        logger.info(f"[FULL-HISTORY] ✅ Using ticket ID: {ticket_id}")
+        # ========================================================================
+        # STEP 3: If ticket exists, get Conversation Log events (agent messages)
+        # ========================================================================
+        if ticket_id:
+            logger.info(f"[FULL-HISTORY] ✅ Fetching Conversation Log for ticket: {ticket_id}")
+            try:
+                conv_log_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}/conversation_log.json"
+                
+                response = requests.get(
+                    conv_log_url,
+                    auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+                    timeout=15
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    events = data.get("events", [])
+                    logger.info(f"[FULL-HISTORY] Received {len(events)} Conversation Log events")
+                    
+                    for event in events:
+                        parsed = parse_conversation_log_event(event)
+                        if parsed:
+                            msg_id = parsed.get("id", "")
+                            # Only add if not already in Sunshine messages (avoid duplicates)
+                            if msg_id not in seen_ids:
+                                seen_ids.add(msg_id)
+                                all_messages.append(parsed)
+                else:
+                    logger.error(f"[FULL-HISTORY] Conversation Log API failed: {response.status_code}")
+            except Exception as conv_err:
+                logger.error(f"[FULL-HISTORY] Conversation Log error: {conv_err}")
         
-        # Step 2: Call the Zendesk Conversation Log API
-        conv_log_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}/conversation_log.json"
+        # ========================================================================
+        # STEP 4: Sort all messages by timestamp and return
+        # ========================================================================
+        all_messages.sort(key=lambda x: x.get("received", ""))
         
-        response = requests.get(
-            conv_log_url,
-            auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
-            timeout=15
-        )
-        
-        if response.status_code != 200:
-            logger.error(f"[FULL-HISTORY] Conversation Log API failed: {response.status_code} - {response.text}")
-            # Fallback to Sunshine messages
-            return get_sunshine_messages_fallback(conversation_id)
-        
-        data = response.json()
-        events = data.get("events", [])
-        
-        logger.info(f"[FULL-HISTORY] Received {len(events)} events from Conversation Log")
-        
-        # Step 3: Parse and format messages
-        messages = []
-        for event in events:
-            parsed = parse_conversation_log_event(event)
-            if parsed:
-                messages.append(parsed)
-        
-        # Sort by timestamp
-        messages.sort(key=lambda x: x.get("received", ""))
-        
-        logger.info(f"[FULL-HISTORY] Returning {len(messages)} parsed messages")
+        logger.info(f"[FULL-HISTORY] Returning {len(all_messages)} total messages (combined)")
         
         return JsonResponse({
-            "messages": messages,
-            "source": "zendesk_conversation_log",
+            "messages": all_messages,
+            "source": "combined",
             "ticket_id": ticket_id,
             "conversation_id": conversation_id
         })
         
     except Exception as e:
         logger.exception(f"[FULL-HISTORY] Error fetching history: {e}")
-        # Fallback to Sunshine messages
         return get_sunshine_messages_fallback(conversation_id)
 
 
@@ -2423,6 +2435,93 @@ def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, An
     except Exception as e:
         logger.error(f"[FULL-HISTORY] Error parsing event: {e}")
         return None
+
+
+def get_sunshine_messages_list(conversation_id: str) -> List[Dict[str, Any]]:
+    """
+    Fetch messages from Sunshine Conversations API and return as a list.
+    This is used by get_full_chat_history to combine with Conversation Log events.
+    
+    Sunshine API contains bot + user messages from before escalation.
+    """
+    messages = []
+    try:
+        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+        url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+        
+        response = requests.get(url, auth=auth, timeout=15)
+        
+        if response.status_code != 200:
+            logger.error(f"[SUNSHINE-LIST] API failed: {response.status_code}")
+            return messages
+        
+        data = response.json()
+        sunshine_messages = data.get("messages", [])
+        
+        for msg in sunshine_messages:
+            author = msg.get("author", {})
+            author_type = author.get("type", "user")
+            author_name = author.get("displayName", "")
+            
+            content = msg.get("content", {})
+            text = msg.get("text") or content.get("text", "")
+            
+            # Determine message class (bot vs agent vs user)
+            if author_type == "user":
+                message_class = "user"
+            elif author_type == "business":
+                # Check source to distinguish bot from agent
+                source = msg.get("source", {})
+                source_type = source.get("type", "")
+                # Bot messages typically have source.type like "api" or "zendesk:answerBot"
+                if "answerBot" in str(source) or author_name.lower() in ["bot", "assistant", "answerbot"]:
+                    message_class = "bot"
+                    author_type = "bot"
+                else:
+                    message_class = "agent"
+            else:
+                message_class = "bot"
+                author_type = "bot"
+            
+            message = {
+                "id": msg.get("id", ""),
+                "text": text,
+                "author": {
+                    "type": author_type,
+                    "displayName": author_name or message_class.capitalize()
+                },
+                "received": msg.get("received", ""),
+                "messageClass": message_class,
+                "source": "sunshine"
+            }
+            
+            # Handle image attachments
+            if content.get("type") == "image":
+                media_url = content.get("mediaUrl", "")
+                if media_url:
+                    message["attachments"] = [{
+                        "url": get_proxied_image_url(media_url),
+                        "type": "image",
+                        "fileName": content.get("name", "image")
+                    }]
+            # Handle file attachments
+            elif content.get("type") == "file":
+                media_url = content.get("mediaUrl", "")
+                if media_url:
+                    message["attachments"] = [{
+                        "url": get_proxied_image_url(media_url),
+                        "fileName": content.get("name", ""),
+                        "type": "file"
+                    }]
+            
+            messages.append(message)
+        
+        logger.info(f"[SUNSHINE-LIST] Fetched {len(messages)} messages")
+        
+    except Exception as e:
+        logger.exception(f"[SUNSHINE-LIST] Error: {e}")
+    
+    return messages
 
 
 def get_sunshine_messages_fallback(conversation_id: str) -> JsonResponse:
