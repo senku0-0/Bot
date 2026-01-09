@@ -1852,16 +1852,13 @@ document.addEventListener('DOMContentLoaded', function () {
     
     // Don't auto-start session - wait for user to open widget and select/create conversation
 
-    // Restore the most recently updated conversation on page load
-    const conversations = getStoredConversations();
-    if (conversations.length > 0) {
-        // Sort conversations by updatedAt timestamp in descending order
-        conversations.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
-        const mostRecentConversation = conversations[0];
-        console.log('🔄 [INIT] Restoring most recent conversation:', mostRecentConversation.id);
-        openExistingConversation(mostRecentConversation.id);
+    // Restore last active conversation on page load
+    const lastConversationId = localStorage.getItem('chat_current_conversation');
+    if (lastConversationId) {
+        console.log('🔄 [INIT] Restoring last active conversation:', lastConversationId);
+        openExistingConversation(lastConversationId);
     } else {
-        console.log('ℹ️ [INIT] No existing conversations to restore');
+        console.log('ℹ️ [INIT] No active conversation to restore');
         showConversationList();
     }
 
