@@ -177,6 +177,15 @@ document.addEventListener('DOMContentLoaded', function () {
         conversationId = convId;
         localStorage.setItem('chat_current_conversation', convId);
         
+        // Restore appUserId for this conversation
+        const storedAppUserId = localStorage.getItem(`chat_appUserId_${convId}`);
+        if (storedAppUserId) {
+            appUserId = storedAppUserId;
+            console.log('📂 [CONV] Restored appUserId:', appUserId.substring(0, 10) + '...');
+        } else {
+            console.warn('⚠️ [CONV] No stored appUserId for this conversation');
+        }
+        
         // Clear display state but DON'T clear the container yet
         displayedMessageIds.clear();
         displayedImageFileNames.clear();
@@ -307,6 +316,9 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (data.externalId) {
                         localStorage.setItem('chat_user_id', data.externalId);
                     }
+                    
+                    // Store appUserId for this conversation (for restoration after refresh)
+                    localStorage.setItem(`chat_appUserId_${conversationId}`, appUserId);
 
                     console.log("✅ [CHAT] Conversation created:", {
                         conversationId: conversationId.substring(0, 10) + '...'
@@ -736,6 +748,13 @@ document.addEventListener('DOMContentLoaded', function () {
             })
             .then(data => {
                 console.log(`📨 [MESSAGES] Received ${data.messages?.length || 0} messages from ${data.source}`);
+
+                // Restore appUserId from API response if we don't have it
+                if (data.appUserId && !appUserId) {
+                    appUserId = data.appUserId;
+                    localStorage.setItem(`chat_appUserId_${conversationId}`, appUserId);
+                    console.log(`📨 [MESSAGES] Restored appUserId from API: ${appUserId.substring(0, 10)}...`);
+                }
 
                 // If we have a ticket ID, we're in an escalated session
                 if (data.ticket_id) {

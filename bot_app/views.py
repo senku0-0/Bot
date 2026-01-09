@@ -2169,6 +2169,7 @@ def get_full_chat_history(request: HttpRequest) -> JsonResponse:
     
     try:
         all_messages = []
+        app_user_id = None  # Will be populated from Sunshine API
         # Use content fingerprint for deduplication (IDs differ between APIs)
         seen_fingerprints = set()
         
@@ -2184,6 +2185,25 @@ def get_full_chat_history(request: HttpRequest) -> JsonResponse:
             # Use first 19 chars of timestamp (YYYY-MM-DDTHH:MM:SS) to ignore milliseconds
             received = (msg.get("received") or "")[:19]
             return f"{author_type}:{received}:{text}"
+        
+        # ========================================================================
+        # STEP 0: Fetch conversation metadata to get appUserId
+        # ========================================================================
+        try:
+            auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+            conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}"
+            conv_response = requests.get(conv_url, auth=auth, timeout=10)
+            if conv_response.status_code == 200:
+                conv_data = conv_response.json()
+                # Get the first participant of type "user"
+                participants = conv_data.get("conversation", {}).get("participants", [])
+                for p in participants:
+                    if p.get("userExternalId") or p.get("userId"):
+                        app_user_id = p.get("userId") or p.get("userExternalId")
+                        logger.info(f"[FULL-HISTORY] Found appUserId: {app_user_id[:15]}...")
+                        break
+        except Exception as conv_err:
+            logger.warning(f"[FULL-HISTORY] Could not fetch conversation metadata: {conv_err}")
         
         # ========================================================================
         # STEP 1: Always fetch Sunshine messages first (has bot + user messages)
@@ -2272,7 +2292,8 @@ def get_full_chat_history(request: HttpRequest) -> JsonResponse:
             "messages": all_messages,
             "source": "combined",
             "ticket_id": ticket_id,
-            "conversation_id": conversation_id
+            "conversation_id": conversation_id,
+            "appUserId": app_user_id  # Include for frontend restoration
         })
         
     except Exception as e:
@@ -2398,14 +2419,19 @@ def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, An
                 att_content_type = att.get("content_type", "")
                 att_file_name = att.get("file_name", "") or att.get("name", "")
                 
+                logger.info(f"[FULL-HISTORY] Attachment raw: content_type={att_content_type}, file_name={att_file_name}, full_att={att}")
+                
                 if att_url:
                     logger.info(f"[FULL-HISTORY] Found attachment: {att_file_name} - {att_url[:100]}")
                     
-                    # Determine if it's an image
+                    # Determine if it's an image - check content_type, file extension, and URL
                     is_image = (
                         att_content_type.startswith("image/") or
-                        any(ext in att_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'])
+                        any(ext in att_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']) or
+                        any(ext in att_file_name.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'])
                     )
+                    
+                    logger.info(f"[FULL-HISTORY] Attachment is_image={is_image}, content_type={att_content_type}")
                     
                     # Use proxy URL for Zendesk-hosted images
                     proxied_url = get_proxied_image_url(att_url) if is_image else att_url
@@ -2516,19 +2542,26 @@ def get_sunshine_messages_list(conversation_id: str) -> List[Dict[str, Any]]:
             if content.get("type") == "image":
                 media_url = content.get("mediaUrl", "")
                 if media_url:
+                    logger.info(f"[SUNSHINE-LIST] Found IMAGE: {media_url[:80]}...")
                     message["attachments"] = [{
                         "url": get_proxied_image_url(media_url),
                         "type": "image",
-                        "fileName": content.get("name", "image")
+                        "fileName": content.get("name", "image"),
+                        "size": content.get("size", 0)
                     }]
             # Handle file attachments
             elif content.get("type") == "file":
                 media_url = content.get("mediaUrl", "")
                 if media_url:
+                    logger.info(f"[SUNSHINE-LIST] Found FILE: {content.get('name', '')} - {media_url[:80]}...")
+                    # Check if it's actually an image based on file extension
+                    file_name = content.get("name", "")
+                    is_actually_image = any(ext in file_name.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'])
                     message["attachments"] = [{
                         "url": get_proxied_image_url(media_url),
-                        "fileName": content.get("name", ""),
-                        "type": "file"
+                        "fileName": file_name,
+                        "type": "image" if is_actually_image else "file",
+                        "size": content.get("size", 0)
                     }]
             
             messages.append(message)
