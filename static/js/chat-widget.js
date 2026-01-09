@@ -659,6 +659,10 @@ document.addEventListener('DOMContentLoaded', function () {
             console.log(`✅ [WEBSOCKET-TEST] Test message ${testResult ? 'sent' : 'failed to send'}`);
             return testResult;
         }
+
+        isConnected() {
+            return this.connected;
+        }
     }
 
     // ============================================================================
@@ -1861,6 +1865,29 @@ document.addEventListener('DOMContentLoaded', function () {
         console.log('ℹ️ [INIT] No active conversation to restore');
         showConversationList();
     }
+
+    // Restore the most recently updated conversation on page load
+    const conversations = getStoredConversations();
+    if (conversations.length > 0) {
+        // Sort conversations by updatedAt timestamp in descending order
+        conversations.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+        const mostRecentConversation = conversations[0];
+        console.log('🔄 [INIT] Restoring most recent conversation:', mostRecentConversation.id);
+        openExistingConversation(mostRecentConversation.id);
+    } else {
+        console.log('ℹ️ [INIT] No existing conversations to restore');
+        showConversationList();
+    }
+
+    // Ensure WebSocket is stable before allowing interactions
+    const checkWebSocket = setInterval(() => {
+        if (sunshineSocket && sunshineSocket.isConnected()) {
+            console.log('✅ [INIT] WebSocket is connected');
+            clearInterval(checkWebSocket);
+        } else {
+            console.warn('⚠️ [INIT] Waiting for WebSocket connection...');
+        }
+    }, 500);
 
     // Global debug functions
     window.debugChat = {
