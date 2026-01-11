@@ -210,8 +210,20 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Check if we're currently viewing a conversation
     function isViewingConversation(convId) {
-        const isViewing = isChatOpen && currentView === 'chat' && conversationId === convId;
-        console.log(`🔔 [NOTIFICATIONS] isViewingConversation check - chatOpen: ${isChatOpen}, view: ${currentView}, id: ${convId?.substring(0, 10)}..., match: ${conversationId?.substring(0, 10)}... = ${isViewing}`);
+        if (!convId) {
+            console.log(`🔔 [NOTIFICATIONS] isViewingConversation - no convId provided`);
+            return false;
+        }
+        
+        const idMatch = conversationId === convId;
+        const isViewing = isChatOpen && currentView === 'chat' && idMatch;
+        
+        console.log(`🔔 [NOTIFICATIONS] isViewingConversation check:`);
+        console.log(`   - chatOpen: ${isChatOpen}, view: ${currentView}, idMatch: ${idMatch}`);
+        console.log(`   - param convId: ${convId.substring(0, 10)}...`);
+        console.log(`   - current conversationId: ${conversationId?.substring(0, 10) || 'null'}...`);
+        console.log(`   - RESULT: ${isViewing}`);
+        
         return isViewing;
     }
 
@@ -810,7 +822,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         processAgentMessage(message) {
-            console.log('🎯 [WEBSOCKET] Processing agent message:', message);
+            console.log('🎯 [WEBSOCKET] Processing agent message:', JSON.stringify(message).substring(0, 300));
 
             // Check if this is an agent message
             const isAgent = message.author && (
@@ -831,7 +843,8 @@ document.addEventListener('DOMContentLoaded', function () {
             const agentName = message.author?.displayName || 'Agent';
             const msgConversationId = message.conversationId || this.conversationId;
 
-            console.log(`🎯 [WEBSOCKET] Agent: ${agentName}, ConvId: ${msgConversationId?.substring(0, 10)}..., Text: ${text.substring(0, 100)}...`);
+            console.log(`🎯 [WEBSOCKET] ✅ Agent message detected: ${agentName} in ${msgConversationId?.substring(0, 10)}...`);
+            console.log(`🎯 [WEBSOCKET] Text: ${text.substring(0, 100)}...`);
 
             // Skip duplicates
             if (displayedMessageIds.has(messageId)) {
@@ -842,16 +855,23 @@ document.addEventListener('DOMContentLoaded', function () {
             // ============================================================================
             // NOTIFICATION: Increment unread count if not viewing this conversation
             // ============================================================================
-            if (msgConversationId && !isViewingConversation(msgConversationId)) {
-                console.log(`🔔 [NOTIFICATIONS] New agent message in conversation ${msgConversationId.substring(0, 10)}... (not viewing)`);
-                incrementUnreadCount(msgConversationId);
-                playNotificationSound();
+            if (msgConversationId) {
+                const isViewing = isViewingConversation(msgConversationId);
+                console.log(`🔔 [NOTIFICATIONS] Agent message in ${msgConversationId.substring(0, 10)}... - currently viewing: ${isViewing}`);
                 
-                // Update conversation in list with new message preview
-                saveConversation(msgConversationId, null, text.substring(0, 50), new Date().toISOString());
-            } else if (msgConversationId === conversationId) {
-                console.log(`🔔 [NOTIFICATIONS] Agent message for currently viewed conversation - clearing unread`);
-                clearUnreadCount(msgConversationId);
+                if (!isViewing) {
+                    console.log(`🔔 [NOTIFICATIONS] ✅ Incrementing unread count`);
+                    incrementUnreadCount(msgConversationId);
+                    playNotificationSound();
+                    
+                    // Update conversation in list with new message preview
+                    saveConversation(msgConversationId, null, text.substring(0, 50), new Date().toISOString());
+                } else {
+                    console.log(`🔔 [NOTIFICATIONS] User is viewing this conversation - clearing unread`);
+                    clearUnreadCount(msgConversationId);
+                }
+            } else {
+                console.warn(`⚠️ [WEBSOCKET] No conversation ID available`);
             }
 
             // Only render if this is the currently active conversation
