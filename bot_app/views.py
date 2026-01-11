@@ -112,6 +112,17 @@ def is_conversation_log_entry(text: str) -> bool:
 
         # ⭐ NEW: Detect if message contains previous log timestamps
         r'Support Agent:.*Guest User:.*uploaded:',
+
+        # New patterns for the provided log
+        r'Escalation Reason:.*',  # Matches escalation reason lines
+        r'Category:.*',  # Matches category lines
+        r'uploaded:.*',  # Matches file upload details
+        r'URL:.*',  # Matches file upload URL
+        r'Type:.*',  # Matches file type
+        r'Size:.*',  # Matches file size,
+
+        # ⭐ NEW: Nested timestamps in logs
+        r'\(\d{1,2}:\d{2}:\d{2}\).*\(\d{1,2}:\d{2}:\d{2}\).*\(\d{1,2}:\d{2}:\d{2}\)',
     ]
 
     for pattern in conversation_log_patterns:
@@ -1245,6 +1256,27 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
     except Exception as e:
         logger.exception(f"[SUNSHINE-AGENT] Error processing message event: {str(e)}")
 
+# Updated WebSocket handler to filter out unwanted conversation logs
+# ============================================================================
+def send_webhook_message(conversation_id: str, message: dict) -> None:
+    """
+    Send a message to the WebSocket client.
+    """
+    text = message.get("content", {}).get("text", "")
+    if is_conversation_log_entry(text):
+        logger.info("[WEBSOCKET-HANDLER] ✂️ Filtered conversation log - not sending to WebSocket")
+        return
+
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_send)(
+        f"chat_{conversation_id}",
+        {
+            "type": "chat.message",
+            "message": message,
+        },
+    )
+    logger.info(f"[WEBSOCKET-HANDLER] ✅ Sent message to WebSocket: {text[:100]}")
+
 @csrf_exempt
 def send_to_zendesk(request: HttpRequest) -> JsonResponse:
     """
@@ -1712,6 +1744,7 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                         conv_match = re.search(r'\[?Sunshine Conversation:\s*(\S+?)\]?(?:\s|$)', ticket_description)
                         if conv_match:
                             conversation_id = conv_match.group(1).strip().rstrip(']')
+
                             logger.info(f"[NOTIFICATION-WEBHOOK] ✅ Found conversation ID in description: {conversation_id}")
                         else:
                             logger.info(f"[NOTIFICATION-WEBHOOK] 🔍 Pattern 'Sunshine Conversation:' not found in description")
@@ -2636,7 +2669,7 @@ def get_sunshine_messages_fallback(conversation_id: str) -> JsonResponse:
     except Exception as e:
         logger.exception(f"[FULL-HISTORY] Sunshine fallback error: {e}")
         return JsonResponse({"messages": [], "source": "error", "error": str(e)})
-
+    
 
 # ============================================================================
 # Image Proxy: Fetch Zendesk-hosted images through authenticated backend
