@@ -184,12 +184,30 @@ SUNSHINE_API_BASE_URL = os.getenv("SUNSHINE_API_BASE_URL", "https://api.smooch.i
 def forward_agent_message_to_websocket(conversation_id: str, message_text: str, agent_name: str = "Agent") -> bool:
     """
     Forward agent messages to WebSocket for instant UI updates.
+    ALSO sends SSE notifications for users on conversation list.
     """
     try:
         # ⭐ CRITICAL: Filter out conversation log entries BEFORE forwarding
         if is_conversation_log_entry(message_text):
             logger.info(f"[WEBSOCKET] ✂️ BLOCKED conversation log entry from WebSocket: {message_text[:100]}...")
             return False
+        
+        # ⭐ NEW: Send SSE notification (for users on conversation list viewing badge)
+        try:
+            unread_count = cache.get(f'unread_{conversation_id}', 0) + 1
+            cache.set(f'unread_{conversation_id}', unread_count, timeout=604800)  # 7 days
+            
+            send_notification_to_client(conversation_id, {
+                'type': 'new_message',
+                'conversationId': conversation_id,
+                'agentName': agent_name,
+                'messagePreview': message_text[:100],
+                'unreadCount': unread_count,
+                'timestamp': datetime.now().isoformat()
+            })
+            logger.info(f"[WEBSOCKET] 📬 SSE notification sent (unread: {unread_count})")
+        except Exception as sse_err:
+            logger.error(f"[WEBSOCKET] Failed to send SSE notification: {sse_err}")
         
         # Get the channel layer
         channel_layer = get_channel_layer()
@@ -1118,6 +1136,9 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
     This includes both user messages AND agent messages.
     """
     try:
+        # ⭐ DEBUG: Log entry to ensure this is being called
+        logger.info(f"[SUNSHINE-WEBHOOK] 🎯 process_message_event called!")
+        
         payload = event_data.get("payload", {})
         conversation = payload.get("conversation", {})
         conversation_id = conversation.get("id")
@@ -1125,6 +1146,8 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
         if not conversation_id:
             logger.error("[SUNSHINE-AGENT] No conversation ID in message event")
             return
+        
+        logger.info(f"[SUNSHINE-WEBHOOK] Processing message for conversation: {conversation_id}")
         
         # Check active switchboard integration
         active_integration = conversation.get("activeSwitchboardIntegration", {})
@@ -1138,6 +1161,8 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
         if not message:
             logger.error("[SUNSHINE-AGENT] No message in payload")
             return
+        
+        logger.info(f"[SUNSHINE-WEBHOOK] Message found, checking author...")
         
         # Get message details
         author = message.get("author", {})
