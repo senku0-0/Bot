@@ -230,7 +230,6 @@ document.addEventListener('DOMContentLoaded', function () {
         if (isAgentConnected) {
             chatInputArea.style.display = 'flex';
             chatHeaderTitle.textContent = restoredAgentName;
-            // Also update global storage for compatibility
             localStorage.setItem('chat_agentName', restoredAgentName);
         } else {
             chatInputArea.style.display = 'none';
