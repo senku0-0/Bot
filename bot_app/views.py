@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from django.http import JsonResponse, HttpResponseForbidden, HttpRequest, HttpResponse, StreamingHttpResponse
 from django.views.decorators.csrf import csrf_exempt
-import json, hmac, hashlib, os, base64, logging, sys, uuid, re, time
+import json, hmac, hashlib, os, base64, logging, sys, uuid, re, time, asyncio
 from typing import Optional, Dict, Any, Union, List
 from dotenv import load_dotenv
 import requests
@@ -2830,10 +2830,10 @@ def proxy_zendesk_image(request: HttpRequest) -> HttpResponse:
 # ============================================================================
 # SSE: Server-Sent Events for Real-Time Notifications
 # ============================================================================
-def notification_stream_generator(conversation_id: str):
+async def notification_stream_generator(conversation_id: str):
     """
-    Generator for SSE stream. Yields SSE-formatted messages.
-    This is the proper way to do SSE in Django.
+    Async generator for SSE stream. Yields SSE-formatted messages.
+    This is the proper async-compatible way to do SSE in Django.
     """
     logger.info(f"[SSE] 🎬 Generator started for: {conversation_id}")
     
@@ -2842,23 +2842,23 @@ def notification_stream_generator(conversation_id: str):
     logger.info(f"[SSE] ✅ Client connected: {conversation_id}")
     
     # Keep connection alive for 5 minutes
-    start_time = time.time()
+    start_time = asyncio.get_event_loop().time()
     timeout = 300
-    last_keepalive = time.time()
+    last_keepalive = start_time
     keepalive_interval = 30  # Send keepalive every 30 seconds
     
     try:
         while True:
             # Check timeout
-            if time.time() - start_time > timeout:
+            current_time = asyncio.get_event_loop().time()
+            if current_time - start_time > timeout:
                 logger.info(f"[SSE] Connection timeout for {conversation_id}")
                 break
             
             # Send keepalive every 30 seconds
-            now = time.time()
-            if now - last_keepalive >= keepalive_interval:
+            if current_time - last_keepalive >= keepalive_interval:
                 yield ": keepalive\n\n"
-                last_keepalive = now
+                last_keepalive = current_time
             
             # Check for notification in cache
             notification_key = f'notification_{conversation_id}'
@@ -2870,10 +2870,10 @@ def notification_stream_generator(conversation_id: str):
                 yield f"event: new_message\ndata: {json.dumps(notification)}\n\n"
                 cache.delete(notification_key)
             
-            # Small sleep to avoid busy waiting (100ms)
-            time.sleep(0.1)
+            # Small async sleep to avoid busy waiting (100ms)
+            await asyncio.sleep(0.1)
             
-    except GeneratorExit:
+    except asyncio.CancelledError:
         logger.info(f"[SSE] 🔌 Client disconnected: {conversation_id}")
     except Exception as e:
         logger.exception(f"[SSE] Error in generator for {conversation_id}: {e}")
@@ -2881,7 +2881,7 @@ def notification_stream_generator(conversation_id: str):
 
 
 @csrf_exempt
-def notification_stream(request: HttpRequest, conversation_id: str) -> HttpResponse:
+async def notification_stream(request: HttpRequest, conversation_id: str) -> HttpResponse:
     """
     Server-Sent Events (SSE) endpoint for real-time notifications.
     
@@ -2895,7 +2895,7 @@ def notification_stream(request: HttpRequest, conversation_id: str) -> HttpRespo
     try:
         logger.info(f"[SSE] Client connecting to notification stream: {conversation_id}")
         
-        # Set up SSE response with streaming generator
+        # Set up SSE response with async streaming generator
         response = StreamingHttpResponse(
             notification_stream_generator(conversation_id),
             content_type='text/event-stream',
