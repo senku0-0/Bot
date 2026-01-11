@@ -2830,6 +2830,56 @@ def proxy_zendesk_image(request: HttpRequest) -> HttpResponse:
 # ============================================================================
 # SSE: Server-Sent Events for Real-Time Notifications
 # ============================================================================
+def notification_stream_generator(conversation_id: str):
+    """
+    Generator for SSE stream. Yields SSE-formatted messages.
+    This is the proper way to do SSE in Django.
+    """
+    logger.info(f"[SSE] 🎬 Generator started for: {conversation_id}")
+    
+    # Send initial connection message
+    yield f"event: connected\ndata: {json.dumps({'type': 'connected', 'conversationId': conversation_id})}\n\n"
+    logger.info(f"[SSE] ✅ Client connected: {conversation_id}")
+    
+    # Keep connection alive for 5 minutes
+    start_time = time.time()
+    timeout = 300
+    last_keepalive = time.time()
+    keepalive_interval = 30  # Send keepalive every 30 seconds
+    
+    try:
+        while True:
+            # Check timeout
+            if time.time() - start_time > timeout:
+                logger.info(f"[SSE] Connection timeout for {conversation_id}")
+                break
+            
+            # Send keepalive every 30 seconds
+            now = time.time()
+            if now - last_keepalive >= keepalive_interval:
+                yield ": keepalive\n\n"
+                last_keepalive = now
+            
+            # Check for notification in cache
+            notification_key = f'notification_{conversation_id}'
+            notification = cache.get(notification_key)
+            
+            if notification:
+                # Send notification and remove from cache
+                logger.info(f"[SSE] 📤 Sending notification for {conversation_id}: {notification}")
+                yield f"event: new_message\ndata: {json.dumps(notification)}\n\n"
+                cache.delete(notification_key)
+            
+            # Small sleep to avoid busy waiting (100ms)
+            time.sleep(0.1)
+            
+    except GeneratorExit:
+        logger.info(f"[SSE] 🔌 Client disconnected: {conversation_id}")
+    except Exception as e:
+        logger.exception(f"[SSE] Error in generator for {conversation_id}: {e}")
+        yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+
 @csrf_exempt
 def notification_stream(request: HttpRequest, conversation_id: str) -> HttpResponse:
     """
@@ -2845,8 +2895,9 @@ def notification_stream(request: HttpRequest, conversation_id: str) -> HttpRespo
     try:
         logger.info(f"[SSE] Client connecting to notification stream: {conversation_id}")
         
-        # Set up SSE response
-        response = HttpResponse(
+        # Set up SSE response with streaming generator
+        response = StreamingHttpResponse(
+            notification_stream_generator(conversation_id),
             content_type='text/event-stream',
             status=200
         )
@@ -2854,47 +2905,12 @@ def notification_stream(request: HttpRequest, conversation_id: str) -> HttpRespo
         response['Connection'] = 'keep-alive'
         response['X-Accel-Buffering'] = 'no'  # Disable buffering in proxies
         
-        # ⭐ CRITICAL FIX: Send initial connection with proper SSE format
-        # SSE format: event: <type>\ndata: <json>\n\n
-        response.write(f"event: connected\ndata: {json.dumps({'type': 'connected', 'conversationId': conversation_id})}\n\n")
-        response.flush()
-        
-        logger.info(f"[SSE] ✅ Client connected: {conversation_id}")
-        
-        # Keep connection alive with periodic pings
-        start_time = time.time()
-        timeout = 300  # 5 minute timeout
-        
-        while True:
-            # Check timeout
-            if time.time() - start_time > timeout:
-                logger.info(f"[SSE] Connection timeout for {conversation_id}")
-                break
-            
-            # Check for notification in cache
-            notification_key = f'notification_{conversation_id}'
-            notification = cache.get(notification_key)
-            
-            if notification:
-                # ⭐ CRITICAL FIX: Send with proper SSE format including event type
-                logger.info(f"[SSE] 📤 Sending notification for {conversation_id}: {notification}")
-                response.write(f"event: new_message\ndata: {json.dumps(notification)}\n\n")
-                response.flush()
-                cache.delete(notification_key)
-            
-            # Send keepalive ping every 30 seconds
-            response.write(": keepalive\n\n")
-            response.flush()
-            
-            # Sleep briefly to avoid busy waiting
-            time.sleep(1)
-        
-        logger.info(f"[SSE] 🔌 Client disconnected: {conversation_id}")
         return response
         
     except Exception as e:
         logger.exception(f"[SSE] Error in notification stream for {conversation_id}: {e}")
         return HttpResponse(f"Error: {str(e)}", status=500, content_type='text/event-stream')
+
 
 
 def send_notification_to_client(conversation_id: str, message_data: Dict[str, Any]) -> None:
