@@ -2829,8 +2829,9 @@ def notification_stream(request: HttpRequest, conversation_id: str) -> HttpRespo
         response['Connection'] = 'keep-alive'
         response['X-Accel-Buffering'] = 'no'  # Disable buffering in proxies
         
-        # Send initial connection established message
-        response.write(f"data: {json.dumps({'type': 'connected', 'conversationId': conversation_id})}\n\n")
+        # ⭐ CRITICAL FIX: Send initial connection with proper SSE format
+        # SSE format: event: <type>\ndata: <json>\n\n
+        response.write(f"event: connected\ndata: {json.dumps({'type': 'connected', 'conversationId': conversation_id})}\n\n")
         response.flush()
         
         logger.info(f"[SSE] ✅ Client connected: {conversation_id}")
@@ -2850,9 +2851,9 @@ def notification_stream(request: HttpRequest, conversation_id: str) -> HttpRespo
             notification = cache.get(notification_key)
             
             if notification:
-                # Send notification and remove from cache
+                # ⭐ CRITICAL FIX: Send with proper SSE format including event type
                 logger.info(f"[SSE] 📤 Sending notification for {conversation_id}: {notification}")
-                response.write(f"data: {json.dumps(notification)}\n\n")
+                response.write(f"event: new_message\ndata: {json.dumps(notification)}\n\n")
                 response.flush()
                 cache.delete(notification_key)
             
