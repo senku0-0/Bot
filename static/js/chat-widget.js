@@ -468,7 +468,8 @@ document.addEventListener('DOMContentLoaded', function () {
         
         // ⭐ NEW: Disconnect SSE when viewing chat (WebSocket handles notifications)
         console.log('📡 [SSE] Disconnecting from notification stream (using WebSocket instead)');
-        disconnectSSE();        currentView = 'chat';
+        disconnectSSE();
+        currentView = 'chat';
         conversationListView.style.display = 'none';
         chatView.style.display = 'flex';
         backBtn.style.display = 'block';
