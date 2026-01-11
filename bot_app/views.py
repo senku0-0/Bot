@@ -60,37 +60,72 @@ def is_conversation_log_entry(text: str) -> bool:
     - Answer Bot automated messages
     - Ticket resolution notifications
     - Sunshine Conversation references
+    - Support Agent conversation summaries
     """
     if not text:
         return False
-    
+
     conversation_log_patterns = [
+        # ⭐ NEW: Support Agent summaries (your specific issue)
+        r'\(\d{1,2}:\d{2}:\d{2}\)\s+Support Agent:',
+        r'\(\d{1,2}:\d{2}:\d{2}\)\s+Guest User:',
+        r'\(\d{1,2}:\d{2}:\d{2}\)\s+Ashad Shaikh:',
+
         # Pattern: Single timestamp at start like "(19:57:26) Guest User:"
         r'^\(\d{1,2}:\d{2}:\d{2}\)\s+\w+',
+
         # Pattern: Multiple timestamps like (HH:MM:SS) repeated
         r'\(\d{1,2}:\d{2}:\d{2}\)\s+\w+.*\(\d{1,2}:\d{2}:\d{2}\)',
+
+        # ⭐ NEW: Recursive log detection (multiple timestamps in one message)
+        r'\(\d{1,2}:\d{2}:\d{2}\).*(\(\d{1,2}:\d{2}:\d{2}\)).*(\(\d{1,2}:\d{2}:\d{2}\))',
+
         # Pattern: Answer Bot messages
         r'Answer Bot:',
+
         # Pattern: Waiting on your response messages
         r'Waiting on your response',
+
         # Pattern: Ticket will be marked as solved
         r'ticket will be marked as solved',
+
         # Pattern: We haven't heard from you
         r"haven't heard from you",
+
         # Pattern: Messaging session ended
         r'Messaging session ended',
+
         # Pattern: This ticket will be marked
         r'This ticket will be marked',
+
         # Pattern: Sunshine Conversation reference
         r'\[Sunshine Conversation',
+
         # Pattern: Escalation reason in log format
         r'Escalation Reason:.*Category:',
+
+        # ⭐ NEW: File upload logs
+        r'uploaded:.*URL:.*Type:.*Size:',
+
+        # ⭐ NEW: URL patterns in logs
+        r'__https://.*zendesk\.com/sc/attachments.*__',
+
+        # ⭐ NEW: Detect if message contains previous log timestamps
+        r'Support Agent:.*Guest User:.*uploaded:',
     ]
-    
+
     for pattern in conversation_log_patterns:
         if re.search(pattern, text, re.IGNORECASE):
+            logger.info(f"[FILTER] ✂️ Matched pattern: {pattern[:50]}... in text: {text[:100]}...")
             return True
-    
+
+    # ⭐ NEW: Additional heuristic - if message is very long and contains multiple timestamps
+    if len(text) > 500:  # Long message
+        timestamp_count = len(re.findall(r'\(\d{1,2}:\d{2}:\d{2}\)', text))
+        if timestamp_count >= 3:  # Contains 3+ timestamps
+            logger.info(f"[FILTER] ✂️ Filtered long message with {timestamp_count} timestamps")
+            return True
+
     return False
 
 # ============================================================================
@@ -1579,87 +1614,19 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                 logger.info("[NOTIFICATION-WEBHOOK] Ignoring user comment (not staff)")
                 return JsonResponse({"status": "ignored_user_comment"})
             
-            # Extract ticket ID
-            ticket_id = None
-            if 'ticket' in event_data:
-                ticket_id = str(event_data['ticket'].get('id', ''))
-            elif 'ticket_id' in event_data:
-                ticket_id = str(event_data['ticket_id'])
-            
-            if not ticket_id:
-                ticket_id = extract_ticket_id_from_data(data)
-            
-            if not ticket_id:
-                logger.error("[NOTIFICATION-WEBHOOK] No ticket ID found in notification")
-                return JsonResponse({"status": "no_ticket_id"})
-            
-            if not comment_body or comment_body.strip() == '':
-                logger.info("[NOTIFICATION-WEBHOOK] Empty comment body")
-                return JsonResponse({"status": "ignored_empty"})
-            
-            # Filter out Zendesk Conversation Log entries
+            # ⭐ NEW: Log the comment body length for debugging
+            logger.info(f"[NOTIFICATION-WEBHOOK] Comment length: {len(comment_body)}, preview: {comment_body[:200]}...")
+
+            # Skip if not staff/agent
+            if not is_staff:
+                logger.info("[NOTIFICATION-WEBHOOK] Ignoring user comment (not staff)")
+                return JsonResponse({"status": "ignored_user_comment"})
+
+            # ⭐ CRITICAL FIX: Filter out conversation logs BEFORE processing
             if is_conversation_log_entry(comment_body):
-                logger.info("[NOTIFICATION-WEBHOOK] Ignoring conversation log entry")
+                logger.info("[NOTIFICATION-WEBHOOK] ✂️ FILTERED conversation log - not forwarding to user")
                 return JsonResponse({"status": "ignored_conversation_log"})
-            
-            # Resolve conversation ID
-            conversation_id = resolve_conversation_id_for_ticket(ticket_id)
-            
-            if not conversation_id:
-                logger.error(f"[NOTIFICATION-WEBHOOK] No conversation mapping for ticket {ticket_id}")
-                return JsonResponse({
-                    "status": "no_conversation_mapping",
-                    "ticket_id": ticket_id
-                })
-            
-            # Get agent name
-            agent_name = comment_author.get('name', 'Support Agent')
-            if not agent_name or agent_name.lower() == 'zendesk':
-                agent_name = "Support Agent"
-            
-            logger.info(f"[NOTIFICATION-WEBHOOK] Forwarding agent comment: ticket={ticket_id}, conv={conversation_id}")
-            
-            # Forward to Sunshine
-            auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
-            url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
-            
-            payload = {
-                "author": {
-                    "type": "business",
-                    "displayName": agent_name
-                },
-                "content": {
-                    "type": "text",
-                    "text": comment_body
-                }
-            }
-            
-            response = requests.post(url, json=payload, auth=auth)
-            
-            if response.status_code in [200, 201]:
-                # Forward to WebSocket
-                forward_agent_message_to_websocket(conversation_id, comment_body, agent_name)
-                logger.info(f"[NOTIFICATION-WEBHOOK] Successfully forwarded comment to conversation {conversation_id}")
-                
-                return JsonResponse({
-                    "status": "forwarded",
-                    "ticket_id": ticket_id,
-                    "conversation_id": conversation_id,
-                    "agent_name": agent_name
-                })
-            else:
-                logger.error(f"[NOTIFICATION-WEBHOOK] Failed to forward: {response.status_code} - {response.text}")
-                return JsonResponse({
-                    "status": "forward_failed",
-                    "error": response.text
-                }, status=500)
-        
-        # ============================================================================
-        # NEW CRITICAL SECTION: Handle ticket.created event to update custom field
-        # ============================================================================
-        elif 'ticket.created' in event_type:
-            logger.info("[NOTIFICATION-WEBHOOK] Ticket created event - ATTEMPTING TO SET CUSTOM FIELD")
-            
+
             # Extract ticket ID
             ticket_id = None
             if 'ticket' in event_data:
@@ -1767,7 +1734,7 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                     
             except Exception as e:
                 logger.exception(f"[NOTIFICATION-WEBHOOK] ❌ Exception fetching ticket from Zendesk: {e}")
-            
+
             # ============================================================================
             # Fallback: Try webhook payload description (less reliable)
             # ============================================================================
@@ -2171,7 +2138,7 @@ def get_full_chat_history(request: HttpRequest) -> JsonResponse:
     conversation_id = request.GET.get("conversationId")
     if not conversation_id:
         return JsonResponse({"error": "Missing conversationId"}, status=400)
-    
+
     logger.info(f"[FULL-HISTORY] 📜 Fetching full history for conversation: {conversation_id}")
     
     try:
