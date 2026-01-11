@@ -349,6 +349,7 @@ document.addEventListener('DOMContentLoaded', function () {
     
     function showConversationList() {
         console.log('📋 [VIEW] Switching to conversation list view');
+        console.log(`⚠️ [VIEW] After this, new messages will show notification badges!`);
         currentView = 'list';
         conversationListView.style.display = 'flex';
         chatView.style.display = 'none';
@@ -372,6 +373,7 @@ document.addEventListener('DOMContentLoaded', function () {
     
     function showChatView() {
         console.log('💬 [VIEW] Switching to chat view');
+        console.log(`⚠️ [VIEW] If you get messages now, no badge will appear (you're viewing the conversation)`);
         currentView = 'chat';
         conversationListView.style.display = 'none';
         chatView.style.display = 'flex';
@@ -2221,21 +2223,47 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Global debug functions
     window.debugChat = {
-        status: () => ({
-            appUserId: appUserId ? appUserId.substring(0, 10) + '...' : null,
-            conversationId: conversationId ? conversationId.substring(0, 10) + '...' : null,
-            isAgentConnected,
-            webSocketConnected,
-            currentView,
-            storedConversations: getStoredConversations().length,
-            storedAppUserId: conversationId ? localStorage.getItem(`chat_appUserId_${conversationId}`) : null,
-            genericUserId: localStorage.getItem('chat_user_id'),
-            sunshineSocket: sunshineSocket ? {
-                connected: sunshineSocket.connected,
-                readyState: sunshineSocket.socket?.readyState,
-                conversationId: sunshineSocket.conversationId
-            } : 'No instance'
-        }),
+        status: () => {
+            const result = {
+                appUserId: appUserId ? appUserId.substring(0, 10) + '...' : null,
+                conversationId: conversationId ? conversationId.substring(0, 10) + '...' : null,
+                isChatOpen: isChatOpen,
+                currentView: currentView,
+                isViewingConversation: conversationId ? isViewingConversation(conversationId) : null,
+                isAgentConnected: isAgentConnected,
+                webSocketConnected: webSocketConnected,
+                storedConversations: getStoredConversations().length,
+                sunshineSocket: sunshineSocket ? {
+                    connected: sunshineSocket.connected,
+                    readyState: sunshineSocket.socket?.readyState,
+                    conversationId: sunshineSocket.conversationId
+                } : 'No instance',
+                notifications: {
+                    totalUnread: totalUnread,
+                    perConversation: Object.fromEntries(unreadCounts)
+                }
+            };
+            
+            // Pretty print for console
+            console.log('📊 [STATUS] Current Application State:');
+            console.log('  Chat:', { 
+                open: result.isChatOpen, 
+                view: result.currentView, 
+                viewingConv: result.isViewingConversation 
+            });
+            console.log('  Conversation:', {
+                id: result.conversationId,
+                agent: result.isAgentConnected,
+                stored: result.storedConversations
+            });
+            console.log('  WebSocket:', {
+                connected: result.webSocketConnected,
+                socket: result.sunshineSocket
+            });
+            console.log('  Notifications:', result.notifications);
+            
+            return result;
+        },
         testWebSocket: () => sunshineSocket ? sunshineSocket.testConnection() : 'No WebSocket',
         reconnect: () => sunshineSocket ? sunshineSocket.connect() : 'No WebSocket',
         fixAppUserId: () => {
@@ -2260,11 +2288,43 @@ document.addEventListener('DOMContentLoaded', function () {
             unreadCounts: Object.fromEntries(unreadCounts),
             totalUnread: totalUnread,
             currentView: currentView,
-            viewingConversation: conversationId
+            viewingConversation: conversationId,
+            isChatOpen: isChatOpen,
+            isViewingCheckFor: (convId) => {
+                const result = isViewingConversation(convId);
+                console.log(`📊 [DEBUG] isViewingConversation('${convId.substring(0, 10)}...') = ${result}`);
+                console.log(`   - isChatOpen: ${isChatOpen}`);
+                console.log(`   - currentView: ${currentView}`);
+                console.log(`   - conversationId: ${conversationId?.substring(0, 10) || 'null'}...`);
+                return result;
+            }
         }),
         clearNotifications: () => {
             markAllAsRead();
             console.log('✅ Cleared all notifications');
+        },
+        // ⭐ Test notification without needing backend message
+        testNotification: (convId = null) => {
+            const testConvId = convId || (conversationId || 'test_conv_12345');
+            console.log(`🧪 [TEST] Simulating agent message for: ${testConvId.substring(0, 10)}...`);
+            console.log(`🧪 [TEST] Current state: isChatOpen=${isChatOpen}, view=${currentView}, viewingConv=${conversationId?.substring(0, 10) || 'null'}...`);
+            
+            // Simulate the same check as processAgentMessage
+            const isViewing = isViewingConversation(testConvId);
+            console.log(`🧪 [TEST] isViewingConversation returned: ${isViewing}`);
+            
+            if (!isViewing) {
+                console.log(`🧪 [TEST] ✅ Would increment notification!`);
+                incrementUnreadCount(testConvId);
+            } else {
+                console.log(`🧪 [TEST] ⚠️ Not incrementing because user IS viewing this conversation`);
+                console.log(`🧪 [TEST] To test notifications:`);
+                console.log(`🧪 [TEST]   1. Close chat (click toggle button)`);
+                console.log(`🧪 [TEST]   2. Run window.debugChat.testNotification() again`);
+                console.log(`🧪 [TEST]   OR`);
+                console.log(`🧪 [TEST]   1. Switch to conversation list`);
+                console.log(`🧪 [TEST]   2. Run window.debugChat.testNotification()`);
+            }
         }
     };
 
