@@ -1199,6 +1199,20 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
             # Forward to WebSocket
             forward_agent_message_to_websocket(conversation_id, text, agent_name)
             
+            # ⭐ NEW: Send notification to clients via SSE (for conversation list)
+            unread_count = cache.get(f'unread_{conversation_id}', 0) + 1
+            cache.set(f'unread_{conversation_id}', unread_count, timeout=604800)  # 7 days
+            
+            send_notification_to_client(conversation_id, {
+                'type': 'new_message',
+                'conversationId': conversation_id,
+                'agentName': agent_name,
+                'messagePreview': text[:100],
+                'unreadCount': unread_count,
+                'timestamp': datetime.now().isoformat()
+            })
+            logger.info(f"[SUNSHINE-AGENT] 📬 Notification sent to SSE stream (unread: {unread_count})")
+            
             # Don't create a ticket for agent messages
             return
         
@@ -2786,3 +2800,90 @@ def proxy_zendesk_image(request: HttpRequest) -> HttpResponse:
     except Exception as e:
         logger.exception(f"[IMAGE-PROXY] Error: {e}")
         return HttpResponse(f"Error fetching image: {str(e)}", status=500)
+
+
+# ============================================================================
+# SSE: Server-Sent Events for Real-Time Notifications
+# ============================================================================
+@csrf_exempt
+def notification_stream(request: HttpRequest, conversation_id: str) -> HttpResponse:
+    """
+    Server-Sent Events (SSE) endpoint for real-time notifications.
+    
+    Clients connect to this endpoint to receive notifications about new messages
+    without keeping a persistent WebSocket connection.
+    
+    GET /api/notifications/stream/<conversation_id>
+    
+    Returns: Event stream (text/event-stream)
+    """
+    try:
+        logger.info(f"[SSE] Client connecting to notification stream: {conversation_id}")
+        
+        # Set up SSE response
+        response = HttpResponse(
+            content_type='text/event-stream',
+            status=200
+        )
+        response['Cache-Control'] = 'no-cache'
+        response['Connection'] = 'keep-alive'
+        response['X-Accel-Buffering'] = 'no'  # Disable buffering in proxies
+        
+        # Send initial connection established message
+        response.write(f"data: {json.dumps({'type': 'connected', 'conversationId': conversation_id})}\n\n")
+        response.flush()
+        
+        logger.info(f"[SSE] ✅ Client connected: {conversation_id}")
+        
+        # Keep connection alive with periodic pings
+        start_time = time.time()
+        timeout = 300  # 5 minute timeout
+        
+        while True:
+            # Check timeout
+            if time.time() - start_time > timeout:
+                logger.info(f"[SSE] Connection timeout for {conversation_id}")
+                break
+            
+            # Check for notification in cache
+            notification_key = f'notification_{conversation_id}'
+            notification = cache.get(notification_key)
+            
+            if notification:
+                # Send notification and remove from cache
+                logger.info(f"[SSE] 📤 Sending notification for {conversation_id}: {notification}")
+                response.write(f"data: {json.dumps(notification)}\n\n")
+                response.flush()
+                cache.delete(notification_key)
+            
+            # Send keepalive ping every 30 seconds
+            response.write(": keepalive\n\n")
+            response.flush()
+            
+            # Sleep briefly to avoid busy waiting
+            time.sleep(1)
+        
+        logger.info(f"[SSE] 🔌 Client disconnected: {conversation_id}")
+        return response
+        
+    except Exception as e:
+        logger.exception(f"[SSE] Error in notification stream for {conversation_id}: {e}")
+        return HttpResponse(f"Error: {str(e)}", status=500, content_type='text/event-stream')
+
+
+def send_notification_to_client(conversation_id: str, message_data: Dict[str, Any]) -> None:
+    """
+    Send a notification to a client via SSE.
+    Called by webhooks when agent messages arrive.
+    
+    Args:
+        conversation_id: Sunshine conversation ID
+        message_data: Notification payload
+    """
+    try:
+        notification_key = f'notification_{conversation_id}'
+        # Store notification in cache for 30 seconds
+        cache.set(notification_key, message_data, timeout=30)
+        logger.info(f"[SSE] 📬 Queued notification for {conversation_id}: {message_data.get('unreadCount', '?')} unread")
+    except Exception as e:
+        logger.error(f"[SSE] Failed to queue notification: {e}")

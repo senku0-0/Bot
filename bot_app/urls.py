@@ -15,4 +15,5 @@ urlpatterns = [
     path('zendesk/webhook', views.zendesk_webhook, name='zendesk_webhook'),  # CRITICAL!
     path('api/debug/group_send', views.debug_group_send, name='debug_group_send'),
     path('api/debug/redis_health', views.redis_health, name='redis_health'),
+    path('api/notifications/stream/<conversation_id>', views.notification_stream, name='notification_stream'),  # SSE
 ]

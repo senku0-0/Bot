@@ -253,6 +253,90 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // ============================================================================
+    // SSE: Server-Sent Events for Real-Time Notifications
+    // ============================================================================
+    let sseConnection = null;
+    let sseReconnectAttempts = 0;
+    const sseMaxReconnectAttempts = 10;
+    
+    function connectSSE(convId) {
+        if (!convId) {
+            console.log('⚠️ [SSE] No conversation ID to connect');
+            return;
+        }
+        
+        // Don't reconnect if already connected to this conversation
+        if (sseConnection && sseConnection.conversationId === convId && sseConnection.eventSource) {
+            console.log('✅ [SSE] Already connected to this conversation');
+            return;
+        }
+        
+        // Close existing connection
+        if (sseConnection && sseConnection.eventSource) {
+            console.log('🔌 [SSE] Closing existing connection');
+            sseConnection.eventSource.close();
+        }
+        
+        // Create new SSE connection
+        const url = `/api/notifications/stream/${convId}`;
+        console.log('🔌 [SSE] Connecting to:', url);
+        
+        const eventSource = new EventSource(url);
+        sseConnection = {
+            conversationId: convId,
+            eventSource: eventSource,
+            startTime: Date.now()
+        };
+        sseReconnectAttempts = 0;
+        
+        eventSource.addEventListener('connected', (e) => {
+            const data = JSON.parse(e.data);
+            console.log('✅ [SSE] Connected to notification stream:', data);
+        });
+        
+        eventSource.addEventListener('new_message', (e) => {
+            const data = JSON.parse(e.data);
+            console.log('📬 [SSE] ✅ Notification received:', data);
+            
+            // Only increment if NOT viewing this conversation
+            if (!isViewingConversation(data.conversationId)) {
+                console.log(`🔔 [SSE] Incrementing badge for ${data.conversationId.substring(0, 10)}...`);
+                incrementUnreadCount(data.conversationId, 1);
+                playNotificationSound();
+                
+                // Update conversation list with message preview
+                saveConversation(data.conversationId, null, data.messagePreview, data.timestamp);
+                renderConversationList();
+            } else {
+                console.log(`🔔 [SSE] User viewing conversation, not incrementing badge`);
+            }
+        });
+        
+        eventSource.onerror = (e) => {
+            console.error('❌ [SSE] Connection error:', e);
+            eventSource.close();
+            
+            // Attempt reconnection
+            if (sseReconnectAttempts < sseMaxReconnectAttempts) {
+                sseReconnectAttempts++;
+                const delay = Math.min(1000 * Math.pow(1.5, sseReconnectAttempts), 10000);
+                console.log(`🔄 [SSE] Reconnecting in ${delay}ms (attempt ${sseReconnectAttempts})`);
+                setTimeout(() => connectSSE(convId), delay);
+            } else {
+                console.error('❌ [SSE] Max reconnection attempts reached');
+            }
+        };
+    }
+    
+    function disconnectSSE() {
+        if (sseConnection && sseConnection.eventSource) {
+            console.log('🔌 [SSE] Disconnecting');
+            sseConnection.eventSource.close();
+            sseConnection = null;
+        }
+    }
+
+    // ============================================================================
     // CONVERSATION LIST MANAGEMENT
     // ============================================================================
     
@@ -356,6 +440,13 @@ document.addEventListener('DOMContentLoaded', function () {
         backBtn.style.display = 'none';
         chatHeaderTitle.textContent = 'Yatri Bandhu';
         
+        // ⭐ NEW: Connect to SSE for real-time notifications
+        // This allows badges to appear even when viewing conversation list
+        if (conversationId) {
+            console.log('📡 [SSE] Connecting to notification stream...');
+            connectSSE(conversationId);
+        }
+        
         // Reset current conversation state but keep the data
         if (conversationId) {
             // Save state before switching - include agent name for restoration
@@ -374,7 +465,10 @@ document.addEventListener('DOMContentLoaded', function () {
     function showChatView() {
         console.log('💬 [VIEW] Switching to chat view');
         console.log(`⚠️ [VIEW] If you get messages now, no badge will appear (you're viewing the conversation)`);
-        currentView = 'chat';
+        
+        // ⭐ NEW: Disconnect SSE when viewing chat (WebSocket handles notifications)
+        console.log('📡 [SSE] Disconnecting from notification stream (using WebSocket instead)');
+        disconnectSSE();        currentView = 'chat';
         conversationListView.style.display = 'none';
         chatView.style.display = 'flex';
         backBtn.style.display = 'block';
@@ -1318,10 +1412,11 @@ document.addEventListener('DOMContentLoaded', function () {
             toggleBtn.innerHTML = '💬';
             toggleBtn.setAttribute('aria-label', 'Open chat');
             
-            // Disconnect WebSocket when closing
+            // ⭐ Disconnect both WebSocket and SSE when closing chat
             if (sunshineSocket) {
                 sunshineSocket.disconnect();
             }
+            disconnectSSE();
 
             console.log('💬 [CHAT] Closed chat');
         }
