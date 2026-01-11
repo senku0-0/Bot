@@ -173,24 +173,34 @@ document.addEventListener('DOMContentLoaded', function () {
     function openExistingConversation(convId) {
         console.log('📂 [CONV] Opening existing conversation:', convId);
         
-        // Set the conversation ID
+        // Set the conversation ID FIRST
         conversationId = convId;
         localStorage.setItem('chat_current_conversation', convId);
         
-        // Restore appUserId for this conversation
+        // ⭐ CRITICAL FIX: Restore appUserId IMMEDIATELY
         const storedAppUserId = localStorage.getItem(`chat_appUserId_${convId}`);
         if (storedAppUserId) {
             appUserId = storedAppUserId;
-            console.log('📂 [CONV] Restored appUserId:', appUserId.substring(0, 10) + '...');
+            console.log('✅ [CONV] Restored appUserId:', appUserId.substring(0, 10) + '...');
         } else {
-            console.warn('⚠️ [CONV] No stored appUserId for this conversation');
+            // ⭐ NEW: Try to get from generic storage as fallback
+            const genericUserId = localStorage.getItem('chat_user_id');
+            if (genericUserId) {
+                appUserId = genericUserId;
+                // Store it for this conversation
+                localStorage.setItem(`chat_appUserId_${convId}`, genericUserId);
+                console.log('✅ [CONV] Using generic userId:', appUserId.substring(0, 10) + '...');
+            } else {
+                console.error('❌ [CONV] No appUserId found - will fetch from API');
+                appUserId = null;
+            }
         }
         
-        // Clear display state but DON'T clear the container yet
+        // Clear display state
         displayedMessageIds.clear();
         displayedImageFileNames.clear();
         
-        // Load conversation state from storage (per-conversation state)
+        // Load conversation state
         const convState = localStorage.getItem(`chat_conv_state_${convId}`);
         let restoredAgentName = 'Agent';
         if (convState) {
@@ -210,7 +220,7 @@ document.addEventListener('DOMContentLoaded', function () {
             agentJoinAnnounced = false;
         }
         
-        // Clear messages container BEFORE fetching new messages
+        // Clear messages container
         messagesContainer.innerHTML = '';
         
         // Switch to chat view
@@ -237,8 +247,54 @@ document.addEventListener('DOMContentLoaded', function () {
         sunshineSocket = new SunshineWebSocketManager(conversationId);
         sunshineSocket.connect();
         
-        // Fetch messages for this conversation
-        fetchMessages();
+        // ⭐ NEW: If we don't have appUserId, fetch it from API before fetching messages
+        if (!appUserId) {
+            console.log('🔄 [CONV] appUserId missing, fetching conversation details...');
+            fetchConversationDetails(convId).then(() => {
+                // After getting appUserId, fetch messages
+                fetchMessages();
+            });
+        } else {
+            // We have appUserId, fetch messages immediately
+            fetchMessages();
+        }
+    }
+    
+    function fetchConversationDetails(convId) {
+        return new Promise((resolve, reject) => {
+            console.log('🔍 [API] Fetching conversation details for:', convId);
+            
+            fetch(`/api/chat/get-messages?conversationId=${convId}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    // Try to extract appUserId from conversation data
+                    if (data.conversation && data.conversation.participants) {
+                        const userParticipant = data.conversation.participants.find(
+                            p => p.userExternalId || p.userId
+                        );
+                        if (userParticipant) {
+                            appUserId = userParticipant.userId || userParticipant.userExternalId;
+                            localStorage.setItem(`chat_appUserId_${convId}`, appUserId);
+                            localStorage.setItem('chat_user_id', appUserId);
+                            console.log('✅ [API] Restored appUserId from API:', appUserId.substring(0, 10) + '...');
+                            resolve();
+                            return;
+                        }
+                    }
+                    
+                    console.warn('⚠️ [API] Could not extract appUserId from response');
+                    resolve(); // Still resolve to continue
+                })
+                .catch(error => {
+                    console.error('❌ [API] Error fetching conversation details:', error);
+                    resolve(); // Don't reject, allow flow to continue
+                });
+        });
     }
     
     function startNewConversation() {
@@ -1148,6 +1204,7 @@ document.addEventListener('DOMContentLoaded', function () {
     function sendMessage() {
         const messageText = chatInput.value.trim();
 
+        // Handle pending image
         if (pendingImage) {
             const caption = messageText;
             sendDocument(pendingImage, caption);
@@ -1158,6 +1215,29 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         if (messageText === "") return;
+
+        // ⭐ NEW: Validate chat is initialized
+        if (!appUserId || !conversationId) {
+            console.error("❌ [SEND] Chat not initialized properly");
+            console.error("❌ [SEND] appUserId:", appUserId ? appUserId.substring(0, 10) + '...' : 'MISSING');
+            console.error("❌ [SEND] conversationId:", conversationId ? conversationId.substring(0, 10) + '...' : 'MISSING');
+            
+            // Try to restore from localStorage
+            if (conversationId && !appUserId) {
+                const storedUserId = localStorage.getItem(`chat_appUserId_${conversationId}`) 
+                                  || localStorage.getItem('chat_user_id');
+                if (storedUserId) {
+                    appUserId = storedUserId;
+                    console.log('✅ [SEND] Restored appUserId from storage:', appUserId.substring(0, 10) + '...');
+                } else {
+                    appendMessage("Error: Chat not initialized. Please refresh and try again.", 'system-message');
+                    return;
+                }
+            } else {
+                appendMessage("Error: Chat not initialized. Please refresh and try again.", 'system-message');
+                return;
+            }
+        }
 
         console.log('📤 [UI] Sending message:', messageText);
         appendMessage(messageText, 'user-message');
@@ -1455,10 +1535,27 @@ document.addEventListener('DOMContentLoaded', function () {
     function sendDocument(file, message) {
         console.log('📎 [FILE] Sending document:', file.name, 'Size:', formatFileSize(file.size));
 
+        // ⭐ NEW: Validate and restore if needed
         if (!appUserId || !conversationId) {
             console.error("❌ [FILE] Cannot send document: Chat not initialized");
-            appendMessage("Error: Chat not initialized. Please refresh and try again.", 'system-message');
-            return;
+            console.error("❌ [FILE] appUserId:", appUserId ? appUserId.substring(0, 10) + '...' : 'MISSING');
+            console.error("❌ [FILE] conversationId:", conversationId ? conversationId.substring(0, 10) + '...' : 'MISSING');
+            
+            // Try to restore from localStorage
+            if (conversationId && !appUserId) {
+                const storedUserId = localStorage.getItem(`chat_appUserId_${conversationId}`) 
+                                  || localStorage.getItem('chat_user_id');
+                if (storedUserId) {
+                    appUserId = storedUserId;
+                    console.log('✅ [FILE] Restored appUserId from storage:', appUserId.substring(0, 10) + '...');
+                } else {
+                    appendMessage("Error: Chat not initialized. Please refresh and try again.", 'system-message');
+                    return;
+                }
+            } else {
+                appendMessage("Error: Chat not initialized. Please refresh and try again.", 'system-message');
+                return;
+            }
         }
 
         const isImage = file.type.startsWith('image/');
@@ -1848,46 +1945,36 @@ document.addEventListener('DOMContentLoaded', function () {
         })
         .catch(error => console.error('❌ [APP] Error loading issues:', error));
 
-    // Load user ID if exists
-    const storedUserId = localStorage.getItem('chat_user_id');
-    if (storedUserId) {
-        console.log('✅ [APP] Found stored user ID');
-    }
-    
-    // Don't auto-start session - wait for user to open widget and select/create conversation
-
-    // Restore last active conversation on page load
+    // ⭐ NEW: Better initialization flow
     const lastConversationId = localStorage.getItem('chat_current_conversation');
+
     if (lastConversationId) {
-        console.log('🔄 [INIT] Restoring last active conversation:', lastConversationId);
-        openExistingConversation(lastConversationId);
+        console.log('🔄 [INIT] Found last conversation, checking conversations list...');
+        const conversations = getStoredConversations();
+        const lastConv = conversations.find(c => c.id === lastConversationId);
+        
+        if (lastConv) {
+            console.log('✅ [INIT] Restoring last active conversation:', lastConversationId);
+            // Don't open yet - wait for widget to be opened
+            conversationId = lastConversationId;
+            
+            // Restore appUserId immediately
+            const storedUserId = localStorage.getItem(`chat_appUserId_${lastConversationId}`) 
+                              || localStorage.getItem('chat_user_id');
+            if (storedUserId) {
+                appUserId = storedUserId;
+                console.log('✅ [INIT] Pre-loaded appUserId:', appUserId.substring(0, 10) + '...');
+            }
+        } else {
+            console.log('⚠️ [INIT] Last conversation not in list, clearing...');
+            localStorage.removeItem('chat_current_conversation');
+        }
     } else {
         console.log('ℹ️ [INIT] No active conversation to restore');
-        showConversationList();
     }
 
-    // Restore the most recently updated conversation on page load
-    const conversations = getStoredConversations();
-    if (conversations.length > 0) {
-        // Sort conversations by updatedAt timestamp in descending order
-        conversations.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
-        const mostRecentConversation = conversations[0];
-        console.log('🔄 [INIT] Restoring most recent conversation:', mostRecentConversation.id);
-        openExistingConversation(mostRecentConversation.id);
-    } else {
-        console.log('ℹ️ [INIT] No existing conversations to restore');
-        showConversationList();
-    }
-
-    // Ensure WebSocket is stable before allowing interactions
-    const checkWebSocket = setInterval(() => {
-        if (sunshineSocket && sunshineSocket.isConnected()) {
-            console.log('✅ [INIT] WebSocket is connected');
-            clearInterval(checkWebSocket);
-        } else {
-            console.warn('⚠️ [INIT] Waiting for WebSocket connection...');
-        }
-    }, 500);
+    // Show conversation list by default
+    showConversationList();
 
     // Global debug functions
     window.debugChat = {
@@ -1898,6 +1985,8 @@ document.addEventListener('DOMContentLoaded', function () {
             webSocketConnected,
             currentView,
             storedConversations: getStoredConversations().length,
+            storedAppUserId: conversationId ? localStorage.getItem(`chat_appUserId_${conversationId}`) : null,
+            genericUserId: localStorage.getItem('chat_user_id'),
             sunshineSocket: sunshineSocket ? {
                 connected: sunshineSocket.connected,
                 readyState: sunshineSocket.socket?.readyState,
@@ -1906,20 +1995,17 @@ document.addEventListener('DOMContentLoaded', function () {
         }),
         testWebSocket: () => sunshineSocket ? sunshineSocket.testConnection() : 'No WebSocket',
         reconnect: () => sunshineSocket ? sunshineSocket.connect() : 'No WebSocket',
-        sendTestMessage: () => {
+        fixAppUserId: () => {
             if (conversationId) {
-                fetch('/api/debug/group_send', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        conversationId: conversationId,
-                        text: 'Test message from debug console'
-                    })
-                }).then(r => r.json()).then(console.log);
+                const stored = localStorage.getItem(`chat_appUserId_${conversationId}`) 
+                            || localStorage.getItem('chat_user_id');
+                if (stored) {
+                    appUserId = stored;
+                    console.log('✅ Fixed appUserId:', appUserId.substring(0, 10) + '...');
+                    return true;
+                }
             }
-        },
-        logDisplayedMessages: () => {
-            console.log('Displayed message IDs:', Array.from(displayedMessageIds));
+            return false;
         },
         clearConversations: () => {
             localStorage.removeItem('chat_conversations');
@@ -1928,5 +2014,6 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     };
 
-    console.log('✅ [APP] Chat widget initialized, debug functions available at window.debugChat');
+    console.log('✅ [APP] Chat widget initialized');
+    console.log('🔧 Debug: window.debugChat.status() to check state');
 });
