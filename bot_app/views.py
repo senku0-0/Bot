@@ -186,6 +186,11 @@ def forward_agent_message_to_websocket(conversation_id: str, message_text: str, 
     Forward agent messages to WebSocket for instant UI updates.
     """
     try:
+        # ⭐ CRITICAL: Filter out conversation log entries BEFORE forwarding
+        if is_conversation_log_entry(message_text):
+            logger.info(f"[WEBSOCKET] ✂️ BLOCKED conversation log entry from WebSocket: {message_text[:100]}...")
+            return False
+        
         # Get the channel layer
         channel_layer = get_channel_layer()
         if channel_layer is None:
@@ -1186,6 +1191,11 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
         if is_agent_message:
             logger.info(f"[SUNSHINE-AGENT] ✅ REAL AGENT MESSAGE DETECTED: {agent_name}: {text[:100]}")
             
+            # ⭐ CRITICAL: Filter out conversation log entries BEFORE forwarding
+            if is_conversation_log_entry(text):
+                logger.info(f"[SUNSHINE-AGENT] ✂️ BLOCKED conversation log entry: {text[:100]}...")
+                return
+            
             # Forward to WebSocket
             forward_agent_message_to_websocket(conversation_id, text, agent_name)
             
@@ -1527,6 +1537,11 @@ def handle_ticket_comment_webhook(data: Dict[str, Any]) -> JsonResponse:
         # Forward agent message to Sunshine
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
         url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+        
+        # ⭐ CRITICAL: Filter out conversation log entries BEFORE sending to Sunshine
+        if is_conversation_log_entry(comment_body):
+            logger.info(f"[TICKET-COMMENT] ✂️ BLOCKED conversation log entry - not sending to Sunshine: {comment_body[:100]}...")
+            return JsonResponse({"status": "filtered_conversation_log", "reason": "Conversation log entry detected"})
         
         payload = {
             "author": {

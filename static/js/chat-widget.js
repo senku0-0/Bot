@@ -49,6 +49,184 @@ document.addEventListener('DOMContentLoaded', function () {
     let deleteAccountReasons = [];
 
     // ============================================================================
+    // NOTIFICATION SYSTEM - WhatsApp-style badges
+    // ============================================================================
+    let unreadCounts = new Map(); // conversationId -> count
+    let totalUnread = 0;
+
+    // Initialize notification system
+    function initNotificationSystem() {
+        loadUnreadCounts();
+        updateBadges();
+        console.log('🔔 [NOTIFICATIONS] System initialized');
+    }
+
+    // Load unread counts from localStorage
+    function loadUnreadCounts() {
+        try {
+            const stored = localStorage.getItem('chat_unread_counts');
+            if (stored) {
+                const counts = JSON.parse(stored);
+                unreadCounts = new Map(Object.entries(counts));
+                calculateTotalUnread();
+                console.log('🔔 [NOTIFICATIONS] Loaded unread counts:', Object.fromEntries(unreadCounts));
+            }
+        } catch (e) {
+            console.error('❌ [NOTIFICATIONS] Error loading unread counts:', e);
+        }
+    }
+
+    // Save unread counts to localStorage
+    function saveUnreadCounts() {
+        try {
+            const obj = Object.fromEntries(unreadCounts);
+            localStorage.setItem('chat_unread_counts', JSON.stringify(obj));
+            console.log('🔔 [NOTIFICATIONS] Saved unread counts:', obj);
+        } catch (e) {
+            console.error('❌ [NOTIFICATIONS] Error saving unread counts:', e);
+        }
+    }
+
+    // Calculate total unread across all conversations
+    function calculateTotalUnread() {
+        totalUnread = Array.from(unreadCounts.values()).reduce((sum, count) => sum + count, 0);
+        console.log('🔔 [NOTIFICATIONS] Total unread:', totalUnread);
+    }
+
+    // Increment unread count for a conversation
+    function incrementUnreadCount(convId, count = 1) {
+        if (!convId) return;
+        
+        const current = unreadCounts.get(convId) || 0;
+        const newCount = current + count;
+        unreadCounts.set(convId, newCount);
+        calculateTotalUnread();
+        saveUnreadCounts();
+        updateBadges();
+        
+        console.log(`🔔 [NOTIFICATIONS] Incremented ${convId.substring(0, 10)}...: ${current} → ${newCount}`);
+    }
+
+    // Clear unread count for a conversation
+    function clearUnreadCount(convId) {
+        if (!convId) return;
+        
+        if (unreadCounts.has(convId)) {
+            unreadCounts.delete(convId);
+            calculateTotalUnread();
+            saveUnreadCounts();
+            updateBadges();
+            console.log(`🔔 [NOTIFICATIONS] Cleared ${convId.substring(0, 10)}...`);
+        }
+    }
+
+    // Mark all as read
+    function markAllAsRead() {
+        unreadCounts.clear();
+        calculateTotalUnread();
+        saveUnreadCounts();
+        updateBadges();
+        console.log('🔔 [NOTIFICATIONS] Marked all as read');
+    }
+
+    // Update all badges in the UI
+    function updateBadges() {
+        updateToggleButtonBadge();
+        updateConversationListBadges();
+        updateTitleNotification();
+    }
+
+    // Update badge on chat toggle button
+    function updateToggleButtonBadge() {
+        let badge = document.querySelector('.chat-toggle-badge');
+        if (!badge) {
+            badge = document.createElement('div');
+            badge.className = 'chat-toggle-badge';
+            toggleBtn.style.position = 'relative';
+            toggleBtn.appendChild(badge);
+        }
+        
+        if (totalUnread > 0) {
+            badge.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
+            badge.style.display = 'flex';
+            console.log(`🔔 [BADGE] Toggle badge: ${totalUnread}`);
+        } else {
+            badge.style.display = 'none';
+        }
+    }
+
+    // Update badges on conversation list items
+    function updateConversationListBadges() {
+        if (currentView !== 'list') return;
+        
+        document.querySelectorAll('.conversation-item').forEach(item => {
+            const convId = item.getAttribute('data-conv-id');
+            if (!convId) return;
+            
+            const count = unreadCounts.get(convId) || 0;
+            let badge = item.querySelector('.conversation-badge');
+            
+            if (count > 0) {
+                if (!badge) {
+                    badge = document.createElement('div');
+                    badge.className = 'conversation-badge';
+                    item.style.position = 'relative';
+                    item.appendChild(badge);
+                }
+                badge.textContent = count > 99 ? '99+' : count.toString();
+                badge.style.display = 'flex';
+                
+                // Add unread styling
+                item.classList.add('conversation-unread');
+            } else {
+                if (badge) badge.style.display = 'none';
+                item.classList.remove('conversation-unread');
+            }
+        });
+    }
+
+    // Update browser tab title notification
+    function updateTitleNotification() {
+        const originalTitle = document.title.replace(/^\(\d+\)\s*/, '');
+        
+        if (totalUnread > 0) {
+            document.title = `(${totalUnread}) ${originalTitle}`;
+        } else {
+            document.title = originalTitle;
+        }
+    }
+
+    // Check if we're currently viewing a conversation
+    function isViewingConversation(convId) {
+        return isChatOpen && currentView === 'chat' && conversationId === convId;
+    }
+
+    // Play notification sound
+    function playNotificationSound() {
+        try {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            oscillator.frequency.value = 800;
+            oscillator.type = 'sine';
+            
+            gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+            
+            oscillator.start();
+            oscillator.stop(audioContext.currentTime + 0.5);
+            
+            console.log('🔔 [NOTIFICATIONS] Played notification sound');
+        } catch (e) {
+            console.log('⚠️ [NOTIFICATIONS] Could not play sound:', e);
+        }
+    }
+
+    // ============================================================================
     // CONVERSATION LIST MANAGEMENT
     // ============================================================================
     
@@ -101,15 +279,19 @@ document.addEventListener('DOMContentLoaded', function () {
         conversationList.innerHTML = conversations.map(conv => {
             const timeAgo = getTimeAgo(conv.updatedAt || conv.timestamp);
             const preview = conv.lastMessage ? conv.lastMessage.substring(0, 40) + (conv.lastMessage.length > 40 ? '...' : '') : 'No messages';
+            const unreadCount = unreadCounts.get(conv.id) || 0;
+            const hasUnread = unreadCount > 0;
+            const unreadClass = hasUnread ? 'conversation-unread' : '';
             
             return `
-                <div class="conversation-item" data-conv-id="${conv.id}">
+                <div class="conversation-item ${unreadClass}" data-conv-id="${conv.id}">
                     <div class="conversation-icon">💬</div>
                     <div class="conversation-details">
                         <div class="conversation-title">${conv.title}</div>
                         <div class="conversation-preview">${preview}</div>
                     </div>
                     <div class="conversation-time">${timeAgo}</div>
+                    ${hasUnread ? `<div class="conversation-badge">${unreadCount > 99 ? '99+' : unreadCount}</div>` : ''}
                 </div>
             `;
         }).join('');
@@ -172,6 +354,9 @@ document.addEventListener('DOMContentLoaded', function () {
     
     function openExistingConversation(convId) {
         console.log('📂 [CONV] Opening existing conversation:', convId);
+        
+        // ⭐ Clear unread count when opening conversation
+        clearUnreadCount(convId);
         
         // Set the conversation ID FIRST
         conversationId = convId;
@@ -630,12 +815,31 @@ document.addEventListener('DOMContentLoaded', function () {
             const text = message.content?.text || message.text || '';
             const messageId = message.id || `agent_${Date.now()}`;
             const agentName = message.author?.displayName || 'Agent';
+            const msgConversationId = message.conversationId || this.conversationId;
 
-            console.log(`🎯 [WEBSOCKET] Agent: ${agentName}, Text: ${text.substring(0, 100)}...`);
+            console.log(`🎯 [WEBSOCKET] Agent: ${agentName}, ConvId: ${msgConversationId?.substring(0, 10)}..., Text: ${text.substring(0, 100)}...`);
 
             // Skip duplicates
             if (displayedMessageIds.has(messageId)) {
                 console.log('⚠️ [WEBSOCKET] Duplicate message ID, skipping:', messageId);
+                return;
+            }
+
+            // ============================================================================
+            // NOTIFICATION: Increment unread count if not viewing this conversation
+            // ============================================================================
+            if (msgConversationId && !isViewingConversation(msgConversationId)) {
+                console.log(`🔔 [NOTIFICATIONS] New agent message in conversation ${msgConversationId.substring(0, 10)}... (not viewing)`);
+                incrementUnreadCount(msgConversationId);
+                playNotificationSound();
+                
+                // Update conversation in list with new message preview
+                saveConversation(msgConversationId, null, text.substring(0, 50), new Date().toISOString());
+            }
+
+            // Only render if this is the currently active conversation
+            if (msgConversationId !== conversationId) {
+                console.log('⚠️ [WEBSOCKET] Message for different conversation, not rendering');
                 return;
             }
 
@@ -1974,6 +2178,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Show conversation list by default
     showConversationList();
+    
+    // ⭐ Initialize notification system
+    initNotificationSystem();
 
     // Global debug functions
     window.debugChat = {
@@ -2010,6 +2217,17 @@ document.addEventListener('DOMContentLoaded', function () {
             localStorage.removeItem('chat_conversations');
             renderConversationList();
             console.log('✅ Cleared all conversations');
+        },
+        // ⭐ Notification debug functions
+        notifications: () => ({
+            unreadCounts: Object.fromEntries(unreadCounts),
+            totalUnread: totalUnread,
+            currentView: currentView,
+            viewingConversation: conversationId
+        }),
+        clearNotifications: () => {
+            markAllAsRead();
+            console.log('✅ Cleared all notifications');
         }
     };
 

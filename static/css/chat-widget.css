@@ -25,10 +25,89 @@
     align-items: center;
     justify-content: center;
     transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    position: relative;
 }
 
 .chat-toggle-btn:hover {
     transform: scale(1.1);
+}
+
+/* ============================================================================
+   NOTIFICATION BADGES - WhatsApp-style
+   ============================================================================ */
+
+/* Badge on toggle button */
+.chat-toggle-badge {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    background: #ff4444;
+    color: white;
+    border-radius: 50%;
+    min-width: 22px;
+    height: 22px;
+    font-size: 12px;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+    z-index: 1001;
+    animation: badgePulse 2s infinite;
+    padding: 0 4px;
+}
+
+/* Badge on conversation list items */
+.conversation-badge {
+    position: absolute;
+    top: 50%;
+    right: 12px;
+    transform: translateY(-50%);
+    background: #ff4444;
+    color: white;
+    border-radius: 50%;
+    min-width: 20px;
+    height: 20px;
+    font-size: 11px;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+    z-index: 1;
+    animation: badgePulse 2s infinite;
+}
+
+/* Unread conversation styling */
+.conversation-unread {
+    background-color: rgba(255, 68, 68, 0.08) !important;
+    border-left: 3px solid #ff4444 !important;
+}
+
+.conversation-unread .conversation-title {
+    font-weight: 700 !important;
+}
+
+.conversation-unread .conversation-preview {
+    color: #333 !important;
+    font-weight: 500 !important;
+}
+
+/* Badge pulse animation */
+@keyframes badgePulse {
+    0% { transform: translateY(-50%) scale(1); }
+    50% { transform: translateY(-50%) scale(1.1); }
+    100% { transform: translateY(-50%) scale(1); }
+}
+
+.chat-toggle-badge {
+    animation: toggleBadgePulse 2s infinite;
+}
+
+@keyframes toggleBadgePulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+    100% { transform: scale(1); }
 }
 
 /* Chat Box */
