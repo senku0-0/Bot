@@ -134,12 +134,23 @@ document.addEventListener('DOMContentLoaded', function () {
         updateToggleButtonBadge();
         updateConversationListBadges();
         updateTitleNotification();
+        
+        // ⭐ Re-render conversation list to show updated badges
+        if (currentView === 'list') {
+            renderConversationList();
+        }
     }
 
     // Update badge on chat toggle button
     function updateToggleButtonBadge() {
+        if (!toggleBtn) {
+            console.warn('⚠️ [BADGE] Toggle button not found');
+            return;
+        }
+        
         let badge = document.querySelector('.chat-toggle-badge');
         if (!badge) {
+            console.log('🔔 [BADGE] Creating new badge element');
             badge = document.createElement('div');
             badge.className = 'chat-toggle-badge';
             toggleBtn.style.position = 'relative';
@@ -149,9 +160,10 @@ document.addEventListener('DOMContentLoaded', function () {
         if (totalUnread > 0) {
             badge.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
             badge.style.display = 'flex';
-            console.log(`🔔 [BADGE] Toggle badge: ${totalUnread}`);
+            console.log(`🔔 [BADGE] Updated toggle badge: ${totalUnread}`);
         } else {
             badge.style.display = 'none';
+            console.log('🔔 [BADGE] Hid toggle badge');
         }
     }
 
@@ -198,7 +210,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Check if we're currently viewing a conversation
     function isViewingConversation(convId) {
-        return isChatOpen && currentView === 'chat' && conversationId === convId;
+        const isViewing = isChatOpen && currentView === 'chat' && conversationId === convId;
+        console.log(`🔔 [NOTIFICATIONS] isViewingConversation check - chatOpen: ${isChatOpen}, view: ${currentView}, id: ${convId?.substring(0, 10)}..., match: ${conversationId?.substring(0, 10)}... = ${isViewing}`);
+        return isViewing;
     }
 
     // Play notification sound
@@ -835,6 +849,9 @@ document.addEventListener('DOMContentLoaded', function () {
                 
                 // Update conversation in list with new message preview
                 saveConversation(msgConversationId, null, text.substring(0, 50), new Date().toISOString());
+            } else if (msgConversationId === conversationId) {
+                console.log(`🔔 [NOTIFICATIONS] Agent message for currently viewed conversation - clearing unread`);
+                clearUnreadCount(msgConversationId);
             }
 
             // Only render if this is the currently active conversation
