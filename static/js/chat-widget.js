@@ -210,21 +210,57 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Check if we're currently viewing a conversation
     function isViewingConversation(convId) {
-        if (!convId) {
-            console.log(`🔔 [NOTIFICATIONS] isViewingConversation - no convId provided`);
-            return false;
-        }
+        if (!convId) return false;
         
-        const idMatch = conversationId === convId;
-        const isViewing = isChatOpen && currentView === 'chat' && idMatch;
+        // ULTRA-SIMPLE RULE: Show badge if user is NOT actively viewing this conversation
+        const isViewing = isChatOpen && 
+                         currentView === 'chat' && 
+                         conversationId === convId;
         
-        console.log(`🔔 [NOTIFICATIONS] isViewingConversation check:`);
-        console.log(`   - chatOpen: ${isChatOpen}, view: ${currentView}, idMatch: ${idMatch}`);
-        console.log(`   - param convId: ${convId.substring(0, 10)}...`);
-        console.log(`   - current conversationId: ${conversationId?.substring(0, 10) || 'null'}...`);
-        console.log(`   - RESULT: ${isViewing}`);
+        // Return TRUE if badge SHOULD show (user is NOT viewing)
+        return !isViewing;
+    }
+
+    // ============================================================================
+    // VISUAL DEBUGGER: Real-time notification state display
+    // ============================================================================
+    function addNotificationDebugUI() {
+        const debugDiv = document.createElement('div');
+        debugDiv.id = 'notification-debug';
+        debugDiv.style.cssText = `
+            position: fixed;
+            bottom: 80px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 12px;
+            font-family: monospace;
+            z-index: 999999;
+            max-width: 300px;
+            display: none;
+        `;
+        document.body.appendChild(debugDiv);
         
-        return isViewing;
+        setInterval(() => {
+            const convId = conversationId || 'none';
+            const shouldShowBadge = isViewingConversation(convId);
+            
+            debugDiv.innerHTML = `
+                <div><strong>🔔 NOTIFICATION DEBUG</strong></div>
+                <div>Chat Open: ${isChatOpen ? '✅' : '❌'}</div>
+                <div>Current View: ${currentView}</div>
+                <div>Conv ID: ${convId.substring(0, 15)}...</div>
+                <div>Unread Total: ${totalUnread}</div>
+                <div>Should show badge: ${shouldShowBadge ? 'YES' : 'NO'}</div>
+            `;
+            
+            // Auto-show if badges should appear
+            if (totalUnread > 0 && shouldShowBadge) {
+                debugDiv.style.display = 'block';
+            }
+        }, 1000);
     }
 
     // Play notification sound
@@ -2317,6 +2353,18 @@ document.addEventListener('DOMContentLoaded', function () {
     // ⭐ Initialize notification system
     initNotificationSystem();
 
+    // ⭐ NEW: Add visual debugger (shows real-time badge logic)
+    setTimeout(addNotificationDebugUI, 2000);
+
+    // ⭐ NEW: Quick verification test
+    setTimeout(() => {
+        console.log('🔔 VERIFICATION TEST READY:');
+        console.log('1. Toggle chat OPEN (if closed)');
+        console.log('2. Switch to conversation list view');
+        console.log('3. Run: window.debugChat.testNotificationSimple()');
+        console.log('4. You should see badge appear on toggle button');
+    }, 3000);
+
     // Global debug functions
     window.debugChat = {
         status: () => {
@@ -2398,6 +2446,28 @@ document.addEventListener('DOMContentLoaded', function () {
         clearNotifications: () => {
             markAllAsRead();
             console.log('✅ Cleared all notifications');
+        },
+        // ⭐ SIMPLE TEST FUNCTION: One-click testing
+        testNotificationSimple: () => {
+            const testConvId = conversationId || 'test_conv_' + Date.now();
+            
+            console.log('🧪 TESTING NOTIFICATION LOGIC:');
+            console.log('  Conversation ID:', testConvId.substring(0, 15));
+            console.log('  isChatOpen:', isChatOpen);
+            console.log('  currentView:', currentView);
+            console.log('  conversationId:', conversationId?.substring(0, 15));
+            
+            const shouldShowBadge = isViewingConversation(testConvId);
+            
+            console.log('  Should show badge?', shouldShowBadge ? '✅ YES' : '❌ NO');
+            
+            if (shouldShowBadge) {
+                incrementUnreadCount(testConvId);
+                console.log('✅ Badge incremented! Check toggle button.');
+            } else {
+                console.log('⚠️ Cannot show badge - user is actively viewing this conversation.');
+                console.log('💡 To test: Switch to conversation list view first, then run again.');
+            }
         },
         // ⭐ Test notification without needing backend message
         testNotification: (convId = null) => {
