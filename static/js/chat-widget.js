@@ -487,6 +487,13 @@ document.addEventListener('DOMContentLoaded', function () {
     function openExistingConversation(convId) {
         console.log('📂 [CONV] Opening existing conversation:', convId);
         
+        // ⭐ CRITICAL: Clear previous conversation's viewing status BEFORE switching
+        const previousConvId = localStorage.getItem('chat_current_conversation');
+        if (previousConvId && previousConvId !== convId) {
+            console.log('📂 [CONV] Clearing viewing status for previous conversation:', previousConvId);
+            notifyBackendViewingStatus(previousConvId, false);
+        }
+        
         // ⭐ Clear unread count when opening conversation
         clearUnreadCount(convId);
         
