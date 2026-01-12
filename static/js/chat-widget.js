@@ -240,15 +240,17 @@ document.addEventListener('DOMContentLoaded', function () {
     let sseReconnectAttempts = 0;
     const sseMaxReconnectAttempts = 10;
     
-    function connectSSE(convId) {
-        if (!convId) {
+    function connectSSE(convId, isGlobal = false) {
+        const url = isGlobal ? '/api/notifications/stream/global' : `/api/notifications/stream/${convId}`;
+        
+        if (!convId && !isGlobal) {
             console.log('⚠️ [SSE] No conversation ID to connect');
             return;
         }
         
-        // Don't reconnect if already connected to this conversation
-        if (sseConnection && sseConnection.conversationId === convId && sseConnection.eventSource) {
-            console.log('✅ [SSE] Already connected to this conversation');
+        // Don't reconnect if already connected to this endpoint
+        if (sseConnection && sseConnection.url === url && sseConnection.eventSource) {
+            console.log('✅ [SSE] Already connected to this endpoint');
             return;
         }
         
@@ -259,13 +261,14 @@ document.addEventListener('DOMContentLoaded', function () {
         }
         
         // Create new SSE connection
-        const url = `/api/notifications/stream/${convId}`;
         console.log('🔌 [SSE] Connecting to:', url);
         
         const eventSource = new EventSource(url);
         sseConnection = {
+            url: url,
             conversationId: convId,
             eventSource: eventSource,
+            isGlobal: isGlobal,
             startTime: Date.now()
         };
         sseReconnectAttempts = 0;
@@ -279,17 +282,28 @@ document.addEventListener('DOMContentLoaded', function () {
             const data = JSON.parse(e.data);
             const notificationConvId = data.conversationId;
             
-            // Check if user is actively viewing this specific conversation
-            const isUserViewing = isViewingConversation(notificationConvId);
-            
-            if (!isUserViewing) {
-                // User is NOT viewing this conversation - increment badge
+            // For global stream, always increment badge (user is on conversation list)
+            if (isGlobal) {
+                console.log('📬 [SSE-GLOBAL] Received notification for conversation:', notificationConvId);
                 incrementUnreadCount(notificationConvId, 1);
                 playNotificationSound();
                 
                 // Update conversation list with message preview
                 saveConversation(notificationConvId, null, data.messagePreview, data.timestamp);
                 renderConversationList();
+            } else {
+                // For single-conversation stream, check if user is actively viewing
+                const isUserViewing = isViewingConversation(notificationConvId);
+                
+                if (!isUserViewing) {
+                    // User is NOT viewing this conversation - increment badge
+                    incrementUnreadCount(notificationConvId, 1);
+                    playNotificationSound();
+                    
+                    // Update conversation list with message preview
+                    saveConversation(notificationConvId, null, data.messagePreview, data.timestamp);
+                    renderConversationList();
+                }
             }
         });
         
@@ -301,7 +315,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (sseReconnectAttempts < sseMaxReconnectAttempts) {
                 sseReconnectAttempts++;
                 const delay = Math.min(1000 * Math.pow(1.5, sseReconnectAttempts), 10000);
-                setTimeout(() => connectSSE(convId), delay);
+                setTimeout(() => connectSSE(convId, isGlobal), delay);
             }
         };
     }
@@ -443,11 +457,9 @@ document.addEventListener('DOMContentLoaded', function () {
         backBtn.style.display = 'none';
         chatHeaderTitle.textContent = 'Yatri Bandhu';
         
-        // ⭐ NEW: Connect to SSE for real-time notifications
-        if (conversationId) {
-            console.log('📡 [SSE] Connecting to notification stream...');
-            connectSSE(conversationId);
-        }
+        // ⭐ NEW: Connect to GLOBAL SSE for real-time notifications about ANY conversation
+        console.log('📡 [SSE] Connecting to GLOBAL notification stream...');
+        connectSSE(null, true);  // null convId, isGlobal=true
         
         // Reset current conversation state but keep the data
         if (conversationId) {

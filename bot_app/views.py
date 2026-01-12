@@ -2895,6 +2895,97 @@ def proxy_zendesk_image(request: HttpRequest) -> HttpResponse:
 # ============================================================================
 # SSE: Server-Sent Events for Real-Time Notifications
 # ============================================================================
+
+# ⭐ NEW: Global notification tracking to avoid duplicate sends
+_global_notification_last_index = 0
+
+async def global_notification_stream_generator():
+    """
+    Async generator for global SSE stream - handles ALL conversations.
+    This allows users on the conversation list to get notifications for any conversation.
+    """
+    global _global_notification_last_index
+    
+    logger.info(f"[SSE-GLOBAL] 🎬 Global generator started")
+    
+    # Send initial connection message
+    yield f"event: connected\ndata: {json.dumps({'type': 'connected', 'scope': 'global'})}\n\n"
+    logger.info(f"[SSE-GLOBAL] ✅ Client connected to global stream")
+    
+    # Keep connection alive for 5 minutes
+    start_time = asyncio.get_event_loop().time()
+    timeout = 300
+    last_keepalive = start_time
+    keepalive_interval = 30  # Send keepalive every 30 seconds
+    last_index = 0
+    
+    try:
+        while True:
+            # Check timeout
+            current_time = asyncio.get_event_loop().time()
+            if current_time - start_time > timeout:
+                logger.info(f"[SSE-GLOBAL] Connection timeout")
+                break
+            
+            # Send keepalive every 30 seconds
+            if current_time - last_keepalive >= keepalive_interval:
+                yield ": keepalive\n\n"
+                last_keepalive = current_time
+            
+            # Check for new notifications in global queue
+            global_notification_key = f'global_notification'
+            notifications_queue = cache.get(global_notification_key) or []
+            
+            if notifications_queue and last_index < len(notifications_queue):
+                # Send any new notifications since last check
+                for notif_data in notifications_queue[last_index:]:
+                    message = notif_data.get('message', {})
+                    logger.info(f"[SSE-GLOBAL] 📤 Sending to client: {message.get('conversationId', '?')}")
+                    yield f"event: new_message\ndata: {json.dumps(message)}\n\n"
+                
+                last_index = len(notifications_queue)
+            
+            # Small async sleep to avoid busy waiting (100ms)
+            await asyncio.sleep(0.1)
+            
+    except asyncio.CancelledError:
+        logger.info(f"[SSE-GLOBAL] 🔌 Client disconnected from global stream")
+    except Exception as e:
+        logger.exception(f"[SSE-GLOBAL] Error in global generator: {e}")
+
+
+@csrf_exempt
+async def global_notification_stream(request: HttpRequest) -> HttpResponse:
+    """
+    Global SSE endpoint - sends notifications for ALL conversations.
+    
+    Clients connect to this endpoint to receive notifications about new messages
+    in any conversation (for use when viewing conversation list).
+    
+    GET /api/notifications/stream/global
+    
+    Returns: Event stream (text/event-stream)
+    """
+    try:
+        logger.info(f"[SSE-GLOBAL] Client connecting to global notification stream")
+        
+        # Set up SSE response with async streaming generator
+        response = StreamingHttpResponse(
+            global_notification_stream_generator(),
+            content_type='text/event-stream',
+            status=200
+        )
+        response['Cache-Control'] = 'no-cache'
+        response['Connection'] = 'keep-alive'
+        response['X-Accel-Buffering'] = 'no'  # Disable buffering in proxies
+        
+        return response
+        
+    except Exception as e:
+        logger.exception(f"[SSE-GLOBAL] Error in global notification stream: {e}")
+        return HttpResponse(f"Error: {str(e)}", status=500, content_type='text/event-stream')
+
+
 async def notification_stream_generator(conversation_id: str):
     """
     Async generator for SSE stream. Yields SSE-formatted messages.
@@ -2988,9 +3079,27 @@ def send_notification_to_client(conversation_id: str, message_data: Dict[str, An
         message_data: Notification payload
     """
     try:
+        # Store in per-conversation cache (for single-conversation subscriptions)
         notification_key = f'notification_{conversation_id}'
-        # Store notification in cache for 30 seconds
         cache.set(notification_key, message_data, timeout=30)
         logger.info(f"[SSE] 📬 Queued notification for {conversation_id}: {message_data.get('unreadCount', '?')} unread")
+        
+        # ⭐ NEW: ALSO store in global notifications queue (for conversation list view)
+        # This allows global SSE endpoint to notify about all conversations
+        global_notification_key = f'global_notification'
+        notifications_queue = cache.get(global_notification_key) or []
+        if not isinstance(notifications_queue, list):
+            notifications_queue = []
+        
+        # Add new notification to queue (keep last 100)
+        notifications_queue.append({
+            'message': message_data,
+            'timestamp': datetime.now().isoformat()
+        })
+        notifications_queue = notifications_queue[-100:]
+        
+        cache.set(global_notification_key, notifications_queue, timeout=60)
+        logger.info(f"[SSE-GLOBAL] 📬 Queued to global notification queue (size: {len(notifications_queue)})")
+        
     except Exception as e:
         logger.error(f"[SSE] Failed to queue notification: {e}")
