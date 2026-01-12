@@ -2532,6 +2532,28 @@ document.addEventListener('DOMContentLoaded', function () {
             console.log('8. Should see: "[SUNSHINE-BADGE] User is viewing - skipping badge increment"');
             console.log('9. Go back to conversation list');
             console.log('10. Agent sends another message - badge should appear again');
+        },
+        // ⭐ NEW: Test webhook badge flow
+        testWebhookBadgeFlow: () => {
+            console.log('🧪 TEST WEBHOOK BADGE FLOW:');
+            console.log('1. Make sure backend code is updated');
+            console.log('2. Switch to conversation list view');
+            console.log('3. Have an agent send a real message via Zendesk');
+            console.log('4. Watch Django logs for: "[SUNSHINE-BADGE] ✅ Incrementing badge via webhook"');
+            console.log('5. Badge should appear automatically');
+        },
+        // ⭐ NEW: Check current viewing status
+        checkViewingStatus: () => {
+            console.log('📊 CURRENT VIEWING STATUS:');
+            console.log('  - isChatOpen:', isChatOpen);
+            console.log('  - currentView:', currentView);
+            console.log('  - conversationId:', conversationId?.substring(0, 15));
+            console.log('  - Last backend call: check Django logs for VIEWING-TRACKER');
+            console.log('');
+            console.log('To test:');
+            console.log('  1. Click into conversation (should see "started viewing")');
+            console.log('  2. Click back (should see "stopped viewing")');
+            console.log('  3. Agent sends message (should see "Incrementing badge")');
         }
     };
 
