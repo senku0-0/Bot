@@ -212,13 +212,12 @@ document.addEventListener('DOMContentLoaded', function () {
     function isViewingConversation(convId) {
         if (!convId) return false;
         
-        // ULTRA-SIMPLE RULE: Show badge if user is NOT actively viewing this conversation
+        // ULTRA-SIMPLE: Return TRUE if user IS actively viewing this specific conversation
         const isViewing = isChatOpen && 
                          currentView === 'chat' && 
                          conversationId === convId;
         
-        // Return TRUE if badge SHOULD show (user is NOT viewing)
-        return !isViewing;
+        return isViewing;
     }
 
     // ============================================================================
@@ -245,7 +244,8 @@ document.addEventListener('DOMContentLoaded', function () {
         
         setInterval(() => {
             const convId = conversationId || 'none';
-            const shouldShowBadge = isViewingConversation(convId);
+            const isUserViewing = isViewingConversation(convId);
+            const shouldShowBadge = !isUserViewing;  // Badge shows if NOT viewing
             
             debugDiv.innerHTML = `
                 <div><strong>🔔 NOTIFICATION DEBUG</strong></div>
@@ -253,7 +253,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 <div>Current View: ${currentView}</div>
                 <div>Conv ID: ${convId.substring(0, 15)}...</div>
                 <div>Unread Total: ${totalUnread}</div>
-                <div>Should show badge: ${shouldShowBadge ? 'YES' : 'NO'}</div>
+                <div>User Viewing: ${isUserViewing ? '✅' : '❌'}</div>
+                <div>Show Badge: ${shouldShowBadge ? '✅ YES' : '❌ NO'}</div>
             `;
             
             // Auto-show if badges should appear
@@ -332,19 +333,26 @@ document.addEventListener('DOMContentLoaded', function () {
         
         eventSource.addEventListener('new_message', (e) => {
             const data = JSON.parse(e.data);
+            const notificationConvId = data.conversationId;
+            
             console.log('📬 [SSE] ✅ Notification received:', data);
             
-            // Only increment if NOT viewing this conversation
-            if (!isViewingConversation(data.conversationId)) {
-                console.log(`🔔 [SSE] Incrementing badge for ${data.conversationId.substring(0, 10)}...`);
-                incrementUnreadCount(data.conversationId, 1);
+            // Check if user is actively viewing this specific conversation
+            const isUserViewing = isViewingConversation(notificationConvId);
+            console.log(`🔔 [SSE] Checking: isViewingConversation('${notificationConvId.substring(0, 10)}...') = ${isUserViewing}`);
+            
+            if (isUserViewing) {
+                // User IS viewing this conversation - don't increment badge
+                console.log(`🔔 [SSE] User IS actively viewing this conversation - skipping badge`);
+            } else {
+                // User is NOT viewing this conversation - increment badge
+                console.log(`🔔 [SSE] User NOT viewing - incrementing badge for ${notificationConvId.substring(0, 10)}...`);
+                incrementUnreadCount(notificationConvId, 1);
                 playNotificationSound();
                 
                 // Update conversation list with message preview
-                saveConversation(data.conversationId, null, data.messagePreview, data.timestamp);
+                saveConversation(notificationConvId, null, data.messagePreview, data.timestamp);
                 renderConversationList();
-            } else {
-                console.log(`🔔 [SSE] User viewing conversation, not incrementing badge`);
             }
         });
         
@@ -2484,8 +2492,10 @@ document.addEventListener('DOMContentLoaded', function () {
             console.log('  currentView:', currentView);
             console.log('  conversationId:', conversationId?.substring(0, 15));
             
-            const shouldShowBadge = isViewingConversation(testConvId);
+            const isUserViewing = isViewingConversation(testConvId);
+            const shouldShowBadge = !isUserViewing;
             
+            console.log('  Is user viewing?', isUserViewing ? '✅ YES' : '❌ NO');
             console.log('  Should show badge?', shouldShowBadge ? '✅ YES' : '❌ NO');
             
             if (shouldShowBadge) {
@@ -2502,21 +2512,21 @@ document.addEventListener('DOMContentLoaded', function () {
             console.log(`🧪 [TEST] Simulating agent message for: ${testConvId.substring(0, 10)}...`);
             console.log(`🧪 [TEST] Current state: isChatOpen=${isChatOpen}, view=${currentView}, viewingConv=${conversationId?.substring(0, 10) || 'null'}...`);
             
-            // Simulate the same check as processAgentMessage
-            const isViewing = isViewingConversation(testConvId);
-            console.log(`🧪 [TEST] isViewingConversation returned: ${isViewing}`);
+            // Check if user is viewing
+            const isUserViewing = isViewingConversation(testConvId);
+            console.log(`🧪 [TEST] isViewingConversation returned: ${isUserViewing}`);
             
-            if (!isViewing) {
-                console.log(`🧪 [TEST] ✅ Would increment notification!`);
-                incrementUnreadCount(testConvId);
-            } else {
-                console.log(`🧪 [TEST] ⚠️ Not incrementing because user IS viewing this conversation`);
+            if (isUserViewing) {
+                console.log(`🧪 [TEST] ⚠️ User IS viewing - would skip badge increment`);
                 console.log(`🧪 [TEST] To test notifications:`);
                 console.log(`🧪 [TEST]   1. Close chat (click toggle button)`);
                 console.log(`🧪 [TEST]   2. Run window.debugChat.testNotification() again`);
                 console.log(`🧪 [TEST]   OR`);
                 console.log(`🧪 [TEST]   1. Switch to conversation list`);
                 console.log(`🧪 [TEST]   2. Run window.debugChat.testNotification()`);
+            } else {
+                console.log(`🧪 [TEST] ✅ User NOT viewing - would increment badge!`);
+                incrementUnreadCount(testConvId);
             }
         },
         // ⭐ NEW: Test combined approach
@@ -2554,6 +2564,39 @@ document.addEventListener('DOMContentLoaded', function () {
             console.log('  1. Click into conversation (should see "started viewing")');
             console.log('  2. Click back (should see "stopped viewing")');
             console.log('  3. Agent sends message (should see "Incrementing badge")');
+        },
+        // ⭐ NEW: Debug SSE and badge logic
+        debugSSELogic: () => {
+            console.log('🔍 DEBUG SSE LOGIC:');
+            console.log('Current state:');
+            console.log('  - conversationId:', conversationId?.substring(0, 15) || 'none');
+            console.log('  - isChatOpen:', isChatOpen);
+            console.log('  - currentView:', currentView);
+            console.log('');
+            
+            // Test with current conversation
+            if (conversationId) {
+                const result = isViewingConversation(conversationId);
+                console.log(`isViewingConversation('${conversationId.substring(0, 15)}...') = ${result}`);
+                
+                if (result) {
+                    console.log('✅ CORRECT: User IS viewing this conversation');
+                    console.log('   → Badges will NOT be incremented');
+                } else {
+                    console.log('✅ CORRECT: User is NOT viewing this conversation');
+                    console.log('   → Badges WILL be incremented');
+                }
+            } else {
+                console.log('⚠️ No active conversation');
+            }
+            
+            console.log('');
+            console.log('Test flow:');
+            console.log('1. Open a conversation (currentView should be "chat")');
+            console.log('2. isViewingConversation should return TRUE');
+            console.log('3. Switch to list (currentView should be "list")');
+            console.log('4. isViewingConversation should return FALSE');
+            console.log('5. Agent sends message → Badge appears');
         }
     };
 
