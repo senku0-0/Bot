@@ -273,6 +273,26 @@ def store_conversation_ticket_mapping(conversation_id: str, ticket_id: str) -> b
         logger.error(f"[MAPPING] ❌ Failed to store conversation-ticket mapping: {str(e)}")
         return False
 
+# ============================================================================
+# COMBINED APPROACH: Track if user is viewing a conversation
+# ============================================================================
+def update_user_viewing_status(conversation_id: str, is_viewing: bool) -> bool:
+    """
+    Track if user is currently viewing a conversation.
+    Frontend will call this via API when entering/leaving chat view.
+    """
+    try:
+        if is_viewing:
+            cache.set(f'user_viewing_{conversation_id}', True, timeout=3600)  # 1 hour
+            logger.info(f"[VIEWING-TRACKER] User started viewing {conversation_id}")
+        else:
+            cache.delete(f'user_viewing_{conversation_id}')
+            logger.info(f"[VIEWING-TRACKER] User stopped viewing {conversation_id}")
+        return True
+    except Exception as e:
+        logger.error(f"[VIEWING-TRACKER] Error: {e}")
+        return False
+
 # Index route (frontend entry point)
 @csrf_exempt
 def index(request: HttpRequest) -> HttpResponse:
@@ -1215,6 +1235,37 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
         # ============================================================================
         if is_agent_message:
             logger.info(f"[SUNSHINE-AGENT] ✅ REAL AGENT MESSAGE DETECTED: {agent_name}: {text[:100]}")
+
+            # ============================================================================
+            # COMBINED APPROACH: Trigger badge increment HERE in webhook
+            # ============================================================================
+            
+            # CRITICAL: Check if user is viewing this conversation
+            is_user_viewing = cache.get(f'user_viewing_{conversation_id}', False)
+            
+            logger.info(f"[SUNSHINE-BADGE] User viewing check: {is_user_viewing}")
+            
+            if not is_user_viewing:
+                # User is NOT viewing - increment badge via cache
+                logger.info(f"[SUNSHINE-BADGE] ✅ Incrementing badge via webhook")
+                
+                # Get current unread count
+                unread_count = cache.get(f'unread_{conversation_id}', 0) + 1
+                cache.set(f'unread_{conversation_id}', unread_count, timeout=604800)
+                
+                # Send SSE notification (for conversation list)
+                send_notification_to_client(conversation_id, {
+                    'type': 'new_message',
+                    'conversationId': conversation_id,
+                    'agentName': agent_name,
+                    'messagePreview': text[:100],
+                    'unreadCount': unread_count,
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+                logger.info(f"[SUNSHINE-BADGE] 📬 SSE sent (unread: {unread_count})")
+            else:
+                logger.info(f"[SUNSHINE-BADGE] User is viewing - skipping badge increment")
             
             # ⭐ CRITICAL: Filter out conversation log entries BEFORE forwarding
             if is_conversation_log_entry(text):
@@ -1223,20 +1274,6 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
             
             # Forward to WebSocket
             forward_agent_message_to_websocket(conversation_id, text, agent_name)
-            
-            # ⭐ NEW: Send notification to clients via SSE (for conversation list)
-            unread_count = cache.get(f'unread_{conversation_id}', 0) + 1
-            cache.set(f'unread_{conversation_id}', unread_count, timeout=604800)  # 7 days
-            
-            send_notification_to_client(conversation_id, {
-                'type': 'new_message',
-                'conversationId': conversation_id,
-                'agentName': agent_name,
-                'messagePreview': text[:100],
-                'unreadCount': unread_count,
-                'timestamp': datetime.now().isoformat()
-            })
-            logger.info(f"[SUNSHINE-AGENT] 📬 Notification sent to SSE stream (unread: {unread_count})")
             
             # Don't create a ticket for agent messages
             return
@@ -1325,6 +1362,34 @@ def send_webhook_message(conversation_id: str, message: dict) -> None:
         },
     )
     logger.info(f"[WEBSOCKET-HANDLER] ✅ Sent message to WebSocket: {text[:100]}")
+
+# ============================================================================
+# NEW: API Endpoint for Viewing Status Tracking
+# ============================================================================
+@csrf_exempt
+def update_viewing_status(request: HttpRequest) -> JsonResponse:
+    """
+    API for frontend to notify when user starts/stops viewing a conversation.
+    POST JSON: {"conversationId": "...", "isViewing": true/false}
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        conversation_id = data.get("conversationId")
+        is_viewing = data.get("isViewing", False)
+        
+        if not conversation_id:
+            return JsonResponse({"error": "Missing conversationId"}, status=400)
+        
+        update_user_viewing_status(conversation_id, is_viewing)
+        
+        return JsonResponse({"status": "updated", "conversationId": conversation_id})
+        
+    except Exception as e:
+        logger.error(f"[VIEWING-API] Error: {e}")
+        return JsonResponse({"error": str(e)}, status=500)
 
 @csrf_exempt
 def send_to_zendesk(request: HttpRequest) -> JsonResponse:

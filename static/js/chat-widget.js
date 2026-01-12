@@ -373,6 +373,31 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // ============================================================================
+    // VIEWING STATUS TRACKING - COMBINED APPROACH
+    // ============================================================================
+    function notifyBackendViewingStatus(conversationId, isViewing) {
+        if (!conversationId) return;
+        
+        console.log(`👁️ [VIEWING] Notifying backend: ${conversationId.substring(0, 10)}... = ${isViewing}`);
+        
+        fetch('/api/chat/viewing-status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                conversationId: conversationId,
+                isViewing: isViewing
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log(`👁️ [VIEWING] Backend updated:`, data);
+        })
+        .catch(error => {
+            console.error('👁️ [VIEWING] Error:', error);
+        });
+    }
+
+    // ============================================================================
     // CONVERSATION LIST MANAGEMENT
     // ============================================================================
     
@@ -469,7 +494,13 @@ document.addEventListener('DOMContentLoaded', function () {
     
     function showConversationList() {
         console.log('📋 [VIEW] Switching to conversation list view');
-        console.log(`⚠️ [VIEW] After this, new messages will show notification badges!`);
+        console.log(`⚠️ [VIEW] Telling backend user is NOT viewing any conversation`);
+        
+        // ⭐ NEW: Notify backend user stopped viewing conversation
+        if (conversationId) {
+            notifyBackendViewingStatus(conversationId, false);
+        }
+        
         currentView = 'list';
         conversationListView.style.display = 'flex';
         chatView.style.display = 'none';
@@ -477,7 +508,6 @@ document.addEventListener('DOMContentLoaded', function () {
         chatHeaderTitle.textContent = 'Yatri Bandhu';
         
         // ⭐ NEW: Connect to SSE for real-time notifications
-        // This allows badges to appear even when viewing conversation list
         if (conversationId) {
             console.log('📡 [SSE] Connecting to notification stream...');
             connectSSE(conversationId);
@@ -498,17 +528,24 @@ document.addEventListener('DOMContentLoaded', function () {
         renderConversationList();
     }
     
+    
     function showChatView() {
         console.log('💬 [VIEW] Switching to chat view');
-        console.log(`⚠️ [VIEW] If you get messages now, no badge will appear (you're viewing the conversation)`);
+        console.log(`⚠️ [VIEW] Telling backend user IS viewing this conversation`);
         
-        // ⭐ NEW: Disconnect SSE when viewing chat (WebSocket handles notifications)
-        console.log('📡 [SSE] Disconnecting from notification stream (using WebSocket instead)');
-        disconnectSSE();
+        // ⭐ NEW: Notify backend user is viewing this conversation
+        if (conversationId) {
+            notifyBackendViewingStatus(conversationId, true);
+        }
+        
         currentView = 'chat';
         conversationListView.style.display = 'none';
         chatView.style.display = 'flex';
         backBtn.style.display = 'block';
+        
+        // ⭐ NEW: Disconnect SSE (WebSocket handles notifications)
+        console.log('📡 [SSE] Disconnecting from notification stream (using WebSocket instead)');
+        disconnectSSE();
     }
     
     function openExistingConversation(convId) {
@@ -986,25 +1023,15 @@ document.addEventListener('DOMContentLoaded', function () {
             }
 
             // ============================================================================
-            // NOTIFICATION: Increment unread count if not viewing this conversation
+            // COMBINED APPROACH: Badge logic handled by webhook
+            // WebSocket only needs to display message
             // ============================================================================
             if (msgConversationId) {
-                const isViewing = isViewingConversation(msgConversationId);
-                console.log(`🔔 [NOTIFICATIONS] Agent message in ${msgConversationId.substring(0, 10)}... - currently viewing: ${isViewing}`);
+                console.log(`🎯 [WEBSOCKET] Agent message for ${msgConversationId.substring(0, 10)}...`);
+                console.log(`🎯 [WEBSOCKET] Badge handled by webhook, just displaying message`);
                 
-                if (!isViewing) {
-                    console.log(`🔔 [NOTIFICATIONS] ✅ Incrementing unread count`);
-                    incrementUnreadCount(msgConversationId);
-                    playNotificationSound();
-                    
-                    // Update conversation in list with new message preview
-                    saveConversation(msgConversationId, null, text.substring(0, 50), new Date().toISOString());
-                } else {
-                    console.log(`🔔 [NOTIFICATIONS] User is viewing this conversation - clearing unread`);
-                    clearUnreadCount(msgConversationId);
-                }
-            } else {
-                console.warn(`⚠️ [WEBSOCKET] No conversation ID available`);
+                // Still save conversation update
+                saveConversation(msgConversationId, null, text.substring(0, 50), new Date().toISOString());
             }
 
             // Only render if this is the currently active conversation
@@ -2491,6 +2518,20 @@ document.addEventListener('DOMContentLoaded', function () {
                 console.log(`🧪 [TEST]   1. Switch to conversation list`);
                 console.log(`🧪 [TEST]   2. Run window.debugChat.testNotification()`);
             }
+        },
+        // ⭐ NEW: Test combined approach
+        testCombinedApproach: () => {
+            console.log('🧪 TESTING COMBINED APPROACH:');
+            console.log('1. Switch to conversation list view');
+            console.log('2. Have agent send a message');
+            console.log('3. Check console for: "[SUNSHINE-BADGE] ✅ Incrementing badge via webhook"');
+            console.log('4. Badge should appear on toggle button');
+            console.log('5. Click into conversation');
+            console.log('6. Badge should clear (user is now viewing)');
+            console.log('7. Agent sends another message');
+            console.log('8. Should see: "[SUNSHINE-BADGE] User is viewing - skipping badge increment"');
+            console.log('9. Go back to conversation list');
+            console.log('10. Agent sends another message - badge should appear again');
         }
     };
 
