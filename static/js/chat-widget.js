@@ -58,7 +58,6 @@ document.addEventListener('DOMContentLoaded', function () {
     function initNotificationSystem() {
         loadUnreadCounts();
         updateBadges();
-        console.log('🔔 [NOTIFICATIONS] System initialized');
     }
 
     // Load unread counts from localStorage
@@ -69,10 +68,9 @@ document.addEventListener('DOMContentLoaded', function () {
                 const counts = JSON.parse(stored);
                 unreadCounts = new Map(Object.entries(counts));
                 calculateTotalUnread();
-                console.log('🔔 [NOTIFICATIONS] Loaded unread counts:', Object.fromEntries(unreadCounts));
             }
         } catch (e) {
-            console.error('❌ [NOTIFICATIONS] Error loading unread counts:', e);
+            console.error('❌ Error loading unread counts:', e);
         }
     }
 
@@ -81,16 +79,14 @@ document.addEventListener('DOMContentLoaded', function () {
         try {
             const obj = Object.fromEntries(unreadCounts);
             localStorage.setItem('chat_unread_counts', JSON.stringify(obj));
-            console.log('🔔 [NOTIFICATIONS] Saved unread counts:', obj);
         } catch (e) {
-            console.error('❌ [NOTIFICATIONS] Error saving unread counts:', e);
+            console.error('❌ Error saving unread counts:', e);
         }
     }
 
     // Calculate total unread across all conversations
     function calculateTotalUnread() {
         totalUnread = Array.from(unreadCounts.values()).reduce((sum, count) => sum + count, 0);
-        console.log('🔔 [NOTIFICATIONS] Total unread:', totalUnread);
     }
 
     // Increment unread count for a conversation
@@ -103,8 +99,6 @@ document.addEventListener('DOMContentLoaded', function () {
         calculateTotalUnread();
         saveUnreadCounts();
         updateBadges();
-        
-        console.log(`🔔 [NOTIFICATIONS] Incremented ${convId.substring(0, 10)}...: ${current} → ${newCount}`);
     }
 
     // Clear unread count for a conversation
@@ -116,7 +110,6 @@ document.addEventListener('DOMContentLoaded', function () {
             calculateTotalUnread();
             saveUnreadCounts();
             updateBadges();
-            console.log(`🔔 [NOTIFICATIONS] Cleared ${convId.substring(0, 10)}...`);
         }
     }
 
@@ -126,7 +119,6 @@ document.addEventListener('DOMContentLoaded', function () {
         calculateTotalUnread();
         saveUnreadCounts();
         updateBadges();
-        console.log('🔔 [NOTIFICATIONS] Marked all as read');
     }
 
     // Update all badges in the UI
@@ -143,14 +135,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Update badge on chat toggle button
     function updateToggleButtonBadge() {
-        if (!toggleBtn) {
-            console.warn('⚠️ [BADGE] Toggle button not found');
-            return;
-        }
+        if (!toggleBtn) return;
         
         let badge = document.querySelector('.chat-toggle-badge');
         if (!badge) {
-            console.log('🔔 [BADGE] Creating new badge element');
             badge = document.createElement('div');
             badge.className = 'chat-toggle-badge';
             toggleBtn.style.position = 'relative';
@@ -160,10 +148,8 @@ document.addEventListener('DOMContentLoaded', function () {
         if (totalUnread > 0) {
             badge.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
             badge.style.display = 'flex';
-            console.log(`🔔 [BADGE] Updated toggle badge: ${totalUnread}`);
         } else {
             badge.style.display = 'none';
-            console.log('🔔 [BADGE] Hid toggle badge');
         }
     }
 
@@ -221,48 +207,8 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // ============================================================================
-    // VISUAL DEBUGGER: Real-time notification state display
+    // VISUAL DEBUGGER: Removed in production
     // ============================================================================
-    function addNotificationDebugUI() {
-        const debugDiv = document.createElement('div');
-        debugDiv.id = 'notification-debug';
-        debugDiv.style.cssText = `
-            position: fixed;
-            bottom: 80px;
-            right: 20px;
-            background: rgba(0,0,0,0.8);
-            color: white;
-            padding: 10px;
-            border-radius: 8px;
-            font-size: 12px;
-            font-family: monospace;
-            z-index: 999999;
-            max-width: 300px;
-            display: none;
-        `;
-        document.body.appendChild(debugDiv);
-        
-        setInterval(() => {
-            const convId = conversationId || 'none';
-            const isUserViewing = isViewingConversation(convId);
-            const shouldShowBadge = !isUserViewing;  // Badge shows if NOT viewing
-            
-            debugDiv.innerHTML = `
-                <div><strong>🔔 NOTIFICATION DEBUG</strong></div>
-                <div>Chat Open: ${isChatOpen ? '✅' : '❌'}</div>
-                <div>Current View: ${currentView}</div>
-                <div>Conv ID: ${convId.substring(0, 15)}...</div>
-                <div>Unread Total: ${totalUnread}</div>
-                <div>User Viewing: ${isUserViewing ? '✅' : '❌'}</div>
-                <div>Show Badge: ${shouldShowBadge ? '✅ YES' : '❌ NO'}</div>
-            `;
-            
-            // Auto-show if badges should appear
-            if (totalUnread > 0 && shouldShowBadge) {
-                debugDiv.style.display = 'block';
-            }
-        }, 1000);
-    }
 
     // Play notification sound
     function playNotificationSound() {
@@ -282,10 +228,8 @@ document.addEventListener('DOMContentLoaded', function () {
             
             oscillator.start();
             oscillator.stop(audioContext.currentTime + 0.5);
-            
-            console.log('🔔 [NOTIFICATIONS] Played notification sound');
         } catch (e) {
-            console.log('⚠️ [NOTIFICATIONS] Could not play sound:', e);
+            // Silent fail - audio context might not be available
         }
     }
 
@@ -335,18 +279,11 @@ document.addEventListener('DOMContentLoaded', function () {
             const data = JSON.parse(e.data);
             const notificationConvId = data.conversationId;
             
-            console.log('📬 [SSE] ✅ Notification received:', data);
-            
             // Check if user is actively viewing this specific conversation
             const isUserViewing = isViewingConversation(notificationConvId);
-            console.log(`🔔 [SSE] Checking: isViewingConversation('${notificationConvId.substring(0, 10)}...') = ${isUserViewing}`);
             
-            if (isUserViewing) {
-                // User IS viewing this conversation - don't increment badge
-                console.log(`🔔 [SSE] User IS actively viewing this conversation - skipping badge`);
-            } else {
+            if (!isUserViewing) {
                 // User is NOT viewing this conversation - increment badge
-                console.log(`🔔 [SSE] User NOT viewing - incrementing badge for ${notificationConvId.substring(0, 10)}...`);
                 incrementUnreadCount(notificationConvId, 1);
                 playNotificationSound();
                 
@@ -364,17 +301,13 @@ document.addEventListener('DOMContentLoaded', function () {
             if (sseReconnectAttempts < sseMaxReconnectAttempts) {
                 sseReconnectAttempts++;
                 const delay = Math.min(1000 * Math.pow(1.5, sseReconnectAttempts), 10000);
-                console.log(`🔄 [SSE] Reconnecting in ${delay}ms (attempt ${sseReconnectAttempts})`);
                 setTimeout(() => connectSSE(convId), delay);
-            } else {
-                console.error('❌ [SSE] Max reconnection attempts reached');
             }
         };
     }
     
     function disconnectSSE() {
         if (sseConnection && sseConnection.eventSource) {
-            console.log('🔌 [SSE] Disconnecting');
             sseConnection.eventSource.close();
             sseConnection = null;
         }
@@ -386,8 +319,6 @@ document.addEventListener('DOMContentLoaded', function () {
     function notifyBackendViewingStatus(conversationId, isViewing) {
         if (!conversationId) return;
         
-        console.log(`👁️ [VIEWING] Notifying backend: ${conversationId.substring(0, 10)}... = ${isViewing}`);
-        
         fetch('/api/chat/viewing-status', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -396,13 +327,10 @@ document.addEventListener('DOMContentLoaded', function () {
                 isViewing: isViewing
             })
         })
-        .then(response => response.json())
-        .then(data => {
-            console.log(`👁️ [VIEWING] Backend updated:`, data);
-        })
         .catch(error => {
             console.error('👁️ [VIEWING] Error:', error);
         });
+
     }
 
     // ============================================================================
@@ -2387,18 +2315,6 @@ document.addEventListener('DOMContentLoaded', function () {
     
     // ⭐ Initialize notification system
     initNotificationSystem();
-
-    // ⭐ NEW: Add visual debugger (shows real-time badge logic)
-    setTimeout(addNotificationDebugUI, 2000);
-
-    // ⭐ NEW: Quick verification test
-    setTimeout(() => {
-        console.log('🔔 VERIFICATION TEST READY:');
-        console.log('1. Toggle chat OPEN (if closed)');
-        console.log('2. Switch to conversation list view');
-        console.log('3. Run: window.debugChat.testNotificationSimple()');
-        console.log('4. You should see badge appear on toggle button');
-    }, 3000);
 
     // Global debug functions
     window.debugChat = {
