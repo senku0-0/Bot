@@ -55,18 +55,14 @@ def is_conversation_log_entry(text: str) -> bool:
     Check if the text appears to be a Zendesk Conversation Log entry.
     These are auto-generated and should NOT be forwarded to users.
     
-    Patterns include:
-    - Timestamps like (HH:MM:SS) User Name: message
-    - Answer Bot automated messages
-    - Ticket resolution notifications
-    - Sunshine Conversation references
-    - Support Agent conversation summaries
+    ⭐ IMPORTANT: This filter ALLOWS through CSAT surveys and feedback messages
+    even if they match some patterns.
     """
     if not text:
         return False
 
     conversation_log_patterns = [
-        # ⭐ NEW: Support Agent summaries (your specific issue)
+        # Support Agent summaries
         r'\(\d{1,2}:\d{2}:\d{2}\)\s+Support Agent:',
         r'\(\d{1,2}:\d{2}:\d{2}\)\s+Guest User:',
         r'\(\d{1,2}:\d{2}:\d{2}\)\s+Ashad Shaikh:',
@@ -77,14 +73,15 @@ def is_conversation_log_entry(text: str) -> bool:
         # Pattern: Multiple timestamps like (HH:MM:SS) repeated
         r'\(\d{1,2}:\d{2}:\d{2}\)\s+\w+.*\(\d{1,2}:\d{2}:\d{2}\)',
 
-        # ⭐ NEW: Recursive log detection (multiple timestamps in one message)
+        # Recursive log detection (multiple timestamps in one message)
         r'\(\d{1,2}:\d{2}:\d{2}\).*(\(\d{1,2}:\d{2}:\d{2}\)).*(\(\d{1,2}:\d{2}:\d{2}\))',
 
         # Pattern: Answer Bot messages
         r'Answer Bot:',
 
-        # Pattern: Waiting on your response messages
-        r'Waiting on your response',
+        # ⭐ UPDATED: More specific "Waiting" pattern to NOT block CSAT
+        # Only block if it's the auto-close warning, not general waiting messages
+        r'Waiting on your response.*ticket will be marked as solved',
 
         # Pattern: Ticket will be marked as solved
         r'ticket will be marked as solved',
@@ -104,33 +101,40 @@ def is_conversation_log_entry(text: str) -> bool:
         # Pattern: Escalation reason in log format
         r'Escalation Reason:.*Category:',
 
-        # ⭐ NEW: File upload logs
+        # File upload logs
         r'uploaded:.*URL:.*Type:.*Size:',
 
-        # ⭐ NEW: URL patterns in logs
+        # URL patterns in logs
         r'__https://.*zendesk\.com/sc/attachments.*__',
 
-        # ⭐ NEW: Detect if message contains previous log timestamps
+        # Detect if message contains previous log timestamps
         r'Support Agent:.*Guest User:.*uploaded:',
 
-        # New patterns for the provided log
-        r'Escalation Reason:.*',  # Matches escalation reason lines
-        r'Category:.*',  # Matches category lines
-        r'uploaded:.*',  # Matches file upload details
-        r'URL:.*',  # Matches file upload URL
-        r'Type:.*',  # Matches file type
-        r'Size:.*',  # Matches file size,
+        # Escalation and category lines
+        r'Escalation Reason:.*',
+        r'Category:.*',
+        r'uploaded:.*',
+        r'URL:.*',
+        r'Type:.*',
+        r'Size:.*',
 
-        # ⭐ NEW: Nested timestamps in logs
+        # Nested timestamps in logs
         r'\(\d{1,2}:\d{2}:\d{2}\).*\(\d{1,2}:\d{2}:\d{2}\).*\(\d{1,2}:\d{2}:\d{2}\)',
     ]
 
     for pattern in conversation_log_patterns:
         if re.search(pattern, text, re.IGNORECASE):
+            # ⭐ CRITICAL: Don't filter CSAT surveys and feedback messages
+            # CSAT contains phrases like "rate" "satisfaction" "experience" "survey" "feedback"
+            csat_keywords = ['rate', 'satisfaction', 'experience', 'survey', 'feedback', 'csat', 'rating']
+            if any(keyword in text.lower() for keyword in csat_keywords):
+                logger.info(f"[FILTER] ✅ Allowing CSAT/feedback message: {text[:100]}...")
+                return False
+            
             logger.info(f"[FILTER] ✂️ Matched pattern: {pattern[:50]}... in text: {text[:100]}...")
             return True
 
-    # ⭐ NEW: Additional heuristic - if message is very long and contains multiple timestamps
+    # Additional heuristic - if message is very long and contains multiple timestamps
     if len(text) > 500:  # Long message
         timestamp_count = len(re.findall(r'\(\d{1,2}:\d{2}:\d{2}\)', text))
         if timestamp_count >= 3:  # Contains 3+ timestamps
