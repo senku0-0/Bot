@@ -142,10 +142,11 @@ SUNSHINE_API_BASE_URL = os.getenv("SUNSHINE_API_BASE_URL", "https://api.smooch.i
 # ============================================================================
 # WEBSOCKET ADDED: Function to forward agent messages to WebSocket
 # ============================================================================
-def forward_agent_message_to_websocket(conversation_id: str, message_text: str, agent_name: str = "Agent") -> bool:
+def forward_agent_message_to_websocket(conversation_id: str, message_text: str, agent_name: str = "Agent", choices: list = None, actions: list = None) -> bool:
     """
     Forward agent messages to WebSocket for instant UI updates.
     ALSO sends SSE notifications for users on conversation list.
+    Supports interactive messages with choices/actions (CSAT surveys, etc).
     """
     try:
         # ⭐ CRITICAL: Filter out conversation log entries BEFORE forwarding
@@ -181,6 +182,15 @@ def forward_agent_message_to_websocket(conversation_id: str, message_text: str, 
                 'conversationId': conversation_id
             }
         }
+        
+        # ⭐ NEW: Add choices/actions if present (for interactive messages)
+        if choices and len(choices) > 0:
+            websocket_message['payload']['choices'] = choices
+            logger.info(f"[WEBSOCKET] ✨ Added {len(choices)} choices to WebSocket message")
+        
+        if actions and len(actions) > 0:
+            websocket_message['payload']['actions'] = actions
+            logger.info(f"[WEBSOCKET] ✨ Added {len(actions)} actions to WebSocket message")
 
         group_name = f'chat_{conversation_id}'
         logger.info(f"[WEBSOCKET] Forwarding agent message to group {group_name} - text: {str(message_text)[:200]}")
@@ -1152,6 +1162,24 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
         
         logger.info(f"[SUNSHINE-AGENT] Message details: author_type={author_type}, author_name={author_display_name}, source_type={source_type}, integration={integration_name}")
         
+        # ⭐ NEW: Extract choices/actions from the message (for CSAT surveys)
+        content = message.get("content", {})
+        choices = content.get("choices") or message.get("choices") or []
+        actions = content.get("actions") or message.get("actions") or []
+        
+        if choices:
+            logger.info(f"[SUNSHINE-WEBHOOK] 🎯 FOUND {len(choices)} CHOICES IN MESSAGE!")
+            logger.info(f"[SUNSHINE-WEBHOOK] Choices data: {json.dumps(choices)[:500]}")
+        
+        if actions:
+            logger.info(f"[SUNSHINE-WEBHOOK] 🎯 FOUND {len(actions)} ACTIONS IN MESSAGE!")
+            logger.info(f"[SUNSHINE-WEBHOOK] Actions data: {json.dumps(actions)[:500]}")
+        
+        # Log full message structure for debugging satisfaction surveys
+        if "rate" in text.lower() or "satisfaction" in text.lower() or "survey" in text.lower():
+            logger.info(f"[SUNSHINE-WEBHOOK] 📊 Potential CSAT survey detected!")
+            logger.info(f"[SUNSHINE-WEBHOOK] Full message structure: {json.dumps(message)[:1000]}")
+        
         # ============================================================================
         # CRITICAL FIX: IGNORE ALL SYSTEM AND ESCALATION MESSAGES IN UI
         # ============================================================================
@@ -1219,8 +1247,8 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
                 logger.info(f"[SUNSHINE-AGENT] ✂️ BLOCKED conversation log entry: {text[:100]}...")
                 return
             
-            # Forward to WebSocket
-            forward_agent_message_to_websocket(conversation_id, text, agent_name)
+            # Forward to WebSocket (with choices/actions if present)
+            forward_agent_message_to_websocket(conversation_id, text, agent_name, choices=choices, actions=actions)
             
             # Don't create a ticket for agent messages
             return
@@ -2493,6 +2521,21 @@ def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, An
             "source": "conversation_log"
         }
         
+        # ============================================================================
+        # Check for interactive message content (choices/actions)
+        # CSAT surveys and interactive messages come with choices/actions from Zendesk
+        # ============================================================================
+        choices = content.get("choices") or event.get("choices") or []
+        actions = content.get("actions") or event.get("actions") or []
+        
+        if choices:
+            logger.info(f"[FULL-HISTORY] Found {len(choices)} choices in message")
+            message["choices"] = choices
+        
+        if actions:
+            logger.info(f"[FULL-HISTORY] Found {len(actions)} actions in message")
+            message["actions"] = actions
+        
         # Initialize attachments list
         parsed_attachments = []
         
@@ -2651,6 +2694,18 @@ def get_sunshine_messages_list(conversation_id: str) -> List[Dict[str, Any]]:
                 "source": "sunshine"
             }
             
+            # ⭐ NEW: Extract choices/actions for interactive messages (CSAT surveys, etc)
+            choices = content.get("choices") or msg.get("choices") or []
+            actions = content.get("actions") or msg.get("actions") or []
+            
+            if choices:
+                logger.info(f"[SUNSHINE-LIST] Found {len(choices)} choices in message")
+                message["choices"] = choices
+            
+            if actions:
+                logger.info(f"[SUNSHINE-LIST] Found {len(actions)} actions in message")
+                message["actions"] = actions
+            
             # Handle image attachments
             if content.get("type") == "image":
                 media_url = content.get("mediaUrl", "")
@@ -2748,6 +2803,16 @@ def get_sunshine_messages_fallback(conversation_id: str) -> JsonResponse:
                 "messageClass": message_class,
                 "source": "sunshine"
             }
+            
+            # ⭐ NEW: Extract choices/actions for interactive messages (CSAT surveys, etc)
+            choices = content.get("choices") or msg.get("choices") or []
+            actions = content.get("actions") or msg.get("actions") or []
+            
+            if choices:
+                message["choices"] = choices
+            
+            if actions:
+                message["actions"] = actions
             
             # Handle attachments
             if content.get("type") == "image":

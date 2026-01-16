@@ -995,9 +995,20 @@ document.addEventListener('DOMContentLoaded', function () {
             const messageId = message.id || `agent_${Date.now()}`;
             const agentName = message.author?.displayName || 'Agent';
             const msgConversationId = message.conversationId || this.conversationId;
+            
+            // ⭐ NEW: Extract choices/actions for interactive messages
+            const choices = message.choices || [];
+            const actions = message.actions || [];
 
             console.log(`🎯 [WEBSOCKET] ✅ Agent message detected: ${agentName} in ${msgConversationId?.substring(0, 10)}...`);
             console.log(`🎯 [WEBSOCKET] Text: ${text.substring(0, 100)}...`);
+            
+            if (choices.length > 0) {
+                console.log(`🎯 [WEBSOCKET] 🎯 Message has ${choices.length} choices!`);
+            }
+            if (actions.length > 0) {
+                console.log(`🎯 [WEBSOCKET] 🎯 Message has ${actions.length} actions!`);
+            }
 
             // Skip duplicates
             if (displayedMessageIds.has(messageId)) {
@@ -1041,6 +1052,15 @@ document.addEventListener('DOMContentLoaded', function () {
             // Render the agent message (no per-message agent name)
             displayedMessageIds.add(messageId);
             appendMessage(text, 'bot-message');
+            
+            // ⭐ NEW: Render choices/actions if present (CSAT surveys, interactive messages)
+            if (choices.length > 0) {
+                console.log(`🎯 [WEBSOCKET] Rendering ${choices.length} choices`);
+                appendChoicesMessage(choices, 'bot-message', { choices });
+            } else if (actions.length > 0) {
+                console.log(`🎯 [WEBSOCKET] Rendering ${actions.length} actions`);
+                appendChoicesMessage(actions, 'bot-message', { actions });
+            }
             
             // Ensure scroll after agent message
             ensureScrollToBottom();
@@ -1293,6 +1313,15 @@ document.addEventListener('DOMContentLoaded', function () {
                             return;
                         }
                         appendMessage(msg.text, cssClass);
+                    }
+
+                    // ⭐ NEW: Display interactive choices/actions (CSAT surveys, etc)
+                    if (msg.choices && msg.choices.length > 0) {
+                        console.log(`🎯 [MESSAGES] Found ${msg.choices.length} choices/buttons`);
+                        appendChoicesMessage(msg.choices, cssClass, msg);
+                    } else if (msg.actions && msg.actions.length > 0) {
+                        console.log(`🎯 [MESSAGES] Found ${msg.actions.length} actions/buttons`);
+                        appendChoicesMessage(msg.actions, cssClass, msg);
                     }
                 });
 
@@ -1743,6 +1772,52 @@ document.addEventListener('DOMContentLoaded', function () {
         
         // Scroll after a small delay to ensure options are rendered
         setTimeout(() => scrollToBottom(), 50);
+    }
+
+    // ⭐ NEW: Display interactive choices/actions from CSAT surveys or other interactive messages
+    function appendChoicesMessage(choices, className, msg) {
+        console.log(`🎯 [UI] Appending ${choices.length} choices`);
+
+        const choicesDiv = document.createElement('div');
+        choicesDiv.classList.add('choices-container', className);
+
+        choices.forEach((choice, index) => {
+            // Extract text from choice object
+            // Choices can be: {text: "...", label: "...", value: "..."} or just a string
+            const choiceText = typeof choice === 'string' ? choice : 
+                              (choice.text || choice.label || choice.value || JSON.stringify(choice));
+            
+            const choiceValue = typeof choice === 'string' ? choice :
+                               (choice.value || choice.text || choice.label || index.toString());
+
+            const btn = document.createElement('button');
+            btn.classList.add('choice-btn');
+            btn.textContent = choiceText;
+            
+            btn.addEventListener('click', function () {
+                console.log(`🎯 [UI] Choice selected:`, choiceValue);
+                
+                // Send the choice back as a user message
+                appendMessage(choiceValue, 'user-message');
+                
+                // Disable all buttons in this group
+                choicesDiv.querySelectorAll('.choice-btn').forEach(b => {
+                    b.disabled = true;
+                    b.style.opacity = '0.5';
+                });
+                
+                // Also send it to the backend
+                sendToSunshine(choiceValue);
+                
+                // Mark it as sent
+                btn.classList.add('selected');
+            });
+            
+            choicesDiv.appendChild(btn);
+        });
+
+        messagesContainer.appendChild(choicesDiv);
+        ensureScrollToBottom();
     }
 
     function scrollToBottom() {
