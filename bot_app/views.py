@@ -1169,16 +1169,20 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
         
         if choices:
             logger.info(f"[SUNSHINE-WEBHOOK] 🎯 FOUND {len(choices)} CHOICES IN MESSAGE!")
-            logger.info(f"[SUNSHINE-WEBHOOK] Choices data: {json.dumps(choices)[:500]}")
+            logger.info(f"[SUNSHINE-WEBHOOK] Choices data: {json.dumps(choices, indent=2)[:1500]}")
+            for i, choice in enumerate(choices):
+                logger.info(f"[SUNSHINE-WEBHOOK]   Choice {i}: {choice}")
         
         if actions:
             logger.info(f"[SUNSHINE-WEBHOOK] 🎯 FOUND {len(actions)} ACTIONS IN MESSAGE!")
-            logger.info(f"[SUNSHINE-WEBHOOK] Actions data: {json.dumps(actions)[:500]}")
+            logger.info(f"[SUNSHINE-WEBHOOK] Actions data: {json.dumps(actions, indent=2)[:1500]}")
+            for i, action in enumerate(actions):
+                logger.info(f"[SUNSHINE-WEBHOOK]   Action {i}: {action}")
         
         # Log full message structure for debugging satisfaction surveys
         if "rate" in text.lower() or "satisfaction" in text.lower() or "survey" in text.lower():
             logger.info(f"[SUNSHINE-WEBHOOK] 📊 Potential CSAT survey detected!")
-            logger.info(f"[SUNSHINE-WEBHOOK] Full message structure: {json.dumps(message)[:1000]}")
+            logger.info(f"[SUNSHINE-WEBHOOK] Full message structure: {json.dumps(message, indent=2)[:2000]}")
         
         # ============================================================================
         # CRITICAL FIX: IGNORE ALL SYSTEM AND ESCALATION MESSAGES IN UI

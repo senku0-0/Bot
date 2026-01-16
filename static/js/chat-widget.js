@@ -1777,28 +1777,69 @@ document.addEventListener('DOMContentLoaded', function () {
     // ⭐ NEW: Display interactive choices/actions from CSAT surveys or other interactive messages
     function appendChoicesMessage(choices, className, msg) {
         console.log(`🎯 [UI] Appending ${choices.length} choices`);
+        console.log(`🎯 [UI] Full choices data:`, JSON.stringify(choices, null, 2));
 
         const choicesDiv = document.createElement('div');
         choicesDiv.classList.add('choices-container', className);
+        
+        // Check if all choices are emojis to apply emoji layout
+        let hasAllEmojis = true;
+        let emojiCount = 0;
+
+        choices.forEach((choice) => {
+            const choiceObj = typeof choice === 'string' ? { text: choice } : choice;
+            const choiceEmoji = choiceObj.emoji || choiceObj.icon || '';
+            
+            if (choiceEmoji) {
+                emojiCount++;
+            } else {
+                hasAllEmojis = false;
+            }
+        });
+        
+        // If all or most choices have emojis, apply emoji layout
+        if (emojiCount > 0 && emojiCount >= choices.length * 0.5) {
+            choicesDiv.classList.add('emoji-layout');
+            console.log(`🎯 [UI] Detected emoji layout with ${emojiCount}/${choices.length} emoji choices`);
+        }
 
         choices.forEach((choice, index) => {
-            // Extract text from choice object
-            // Choices can be: {text: "...", label: "...", value: "..."} or just a string
-            const choiceText = typeof choice === 'string' ? choice : 
-                              (choice.text || choice.label || choice.value || JSON.stringify(choice));
+            // Extract various fields from choice object
+            // Zendesk CSAT can send: text, label, value, emoji, icon, etc.
+            const choiceObj = typeof choice === 'string' ? { text: choice } : choice;
             
-            const choiceValue = typeof choice === 'string' ? choice :
-                               (choice.value || choice.text || choice.label || index.toString());
+            const choiceText = choiceObj.text || choiceObj.label || choiceObj.value || '';
+            const choiceValue = choiceObj.value || choiceObj.text || choiceObj.label || index.toString();
+            const choiceEmoji = choiceObj.emoji || choiceObj.icon || ''; // Zendesk emoji/icon field
+            
+            console.log(`🎯 [UI] Choice ${index}:`, {
+                text: choiceText,
+                value: choiceValue,
+                emoji: choiceEmoji,
+                fullObject: choiceObj
+            });
 
             const btn = document.createElement('button');
             btn.classList.add('choice-btn');
-            btn.textContent = choiceText;
+            
+            // If emoji exists, use it as the display, otherwise use text
+            if (choiceEmoji) {
+                btn.textContent = choiceEmoji;
+                btn.title = choiceText; // Show text as tooltip
+                btn.classList.add('emoji-choice');
+            } else {
+                btn.textContent = choiceText;
+            }
             
             btn.addEventListener('click', function () {
                 console.log(`🎯 [UI] Choice selected:`, choiceValue);
                 
-                // Send the choice back as a user message
-                appendMessage(choiceValue, 'user-message');
+                // Display the emoji/selection in chat as user response
+                if (choiceEmoji) {
+                    appendMessage(choiceEmoji, 'user-message');
+                } else {
+                    appendMessage(choiceValue, 'user-message');
+                }
                 
                 // Disable all buttons in this group
                 choicesDiv.querySelectorAll('.choice-btn').forEach(b => {
@@ -1806,7 +1847,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     b.style.opacity = '0.5';
                 });
                 
-                // Also send it to the backend
+                // Send the value to the backend (not the display text)
                 sendToSunshine(choiceValue);
                 
                 // Mark it as sent
