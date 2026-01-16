@@ -1312,16 +1312,41 @@ document.addEventListener('DOMContentLoaded', function () {
                             msg.text.includes('Escalation Reason:')) {
                             return;
                         }
-                        appendMessage(msg.text, cssClass);
+                        
+                        // ⭐ NEW: Skip displaying text if this is a CSAT/survey message with webview choices
+                        const hasWebviewChoice = msg.choices?.some(c => c.type === 'webview' && c.uri) ||
+                                                msg.actions?.some(a => a.type === 'webview' && a.uri);
+                        if (hasWebviewChoice) {
+                            console.log(`🎯 [MESSAGES] Skipping text for webview survey message`);
+                            // Don't display the text, just show the survey
+                        } else {
+                            appendMessage(msg.text, cssClass);
+                        }
                     }
 
                     // ⭐ NEW: Display interactive choices/actions (CSAT surveys, etc)
                     if (msg.choices && msg.choices.length > 0) {
                         console.log(`🎯 [MESSAGES] Found ${msg.choices.length} choices/buttons`);
-                        appendChoicesMessage(msg.choices, cssClass, msg);
+                        
+                        // ⭐ Check if this is a webview survey and auto-embed it
+                        const webviewChoice = msg.choices.find(c => c.type === 'webview' && c.uri);
+                        if (webviewChoice) {
+                            console.log(`🎯 [MESSAGES] Auto-embedding webview survey:`, webviewChoice.uri);
+                            appendWebviewSurvey(webviewChoice.uri, webviewChoice.text || 'Survey');
+                        } else {
+                            appendChoicesMessage(msg.choices, cssClass, msg);
+                        }
                     } else if (msg.actions && msg.actions.length > 0) {
                         console.log(`🎯 [MESSAGES] Found ${msg.actions.length} actions/buttons`);
-                        appendChoicesMessage(msg.actions, cssClass, msg);
+                        
+                        // ⭐ Check if this is a webview survey and auto-embed it
+                        const webviewAction = msg.actions.find(a => a.type === 'webview' && a.uri);
+                        if (webviewAction) {
+                            console.log(`🎯 [MESSAGES] Auto-embedding webview survey:`, webviewAction.uri);
+                            appendWebviewSurvey(webviewAction.uri, webviewAction.text || 'Survey');
+                        } else {
+                            appendChoicesMessage(msg.actions, cssClass, msg);
+                        }
                     }
                 });
 
