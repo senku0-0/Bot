@@ -1849,8 +1849,8 @@ document.addEventListener('DOMContentLoaded', function () {
                     // Display as user selection
                     appendMessage(choiceText || 'Opened survey', 'user-message');
                     
-                    // Open survey in new window
-                    window.open(choiceUri, '_blank', 'width=800,height=800');
+                    // ⭐ EMBED SURVEY IN BOT INSTEAD OF NEW WINDOW
+                    appendWebviewSurvey(choiceUri, choiceText);
                     
                     // Also send notification that user opened survey
                     sendToSunshine(choiceText || 'survey_opened');
@@ -1911,6 +1911,61 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         messagesContainer.appendChild(choicesDiv);
+        ensureScrollToBottom();
+    }
+
+    // ⭐ NEW: Embed webview survey directly in the chat
+    function appendWebviewSurvey(surveyUri, surveyTitle) {
+        console.log(`📋 [UI] Embedding webview survey: ${surveyTitle}`);
+        console.log(`📋 [UI] Survey URI: ${surveyUri.substring(0, 100)}...`);
+
+        const surveyContainer = document.createElement('div');
+        surveyContainer.classList.add('message', 'survey-bubble');
+
+        // Create title
+        const titleDiv = document.createElement('div');
+        titleDiv.classList.add('survey-title');
+        titleDiv.textContent = surveyTitle || 'Survey';
+        surveyContainer.appendChild(titleDiv);
+
+        // Create iframe wrapper
+        const iframeWrapper = document.createElement('div');
+        iframeWrapper.classList.add('survey-iframe-wrapper');
+
+        // Create iframe
+        const iframe = document.createElement('iframe');
+        iframe.classList.add('survey-iframe');
+        iframe.src = surveyUri;
+        iframe.title = surveyTitle || 'Survey';
+        iframe.allow = 'web-share *';
+        iframe.style.width = '100%';
+        iframe.style.height = '600px';
+        iframe.style.border = 'none';
+        iframe.style.borderRadius = '8px';
+
+        // Add loading state
+        const loadingDiv = document.createElement('div');
+        loadingDiv.classList.add('survey-loading');
+        loadingDiv.textContent = 'Loading survey...';
+
+        iframeWrapper.appendChild(loadingDiv);
+        iframeWrapper.appendChild(iframe);
+
+        // Remove loading when iframe loads
+        iframe.addEventListener('load', function () {
+            loadingDiv.style.display = 'none';
+            console.log(`✅ [UI] Survey iframe loaded`);
+            ensureScrollToBottom();
+        });
+
+        iframe.addEventListener('error', function () {
+            console.error(`❌ [UI] Survey iframe failed to load`);
+            loadingDiv.textContent = 'Failed to load survey. Please try again.';
+            loadingDiv.style.color = '#dc3545';
+        });
+
+        surveyContainer.appendChild(iframeWrapper);
+        messagesContainer.appendChild(surveyContainer);
         ensureScrollToBottom();
     }
 
