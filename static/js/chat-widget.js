@@ -1832,21 +1832,35 @@ document.addEventListener('DOMContentLoaded', function () {
                 btn.textContent = choiceText || 'Open Survey';
                 btn.classList.add('webview-btn');
                 
-                btn.addEventListener('click', function () {
+                btn.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    
+                    // Prevent double-clicks and repeated submissions
+                    if (btn.dataset.clicked === 'true' || btn.disabled) {
+                        return;
+                    }
+                    btn.dataset.clicked = 'true';
+                    btn.disabled = true;
+                    btn.style.opacity = '0.5';
+                    btn.classList.add('selected');
+                    
                     console.log(`🎯 [UI] Webview survey clicked:`, choiceUri);
                     
-                    // Display as user selection
+                    // Display as user selection (only once)
                     appendMessage(choiceText || 'Opened survey', 'user-message');
                     
                     // ⭐ EMBED SURVEY IN BOT INSTEAD OF NEW WINDOW
                     appendWebviewSurvey(choiceUri, choiceText);
                     
-                    // Also send notification that user opened survey
+                    // Also send notification that user opened survey (only once)
                     sendToSunshine(choiceText || 'survey_opened');
                     
-                    btn.disabled = true;
-                    btn.style.opacity = '0.5';
-                    btn.classList.add('selected');
+                    // Disable all buttons in this container
+                    choicesDiv.querySelectorAll('.choice-btn').forEach(b => {
+                        b.disabled = true;
+                        b.style.opacity = '0.5';
+                    });
                 });
             }
             // Handle emoji choices
@@ -1855,7 +1869,17 @@ document.addEventListener('DOMContentLoaded', function () {
                 btn.title = choiceText; // Show text as tooltip
                 btn.classList.add('emoji-choice');
                 
-                btn.addEventListener('click', function () {
+                btn.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    
+                    // Prevent double-clicks
+                    if (btn.dataset.clicked === 'true' || btn.disabled) {
+                        return;
+                    }
+                    btn.dataset.clicked = 'true';
+                    btn.disabled = true;
+                    
                     console.log(`🎯 [UI] Emoji choice selected:`, choiceValue);
                     
                     // Display the emoji in chat
@@ -1867,7 +1891,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         b.style.opacity = '0.5';
                     });
                     
-                    // Send the value to backend
+                    // Send the value to backend (only once)
                     sendToSunshine(choiceValue);
                     
                     btn.classList.add('selected');
@@ -1877,7 +1901,17 @@ document.addEventListener('DOMContentLoaded', function () {
             else {
                 btn.textContent = choiceText;
                 
-                btn.addEventListener('click', function () {
+                btn.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    
+                    // Prevent double-clicks
+                    if (btn.dataset.clicked === 'true' || btn.disabled) {
+                        return;
+                    }
+                    btn.data.clicked = 'true';
+                    btn.disabled = true;
+                    
                     console.log(`🎯 [UI] Text choice selected:`, choiceValue);
                     
                     // Display text in chat
@@ -1889,7 +1923,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         b.style.opacity = '0.5';
                     });
                     
-                    // Send to backend
+                    // Send to backend (only once)
                     sendToSunshine(choiceValue);
                     
                     btn.classList.add('selected');
@@ -1942,9 +1976,22 @@ document.addEventListener('DOMContentLoaded', function () {
         iframe.style.borderRadius = '0 0 8px 8px';
         iframe.style.display = 'block';
 
-        // Remove loading when iframe loads
+        // Hide loading immediately after appending - iframe may not fire load event due to sandbox/CORS
+        iframeWrapper.appendChild(iframe);
+        
+        setTimeout(() => {
+            if (loadingDiv && loadingDiv.parentElement) {
+                loadingDiv.style.display = 'none';
+            }
+            iframe.style.display = 'block';
+            ensureScrollToBottom();
+        }, 300);
+
+        // Also remove loading when iframe actually loads (if it does fire)
         iframe.addEventListener('load', function () {
-            loadingDiv.style.display = 'none';
+            if (loadingDiv && loadingDiv.parentElement) {
+                loadingDiv.style.display = 'none';
+            }
             iframe.style.display = 'block';
             ensureScrollToBottom();
         });
@@ -1956,7 +2003,6 @@ document.addEventListener('DOMContentLoaded', function () {
             iframe.style.display = 'none';
         });
 
-        iframeWrapper.appendChild(iframe);
         surveyContainer.appendChild(iframeWrapper);
         messagesContainer.appendChild(surveyContainer);
         ensureScrollToBottom();
