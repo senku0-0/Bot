@@ -1391,6 +1391,35 @@ def update_viewing_status(request: HttpRequest) -> JsonResponse:
         logger.error(f"[VIEWING-API] Error: {e}")
         return JsonResponse({"error": str(e)}, status=500)
 
+# ============================================================================
+# NEW: API Endpoint to Clear Unread Count Badge
+# ============================================================================
+@csrf_exempt
+def clear_unread_badge(request: HttpRequest) -> JsonResponse:
+    """
+    Clear the unread badge count for a conversation when user opens it.
+    POST JSON: {"conversationId": "..."}
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        conversation_id = data.get("conversationId")
+        
+        if not conversation_id:
+            return JsonResponse({"error": "Missing conversationId"}, status=400)
+        
+        # Clear the unread count from cache
+        cache.delete(f'unread_{conversation_id}')
+        logger.info(f"[BADGE-CLEAR] 🗑️ Cleared unread badge for conversation: {conversation_id}")
+        
+        return JsonResponse({"status": "cleared", "conversationId": conversation_id})
+        
+    except Exception as e:
+        logger.error(f"[BADGE-CLEAR] Error: {e}")
+        return JsonResponse({"error": str(e)}, status=500)
+
 @csrf_exempt
 def send_to_zendesk(request: HttpRequest) -> JsonResponse:
     """

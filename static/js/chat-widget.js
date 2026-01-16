@@ -105,11 +105,13 @@ document.addEventListener('DOMContentLoaded', function () {
     function clearUnreadCount(convId) {
         if (!convId) return;
         
+        console.log('🗑️ [BADGES] Clearing unread count for conversation:', convId);
         if (unreadCounts.has(convId)) {
             unreadCounts.delete(convId);
             calculateTotalUnread();
             saveUnreadCounts();
             updateBadges();
+            console.log('🗑️ [BADGES] Successfully cleared - total unread:', totalUnread);
         }
     }
 
@@ -281,11 +283,18 @@ document.addEventListener('DOMContentLoaded', function () {
         eventSource.addEventListener('new_message', (e) => {
             const data = JSON.parse(e.data);
             const notificationConvId = data.conversationId;
+            const backendUnreadCount = data.unreadCount;  // ⭐ Use backend's calculated count
             
-            // For global stream, always increment badge (user is on conversation list)
+            // For global stream, always show badge (user is on conversation list)
             if (isGlobal) {
-                console.log('📬 [SSE-GLOBAL] Received notification for conversation:', notificationConvId);
-                incrementUnreadCount(notificationConvId, 1);
+                console.log('📬 [SSE-GLOBAL] Received notification for conversation:', notificationConvId, 'unread:', backendUnreadCount);
+                // ⭐ SET the count to backend value (don't increment) - backend already calculated it
+                if (backendUnreadCount && backendUnreadCount > 0) {
+                    unreadCounts.set(notificationConvId, backendUnreadCount);
+                    calculateTotalUnread();
+                    saveUnreadCounts();
+                    updateBadges();
+                }
                 playNotificationSound();
                 
                 // Update conversation list with message preview
@@ -296,8 +305,15 @@ document.addEventListener('DOMContentLoaded', function () {
                 const isUserViewing = isViewingConversation(notificationConvId);
                 
                 if (!isUserViewing) {
-                    // User is NOT viewing this conversation - increment badge
-                    incrementUnreadCount(notificationConvId, 1);
+                    // User is NOT viewing this conversation
+                    console.log('📬 [SSE] Received notification for conversation:', notificationConvId, 'unread:', backendUnreadCount);
+                    // ⭐ SET the count to backend value (don't increment)
+                    if (backendUnreadCount && backendUnreadCount > 0) {
+                        unreadCounts.set(notificationConvId, backendUnreadCount);
+                        calculateTotalUnread();
+                        saveUnreadCounts();
+                        updateBadges();
+                    }
                     playNotificationSound();
                     
                     // Update conversation list with message preview
@@ -506,8 +522,20 @@ document.addEventListener('DOMContentLoaded', function () {
             notifyBackendViewingStatus(previousConvId, false);
         }
         
-        // ⭐ Clear unread count when opening conversation
+        // ⭐ Clear unread count when opening conversation (local + backend)
         clearUnreadCount(convId);
+        
+        // ⭐ NEW: Also clear the badge on the backend so it doesn't re-increment
+        fetch('/api/chat/clear-badge', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                conversationId: convId
+            })
+        })
+        .catch(error => {
+            console.error('❌ [BADGE] Error clearing badge:', error);
+        });
         
         // Set the conversation ID FIRST
         conversationId = convId;
