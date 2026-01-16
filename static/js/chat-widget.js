@@ -1806,13 +1806,11 @@ document.addEventListener('DOMContentLoaded', function () {
         // If all or most choices have emojis, apply emoji layout
         if (emojiCount > 0 && emojiCount >= choices.length * 0.5) {
             choicesDiv.classList.add('emoji-layout');
-            console.log(`🎯 [UI] Detected emoji layout with ${emojiCount}/${choices.length} emoji choices`);
         }
         
         // If webview detected, apply webview layout
         if (hasWebview) {
             choicesDiv.classList.add('webview-layout');
-            console.log(`🎯 [UI] Detected webview survey`);
         }
 
         choices.forEach((choice, index) => {
@@ -1825,15 +1823,6 @@ document.addEventListener('DOMContentLoaded', function () {
             const choiceEmoji = choiceObj.emoji || choiceObj.icon || '';
             const choiceUri = choiceObj.uri || choiceObj.fallback || ''; // For webview surveys
             const choiceType = choiceObj.type || ''; // 'webview', 'action', etc.
-            
-            console.log(`🎯 [UI] Choice ${index}:`, {
-                text: choiceText,
-                value: choiceValue,
-                emoji: choiceEmoji,
-                type: choiceType,
-                uri: choiceUri ? choiceUri.substring(0, 80) + '...' : 'none',
-                fullObject: choiceObj
-            });
 
             const btn = document.createElement('button');
             btn.classList.add('choice-btn');
@@ -1916,9 +1905,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // ⭐ NEW: Embed webview survey directly in the chat
     function appendWebviewSurvey(surveyUri, surveyTitle) {
-        console.log(`📋 [UI] Embedding webview survey: ${surveyTitle}`);
-        console.log(`📋 [UI] Survey URI: ${surveyUri.substring(0, 100)}...`);
-
         const surveyContainer = document.createElement('div');
         surveyContainer.classList.add('message', 'survey-bubble');
 
@@ -1932,38 +1918,45 @@ document.addEventListener('DOMContentLoaded', function () {
         const iframeWrapper = document.createElement('div');
         iframeWrapper.classList.add('survey-iframe-wrapper');
 
-        // Create iframe
-        const iframe = document.createElement('iframe');
-        iframe.classList.add('survey-iframe');
-        iframe.src = surveyUri;
-        iframe.title = surveyTitle || 'Survey';
-        iframe.allow = 'web-share *';
-        iframe.style.width = '100%';
-        iframe.style.height = '600px';
-        iframe.style.border = 'none';
-        iframe.style.borderRadius = '8px';
-
         // Add loading state
         const loadingDiv = document.createElement('div');
         loadingDiv.classList.add('survey-loading');
         loadingDiv.textContent = 'Loading survey...';
-
         iframeWrapper.appendChild(loadingDiv);
-        iframeWrapper.appendChild(iframe);
+
+        // Create iframe with proper security attributes
+        const iframe = document.createElement('iframe');
+        iframe.classList.add('survey-iframe');
+        iframe.src = surveyUri;
+        iframe.title = surveyTitle || 'Survey';
+        // Allow necessary features for survey
+        iframe.allow = 'geolocation; microphone; camera; payment; usb; magnetometer; gyroscope; accelerometer';
+        iframe.sandbox.add('allow-same-origin');
+        iframe.sandbox.add('allow-scripts');
+        iframe.sandbox.add('allow-popups');
+        iframe.sandbox.add('allow-forms');
+        iframe.sandbox.add('allow-top-navigation-by-user-activation');
+        iframe.style.width = '100%';
+        iframe.style.height = '600px';
+        iframe.style.border = 'none';
+        iframe.style.borderRadius = '0 0 8px 8px';
+        iframe.style.display = 'block';
 
         // Remove loading when iframe loads
         iframe.addEventListener('load', function () {
             loadingDiv.style.display = 'none';
-            console.log(`✅ [UI] Survey iframe loaded`);
+            iframe.style.display = 'block';
             ensureScrollToBottom();
         });
 
         iframe.addEventListener('error', function () {
-            console.error(`❌ [UI] Survey iframe failed to load`);
+            console.error(`❌ [SURVEY] Failed to load`);
             loadingDiv.textContent = 'Failed to load survey. Please try again.';
             loadingDiv.style.color = '#dc3545';
+            iframe.style.display = 'none';
         });
 
+        iframeWrapper.appendChild(iframe);
         surveyContainer.appendChild(iframeWrapper);
         messagesContainer.appendChild(surveyContainer);
         ensureScrollToBottom();
