@@ -1983,25 +1983,20 @@ document.addEventListener('DOMContentLoaded', function () {
         loadingDiv.textContent = 'Loading survey...';
         iframeWrapper.appendChild(loadingDiv);
 
-        // Create iframe with proper security attributes
+        // Create iframe WITHOUT sandbox for Zendesk surveys (they need to communicate with parent)
         const iframe = document.createElement('iframe');
         iframe.classList.add('survey-iframe');
         iframe.src = surveyUri;
         iframe.title = surveyTitle || 'Survey';
-        // Allow necessary features for survey
         iframe.allow = 'geolocation; microphone; camera; payment; usb; magnetometer; gyroscope; accelerometer';
-        iframe.sandbox.add('allow-same-origin');
-        iframe.sandbox.add('allow-scripts');
-        iframe.sandbox.add('allow-popups');
-        iframe.sandbox.add('allow-forms');
-        iframe.sandbox.add('allow-top-navigation-by-user-activation');
+        // DO NOT add sandbox - Zendesk surveys won't load with sandbox restrictions
         iframe.style.width = '100%';
         iframe.style.height = '600px';
         iframe.style.border = 'none';
         iframe.style.borderRadius = '0 0 8px 8px';
         iframe.style.display = 'block';
 
-        // Hide loading immediately after appending - iframe may not fire load event due to sandbox/CORS
+        // Hide loading after iframe appends
         iframeWrapper.appendChild(iframe);
         
         setTimeout(() => {
@@ -2010,10 +2005,11 @@ document.addEventListener('DOMContentLoaded', function () {
             }
             iframe.style.display = 'block';
             ensureScrollToBottom();
-        }, 300);
+        }, 500);
 
-        // Also remove loading when iframe actually loads (if it does fire)
+        // Also try to detect when content loads
         iframe.addEventListener('load', function () {
+            console.log(`✅ [SURVEY] Iframe loaded successfully`);
             if (loadingDiv && loadingDiv.parentElement) {
                 loadingDiv.style.display = 'none';
             }
@@ -2022,8 +2018,8 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         iframe.addEventListener('error', function () {
-            console.error(`❌ [SURVEY] Failed to load`);
-            loadingDiv.textContent = 'Failed to load survey. Please try again.';
+            console.error(`❌ [SURVEY] Failed to load iframe`);
+            loadingDiv.textContent = 'Survey could not be loaded. Please try again.';
             loadingDiv.style.color = '#dc3545';
             iframe.style.display = 'none';
         });
