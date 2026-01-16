@@ -192,22 +192,8 @@ def forward_agent_message_to_websocket(conversation_id: str, message_text: str, 
             logger.info(f"[WEBSOCKET] ✂️ BLOCKED conversation log entry from WebSocket: {message_text[:100]}...")
             return False
         
-        # ⭐ NEW: Send SSE notification (for users on conversation list viewing badge)
-        try:
-            unread_count = cache.get(f'unread_{conversation_id}', 0) + 1
-            cache.set(f'unread_{conversation_id}', unread_count, timeout=604800)  # 7 days
-            
-            send_notification_to_client(conversation_id, {
-                'type': 'new_message',
-                'conversationId': conversation_id,
-                'agentName': agent_name,
-                'messagePreview': message_text[:100],
-                'unreadCount': unread_count,
-                'timestamp': datetime.now().isoformat()
-            })
-            logger.info(f"[WEBSOCKET] 📬 SSE notification sent (unread: {unread_count})")
-        except Exception as sse_err:
-            logger.error(f"[WEBSOCKET] Failed to send SSE notification: {sse_err}")
+        # ⭐ NOTE: SSE notification already sent by process_message_event
+        # Don't duplicate the increment here - just forward to WebSocket for real-time display
         
         # Get the channel layer
         channel_layer = get_channel_layer()
