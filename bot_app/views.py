@@ -52,92 +52,49 @@ def strip_html_tags(text: str) -> str:
 # ============================================================================
 def is_conversation_log_entry(text: str) -> bool:
     """
-    Check if the text appears to be a Zendesk Conversation Log entry.
-    These are auto-generated and should NOT be forwarded to users.
+    Check if the text appears to be a Zendesk internal conversation log entry.
+    These are auto-generated system logs from Zendesk and should NOT be forwarded to users.
     
-    ⭐ IMPORTANT: This filter ALLOWS through CSAT surveys and feedback messages
-    even if they match some patterns.
+    ⭐ APPROACH: Only filter ACTUAL conversation log format entries.
+    Everything else (including CSAT surveys, feedback, agent messages) comes from Zendesk
+    and should be accepted and forwarded to the user.
+    
+    Since auto-close automations are disabled, we don't filter warning messages.
     """
     if not text:
         return False
 
+    # Only filter TRUE conversation log entries (system-generated timestamps from Zendesk)
     conversation_log_patterns = [
-        # Support Agent summaries
+        # Pattern 1: Timestamps in conversation log format "(HH:MM:SS) Name:"
+        r'^\(\d{1,2}:\d{2}:\d{2}\)\s+\w+',
         r'\(\d{1,2}:\d{2}:\d{2}\)\s+Support Agent:',
         r'\(\d{1,2}:\d{2}:\d{2}\)\s+Guest User:',
-        r'\(\d{1,2}:\d{2}:\d{2}\)\s+Ashad Shaikh:',
 
-        # Pattern: Single timestamp at start like "(19:57:26) Guest User:"
-        r'^\(\d{1,2}:\d{2}:\d{2}\)\s+\w+',
-
-        # Pattern: Multiple timestamps like (HH:MM:SS) repeated
+        # Pattern 2: Multiple timestamps (nested log entries)
         r'\(\d{1,2}:\d{2}:\d{2}\)\s+\w+.*\(\d{1,2}:\d{2}:\d{2}\)',
-
-        # Recursive log detection (multiple timestamps in one message)
         r'\(\d{1,2}:\d{2}:\d{2}\).*(\(\d{1,2}:\d{2}:\d{2}\)).*(\(\d{1,2}:\d{2}:\d{2}\))',
 
-        # Pattern: Answer Bot messages
-        r'Answer Bot:',
-
-        # ⭐ UPDATED: More specific "Waiting" pattern to NOT block CSAT
-        # Only block if it's the auto-close warning, not general waiting messages
-        r'Waiting on your response.*ticket will be marked as solved',
-
-        # Pattern: Ticket will be marked as solved
-        r'ticket will be marked as solved',
-
-        # Pattern: We haven't heard from you
-        r"haven't heard from you",
-
-        # Pattern: Messaging session ended
-        r'Messaging session ended',
-
-        # Pattern: This ticket will be marked
-        r'This ticket will be marked',
-
-        # Pattern: Sunshine Conversation reference
-        r'\[Sunshine Conversation',
-
-        # Pattern: Escalation reason in log format
-        r'Escalation Reason:.*Category:',
-
-        # File upload logs
+        # Pattern 3: File upload logs from conversation export
         r'uploaded:.*URL:.*Type:.*Size:',
-
-        # URL patterns in logs
-        r'__https://.*zendesk\.com/sc/attachments.*__',
-
-        # Detect if message contains previous log timestamps
         r'Support Agent:.*Guest User:.*uploaded:',
 
-        # Escalation and category lines
-        r'Escalation Reason:.*',
-        r'Category:.*',
-        r'uploaded:.*',
-        r'URL:.*',
-        r'Type:.*',
-        r'Size:.*',
+        # Pattern 4: Escalation logs
+        r'Escalation Reason:.*Category:',
 
-        # Nested timestamps in logs
-        r'\(\d{1,2}:\d{2}:\d{2}\).*\(\d{1,2}:\d{2}:\d{2}\).*\(\d{1,2}:\d{2}:\d{2}\)',
+        # Pattern 5: Sunshine conversation log markers
+        r'\[Sunshine Conversation',
     ]
 
     for pattern in conversation_log_patterns:
         if re.search(pattern, text, re.IGNORECASE):
-            # ⭐ CRITICAL: Don't filter CSAT surveys and feedback messages
-            # CSAT contains phrases like "rate" "satisfaction" "experience" "survey" "feedback"
-            csat_keywords = ['rate', 'satisfaction', 'experience', 'survey', 'feedback', 'csat', 'rating']
-            if any(keyword in text.lower() for keyword in csat_keywords):
-                logger.info(f"[FILTER] ✅ Allowing CSAT/feedback message: {text[:100]}...")
-                return False
-            
-            logger.info(f"[FILTER] ✂️ Matched pattern: {pattern[:50]}... in text: {text[:100]}...")
+            logger.info(f"[FILTER] ✂️ Filtered conversation log: {text[:100]}...")
             return True
 
-    # Additional heuristic - if message is very long and contains multiple timestamps
-    if len(text) > 500:  # Long message
+    # Additional heuristic - very long message with 3+ timestamps is likely a full conversation dump
+    if len(text) > 500:
         timestamp_count = len(re.findall(r'\(\d{1,2}:\d{2}:\d{2}\)', text))
-        if timestamp_count >= 3:  # Contains 3+ timestamps
+        if timestamp_count >= 3:
             logger.info(f"[FILTER] ✂️ Filtered long message with {timestamp_count} timestamps")
             return True
 
