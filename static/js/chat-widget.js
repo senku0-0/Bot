@@ -1785,10 +1785,16 @@ document.addEventListener('DOMContentLoaded', function () {
         // Check if all choices are emojis to apply emoji layout
         let hasAllEmojis = true;
         let emojiCount = 0;
+        let hasWebview = false;
 
         choices.forEach((choice) => {
             const choiceObj = typeof choice === 'string' ? { text: choice } : choice;
             const choiceEmoji = choiceObj.emoji || choiceObj.icon || '';
+            const choiceType = choiceObj.type || '';
+            
+            if (choiceType === 'webview') {
+                hasWebview = true;
+            }
             
             if (choiceEmoji) {
                 emojiCount++;
@@ -1802,57 +1808,104 @@ document.addEventListener('DOMContentLoaded', function () {
             choicesDiv.classList.add('emoji-layout');
             console.log(`🎯 [UI] Detected emoji layout with ${emojiCount}/${choices.length} emoji choices`);
         }
+        
+        // If webview detected, apply webview layout
+        if (hasWebview) {
+            choicesDiv.classList.add('webview-layout');
+            console.log(`🎯 [UI] Detected webview survey`);
+        }
 
         choices.forEach((choice, index) => {
             // Extract various fields from choice object
-            // Zendesk CSAT can send: text, label, value, emoji, icon, etc.
+            // Zendesk can send: text, label, value, emoji, icon, uri, type, etc.
             const choiceObj = typeof choice === 'string' ? { text: choice } : choice;
             
             const choiceText = choiceObj.text || choiceObj.label || choiceObj.value || '';
             const choiceValue = choiceObj.value || choiceObj.text || choiceObj.label || index.toString();
-            const choiceEmoji = choiceObj.emoji || choiceObj.icon || ''; // Zendesk emoji/icon field
+            const choiceEmoji = choiceObj.emoji || choiceObj.icon || '';
+            const choiceUri = choiceObj.uri || choiceObj.fallback || ''; // For webview surveys
+            const choiceType = choiceObj.type || ''; // 'webview', 'action', etc.
             
             console.log(`🎯 [UI] Choice ${index}:`, {
                 text: choiceText,
                 value: choiceValue,
                 emoji: choiceEmoji,
+                type: choiceType,
+                uri: choiceUri ? choiceUri.substring(0, 80) + '...' : 'none',
                 fullObject: choiceObj
             });
 
             const btn = document.createElement('button');
             btn.classList.add('choice-btn');
             
-            // If emoji exists, use it as the display, otherwise use text
-            if (choiceEmoji) {
+            // ⭐ NEW: Handle webview surveys (external survey links)
+            if (choiceType === 'webview' && choiceUri) {
+                btn.textContent = choiceText || 'Open Survey';
+                btn.classList.add('webview-btn');
+                
+                btn.addEventListener('click', function () {
+                    console.log(`🎯 [UI] Webview survey clicked:`, choiceUri);
+                    
+                    // Display as user selection
+                    appendMessage(choiceText || 'Opened survey', 'user-message');
+                    
+                    // Open survey in new window
+                    window.open(choiceUri, '_blank', 'width=800,height=800');
+                    
+                    // Also send notification that user opened survey
+                    sendToSunshine(choiceText || 'survey_opened');
+                    
+                    btn.disabled = true;
+                    btn.style.opacity = '0.5';
+                    btn.classList.add('selected');
+                });
+            }
+            // Handle emoji choices
+            else if (choiceEmoji) {
                 btn.textContent = choiceEmoji;
                 btn.title = choiceText; // Show text as tooltip
                 btn.classList.add('emoji-choice');
-            } else {
-                btn.textContent = choiceText;
-            }
-            
-            btn.addEventListener('click', function () {
-                console.log(`🎯 [UI] Choice selected:`, choiceValue);
                 
-                // Display the emoji/selection in chat as user response
-                if (choiceEmoji) {
+                btn.addEventListener('click', function () {
+                    console.log(`🎯 [UI] Emoji choice selected:`, choiceValue);
+                    
+                    // Display the emoji in chat
                     appendMessage(choiceEmoji, 'user-message');
-                } else {
-                    appendMessage(choiceValue, 'user-message');
-                }
-                
-                // Disable all buttons in this group
-                choicesDiv.querySelectorAll('.choice-btn').forEach(b => {
-                    b.disabled = true;
-                    b.style.opacity = '0.5';
+                    
+                    // Disable all buttons
+                    choicesDiv.querySelectorAll('.choice-btn').forEach(b => {
+                        b.disabled = true;
+                        b.style.opacity = '0.5';
+                    });
+                    
+                    // Send the value to backend
+                    sendToSunshine(choiceValue);
+                    
+                    btn.classList.add('selected');
                 });
+            }
+            // Handle text choices
+            else {
+                btn.textContent = choiceText;
                 
-                // Send the value to the backend (not the display text)
-                sendToSunshine(choiceValue);
-                
-                // Mark it as sent
-                btn.classList.add('selected');
-            });
+                btn.addEventListener('click', function () {
+                    console.log(`🎯 [UI] Text choice selected:`, choiceValue);
+                    
+                    // Display text in chat
+                    appendMessage(choiceValue, 'user-message');
+                    
+                    // Disable all buttons
+                    choicesDiv.querySelectorAll('.choice-btn').forEach(b => {
+                        b.disabled = true;
+                        b.style.opacity = '0.5';
+                    });
+                    
+                    // Send to backend
+                    sendToSunshine(choiceValue);
+                    
+                    btn.classList.add('selected');
+                });
+            }
             
             choicesDiv.appendChild(btn);
         });

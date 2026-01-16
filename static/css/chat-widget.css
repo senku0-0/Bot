@@ -393,6 +393,49 @@
     box-shadow: 0 4px 12px rgba(0, 123, 255, 0.4);
 }
 
+/* ⭐ NEW: Webview survey buttons (for external survey links) */
+.choices-container.webview-layout {
+    flex-direction: column;
+    background-color: #f0f7ff;
+    border: 1px solid #007bff;
+    border-radius: 12px;
+    padding: 12px;
+}
+
+.choice-btn.webview-btn {
+    background-color: #007bff;
+    color: white;
+    border: 2px solid #0056b3;
+    padding: 14px 18px;
+    border-radius: 8px;
+    font-size: 0.98em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-align: center;
+    width: 100%;
+    min-height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.choice-btn.webview-btn:hover:not(:disabled) {
+    background-color: #0056b3;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.5);
+}
+
+.choice-btn.webview-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.choice-btn.webview-btn.selected {
+    background-color: #28a745;
+    border-color: #1e7e34;
+}
+
 /* Chat Input Area */
 .chat-input {
     display: none; /* Hidden by default */
