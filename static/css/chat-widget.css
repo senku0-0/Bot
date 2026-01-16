@@ -446,8 +446,10 @@
     padding: 0;
     max-width: 100%;
     width: 100%;
+    min-height: 700px;
+    height: auto;
     margin: 10px 0;
-    overflow: hidden;
+    overflow: visible;
     box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
@@ -463,7 +465,8 @@
 .survey-iframe-wrapper {
     position: relative;
     width: 100%;
-    overflow: hidden;
+    height: 600px;
+    overflow: visible;
     background-color: #fff;
 }
 
