@@ -1066,8 +1066,12 @@ document.addEventListener('DOMContentLoaded', function () {
                 console.log(`🎯 [WEBSOCKET] Agent message for ${msgConversationId.substring(0, 10)}...`);
                 console.log(`🎯 [WEBSOCKET] Badge handled by webhook, just displaying message`);
                 
-                // Still save conversation update
-                saveConversation(msgConversationId, null, text.substring(0, 50), new Date().toISOString());
+                // ⭐ NEW: Don't save CSAT/interactive messages to conversation preview
+                if (!choices.length && !actions.length) {
+                    saveConversation(msgConversationId, null, text.substring(0, 50), new Date().toISOString());
+                } else {
+                    console.log('🎯 [WEBSOCKET] Skipping preview save for CSAT/interactive message');
+                }
             }
 
             // Only render if this is the currently active conversation
@@ -1099,6 +1103,11 @@ document.addEventListener('DOMContentLoaded', function () {
             if (choices.length > 0) {
                 console.log(`🎯 [WEBSOCKET] Rendering ${choices.length} choices`);
                 appendChoicesMessage(choices, 'bot-message', { choices });
+                
+                // ⭐ NEW: Hide chat input and show session ended message for CSAT
+                console.log('🎯 [WEBSOCKET] CSAT detected - hiding chat input and showing session ended');
+                chatInputArea.style.display = 'none';
+                appendMessage('Messaging session ended', 'agent-announcement');
             } else if (actions.length > 0) {
                 console.log(`🎯 [WEBSOCKET] Rendering ${actions.length} actions`);
                 appendChoicesMessage(actions, 'bot-message', { actions });
@@ -1370,6 +1379,9 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (msg.choices && msg.choices.length > 0) {
                         console.log(`🎯 [MESSAGES] Found ${msg.choices.length} choices/buttons`);
                         
+                        // ⭐ NEW: Hide chat input for CSAT surveys and show session ended
+                        chatInputArea.style.display = 'none';
+                        
                         // ⭐ Check if this is a webview survey and auto-embed it
                         const webviewChoice = msg.choices.find(c => c.type === 'webview' && c.uri);
                         if (webviewChoice) {
@@ -1378,8 +1390,14 @@ document.addEventListener('DOMContentLoaded', function () {
                         } else {
                             appendChoicesMessage(msg.choices, cssClass, msg);
                         }
+                        
+                        // ⭐ NEW: Show session ended message below CSAT
+                        appendMessage('Messaging session ended', 'agent-announcement');
                     } else if (msg.actions && msg.actions.length > 0) {
                         console.log(`🎯 [MESSAGES] Found ${msg.actions.length} actions/buttons`);
+                        
+                        // ⭐ NEW: Hide chat input for interactive messages and show session ended
+                        chatInputArea.style.display = 'none';
                         
                         // ⭐ Check if this is a webview survey and auto-embed it
                         const webviewAction = msg.actions.find(a => a.type === 'webview' && a.uri);
@@ -1389,6 +1407,9 @@ document.addEventListener('DOMContentLoaded', function () {
                         } else {
                             appendChoicesMessage(msg.actions, cssClass, msg);
                         }
+                        
+                        // ⭐ NEW: Show session ended message below survey
+                        appendMessage('Messaging session ended', 'agent-announcement');
                     }
                 });
 
