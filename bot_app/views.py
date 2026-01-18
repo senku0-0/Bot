@@ -250,6 +250,29 @@ def update_user_viewing_status(conversation_id: str, is_viewing: bool) -> bool:
         logger.error(f"[VIEWING-TRACKER] Error: {e}")
         return False
 
+# ⭐ NEW: Helper to save conversation with message preview (from user OR agent)
+def save_conversation_to_cache(conversation_id: str, message_text: str, user_id: str) -> None:
+    """
+    Save conversation info to cache for conversation list display.
+    Shows both user and agent messages as preview.
+    """
+    try:
+        conv_cache_key = f'conversation_info_{conversation_id}'
+        conv_data = cache.get(conv_cache_key, {})
+        
+        # Update with latest message preview
+        conv_data.update({
+            'conversationId': conversation_id,
+            'lastMessage': message_text[:100],  # Latest message from user or agent
+            'lastMessageTime': datetime.now().isoformat(),
+            'lastUserId': user_id
+        })
+        
+        cache.set(conv_cache_key, conv_data, timeout=604800)  # 1 week
+        logger.info(f"[CACHE] Saved conversation preview: {conversation_id} - {message_text[:50]}")
+    except Exception as e:
+        logger.error(f"[CACHE] Error saving conversation: {e}")
+
 # Index route (frontend entry point)
 @csrf_exempt
 def index(request: HttpRequest) -> HttpResponse:
@@ -598,6 +621,10 @@ def send_message_to_sunshine(request: HttpRequest) -> JsonResponse:
         response = requests.post(url, json=payload, auth=auth)
         
         if response.status_code == 201:
+            # ⭐ NEW: Save conversation with user message preview for conversation list
+            # This ensures conversation list shows latest messages from either user or agent
+            save_conversation_to_cache(conversation_id, text, app_user_id)
+            
             return JsonResponse({"status": "sent", "data": response.json()})
         else:
             logger.error(f"Sunshine API Error (Send Message): {response.status_code} - {response.text}")
@@ -1239,10 +1266,14 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
                     'agentName': agent_name,
                     'messagePreview': text[:100],
                     'unreadCount': unread_count,
-                    'timestamp': datetime.now().isoformat()
+                    'timestamp': datetime.now().isoformat(),
+                    # ⭐ NEW: Include choices/actions for CSAT surveys and interactive messages
+                    'choices': choices if choices else None,
+                    'actions': actions if actions else None,
+                    'isInteractive': bool(choices or actions)
                 })
                 
-                logger.info(f"[SUNSHINE-BADGE] 📬 SSE sent (unread: {unread_count})")
+                logger.info(f"[SUNSHINE-BADGE] 📬 SSE sent (unread: {unread_count})" + (f" - Interactive: {len(choices)} choices" if choices else ""))
             else:
                 logger.info(f"[SUNSHINE-BADGE] User is viewing - skipping badge increment")
             
@@ -2985,8 +3016,15 @@ async def global_notification_stream_generator():
                 # Send any new notifications since last check
                 for notif_data in notifications_queue[last_index:]:
                     message = notif_data.get('message', {})
-                    logger.info(f"[SSE-GLOBAL] 📤 Sending to client: {message.get('conversationId', '?')}")
-                    yield f"event: new_message\ndata: {json.dumps(message)}\n\n"
+                    conv_id = message.get('conversationId', '')
+                    
+                    # ⭐ CRITICAL: Only send if conversation has unread messages (backend source of truth)
+                    unread_count = cache.get(f'unread_{conv_id}', 0)
+                    if unread_count and unread_count > 0:
+                        logger.info(f"[SSE-GLOBAL] 📤 Sending notification for {conv_id} (unread: {unread_count})")
+                        yield f"event: new_message\ndata: {json.dumps(message)}\n\n"
+                    else:
+                        logger.info(f"[SSE-GLOBAL] ⏭️ Skipping notification for {conv_id} (no unread or count: {unread_count})")
                 
                 last_index = len(notifications_queue)
             

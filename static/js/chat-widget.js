@@ -56,7 +56,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Initialize notification system
     function initNotificationSystem() {
-        loadUnreadCounts();
+        // ⭐ CRITICAL: Don't load old localStorage on init
+        // Let SSE stream from backend provide authoritative counts
+        unreadCounts.clear();
+        calculateTotalUnread();
         updateBadges();
     }
 
@@ -212,9 +215,19 @@ document.addEventListener('DOMContentLoaded', function () {
     // VISUAL DEBUGGER: Removed in production
     // ============================================================================
 
-    // Play notification sound
+    // Play notification sound - with deduplication
     function playNotificationSound() {
         try {
+            // ⭐ DEDUPLICATION: Only play if at least 1.5 seconds since last sound
+            const now = Date.now();
+            if (now - lastSoundPlayTime < 1500) {
+                console.log('🔕 [SOUND] Skipping - sound played too recently');
+                return;
+            }
+            
+            lastSoundPlayTime = now;
+            console.log('🔔 [SOUND] Playing notification sound');
+            
             const audioContext = new (window.AudioContext || window.webkitAudioContext)();
             const oscillator = audioContext.createOscillator();
             const gainNode = audioContext.createGain();
@@ -241,6 +254,8 @@ document.addEventListener('DOMContentLoaded', function () {
     let sseConnection = null;
     let sseReconnectAttempts = 0;
     const sseMaxReconnectAttempts = 10;
+    let sseConnectionStartTime = 0;  // ⭐ Track when SSE connection started
+    let lastSoundPlayTime = 0;  // ⭐ Prevent sound spam - track last sound play time
     
     function connectSSE(convId, isGlobal = false) {
         const url = isGlobal ? '/api/notifications/stream/global' : `/api/notifications/stream/${convId}`;
@@ -265,13 +280,16 @@ document.addEventListener('DOMContentLoaded', function () {
         // Create new SSE connection
         console.log('🔌 [SSE] Connecting to:', url);
         
+        // ⭐ Track connection time for filtering old notifications
+        sseConnectionStartTime = Date.now();
+        
         const eventSource = new EventSource(url);
         sseConnection = {
             url: url,
             conversationId: convId,
             eventSource: eventSource,
             isGlobal: isGlobal,
-            startTime: Date.now()
+            startTime: sseConnectionStartTime
         };
         sseReconnectAttempts = 0;
         
@@ -285,17 +303,29 @@ document.addEventListener('DOMContentLoaded', function () {
             const notificationConvId = data.conversationId;
             const backendUnreadCount = data.unreadCount;  // ⭐ Use backend's calculated count
             
+            // ⭐ CRITICAL: Filter out old notifications from queue by timestamp
+            const messageTimestamp = data.timestamp ? new Date(data.timestamp).getTime() : Date.now();
+            const isRecentNotification = messageTimestamp >= sseConnectionStartTime - 2000;  // 2s buffer
+            
             // For global stream, always show badge (user is on conversation list)
             if (isGlobal) {
-                console.log('📬 [SSE-GLOBAL] Received notification for conversation:', notificationConvId, 'unread:', backendUnreadCount);
-                // ⭐ SET the count to backend value (don't increment) - backend already calculated it
+                console.log('📬 [SSE-GLOBAL]', notificationConvId, 'unread:', backendUnreadCount, isRecentNotification ? '✅ NEW' : '⏭️ OLD');
+                // ⭐ Always update badge - but only if it's a recent notification or unread is actually 0
                 if (backendUnreadCount && backendUnreadCount > 0) {
                     unreadCounts.set(notificationConvId, backendUnreadCount);
                     calculateTotalUnread();
                     saveUnreadCounts();
                     updateBadges();
+                    
+                    // ⭐ Only play sound for recent notifications
+                    if (isRecentNotification) {
+                        playNotificationSound();
+                    }
+                } else if (!isRecentNotification) {
+                    // ⭐ Old notification - skip completely
+                    console.log('⏭️ [SSE-GLOBAL] Skipping old notification for:', notificationConvId);
+                    return;
                 }
-                playNotificationSound();
                 
                 // Update conversation list with message preview
                 saveConversation(notificationConvId, null, data.messagePreview, data.timestamp);
@@ -306,15 +336,25 @@ document.addEventListener('DOMContentLoaded', function () {
                 
                 if (!isUserViewing) {
                     // User is NOT viewing this conversation
-                    console.log('📬 [SSE] Received notification for conversation:', notificationConvId, 'unread:', backendUnreadCount);
-                    // ⭐ SET the count to backend value (don't increment)
+                    console.log('📬 [SSE]', notificationConvId, 'unread:', backendUnreadCount, isRecentNotification ? '✅ NEW' : '⏭️ OLD');
+                    // ⭐ Only process recent notifications
+                    if (!isRecentNotification && (!backendUnreadCount || backendUnreadCount === 0)) {
+                        console.log('⏭️ [SSE] Skipping old notification for:', notificationConvId);
+                        return;
+                    }
+                    
+                    // SET the count to backend value (don't increment)
                     if (backendUnreadCount && backendUnreadCount > 0) {
                         unreadCounts.set(notificationConvId, backendUnreadCount);
                         calculateTotalUnread();
                         saveUnreadCounts();
                         updateBadges();
+                        
+                        // Only play sound for recent ones
+                        if (isRecentNotification) {
+                            playNotificationSound();
+                        }
                     }
-                    playNotificationSound();
                     
                     // Update conversation list with message preview
                     saveConversation(notificationConvId, null, data.messagePreview, data.timestamp);
