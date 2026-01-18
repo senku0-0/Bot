@@ -1,5 +1,4 @@
 document.addEventListener('DOMContentLoaded', function () {
-    const chatWidget = document.querySelector('.chat-widget');
     const chatBox = document.querySelector('.chat-box');
     const toggleBtn = document.querySelector('.chat-toggle-btn');
     const closeBtn = document.querySelector('.chat-close-btn');
@@ -10,8 +9,6 @@ document.addEventListener('DOMContentLoaded', function () {
     const chatHeaderTitle = document.querySelector('.chat-header span');
     const fileAttachBtn = document.querySelector('#file-attach-btn');
     const fileInput = document.querySelector('#file-input');
-    
-    // New conversation list elements
     const conversationListView = document.querySelector('.conversation-list-view');
     const conversationList = document.querySelector('.conversation-list');
     const chatView = document.querySelector('.chat-view');
@@ -19,182 +16,41 @@ document.addEventListener('DOMContentLoaded', function () {
     const backBtn = document.querySelector('.chat-back-btn');
 
     let isChatOpen = false;
-    let awaitingFeedback = false;
     let appUserId = null;
     let conversationId = null;
     let lastContext = "General Inquiry";
     let displayedMessageIds = new Set();
     let displayedImageFileNames = new Set();
     let pendingImage = null;
-    let pendingLocalMessages = new Set();
-    
-    // Current view state
     let currentView = 'list'; // 'list' or 'chat'
-
-    // WebSocket variables
     let sunshineSocket = null;
-    let webSocketConnected = false;
     let sessionEnded = false;
-
-    // State Management
     let isAgentConnected = localStorage.getItem('chat_isAgentConnected') === 'true';
-    let lastAgentRequestTime = parseInt(localStorage.getItem('chat_lastAgentRequestTime') || '0');
     let agentJoinAnnounced = localStorage.getItem('chat_agentJoinAnnounced') === 'true';
-    let hasConfirmedAgentActivity = localStorage.getItem('chat_hasConfirmedAgentActivity') === 'true';
-
-    // Data variables
     let troubleshootingSteps = {};
     let mainOptions = [];
     let appRelatedOptions = [];
     let deleteAccountReasons = [];
-
-    // ============================================================================
-    // NOTIFICATION SYSTEM - WhatsApp-style badges
-    // ============================================================================
     let unreadCounts = new Map(); // conversationId -> count
     let totalUnread = 0;
-
-    // Initialize notification system
     function initNotificationSystem() {
         loadUnreadCounts();
         calculateTotalUnread();
         updateBadges();
     }
-
-    // Load unread counts from localStorage
-    function loadUnreadCounts() {
-        try {
-            const stored = localStorage.getItem('chat_unread_counts');
-            if (stored) {
-                const counts = JSON.parse(stored);
-                unreadCounts = new Map(Object.entries(counts));
-                calculateTotalUnread();
-            }
-        } catch (e) {}
-    }
-
-    // Save unread counts to localStorage
-    function saveUnreadCounts() {
-        try {
-            localStorage.setItem('chat_unread_counts', JSON.stringify(Object.fromEntries(unreadCounts)));
-        } catch (e) {}
-    }
-
-    // Calculate total unread across all conversations
-    function calculateTotalUnread() {
-        totalUnread = Array.from(unreadCounts.values()).reduce((sum, count) => sum + count, 0);
-    }
-
-    // Increment unread count for a conversation
-    function incrementUnreadCount(convId, count = 1) {
-        if (!convId) return;
-        
-        const current = unreadCounts.get(convId) || 0;
-        const newCount = current + count;
-        unreadCounts.set(convId, newCount);
-        calculateTotalUnread();
-        saveUnreadCounts();
-        updateBadges();
-    }
-
-    // Clear unread count for a conversation
-    function clearUnreadCount(convId) {
-        if (!convId || !unreadCounts.has(convId)) return;
-        unreadCounts.delete(convId);
-        calculateTotalUnread();
-        saveUnreadCounts();
-        updateBadges();
-    }
-
-    // Mark all as read
-    function markAllAsRead() {
-        unreadCounts.clear();
-        calculateTotalUnread();
-        saveUnreadCounts();
-        updateBadges();
-    }
-
-    // Update all badges in the UI
-    function updateBadges() {
-        updateToggleButtonBadge();
-        updateConversationListBadges();
-        updateTitleNotification();
-        
-        // ⭐ Re-render conversation list to show updated badges
-        if (currentView === 'list') {
-            renderConversationList();
-        }
-    }
-
-    // Update badge on chat toggle button
-    function updateToggleButtonBadge() {
-        if (!toggleBtn) return;
-        
-        let badge = document.querySelector('.chat-toggle-badge');
-        if (!badge) {
-            badge = document.createElement('div');
-            badge.className = 'chat-toggle-badge';
-            toggleBtn.style.position = 'relative';
-            toggleBtn.appendChild(badge);
-        }
-        
-        if (totalUnread > 0) {
-            badge.textContent = totalUnread > 99 ? '99+' : totalUnread.toString();
-            badge.style.display = 'flex';
-        } else {
-            badge.style.display = 'none';
-        }
-    }
-
-    // Update badges on conversation list items
-    function updateConversationListBadges() {
-        if (currentView !== 'list') return;
-        
-        document.querySelectorAll('.conversation-item').forEach(item => {
-            const convId = item.getAttribute('data-conv-id');
-            if (!convId) return;
-            
-            const count = unreadCounts.get(convId) || 0;
-            let badge = item.querySelector('.conversation-badge');
-            
-            if (count > 0) {
-                if (!badge) {
-                    badge = document.createElement('div');
-                    badge.className = 'conversation-badge';
-                    item.style.position = 'relative';
-                    item.appendChild(badge);
-                }
-                badge.textContent = count > 99 ? '99+' : count.toString();
-                badge.style.display = 'flex';
-                
-                // Add unread styling
-                item.classList.add('conversation-unread');
-            } else {
-                if (badge) badge.style.display = 'none';
-                item.classList.remove('conversation-unread');
-            }
-        });
-    }
-
-    // Update browser tab title notification
-    function updateTitleNotification() {
-        const originalTitle = document.title.replace(/^\(\d+\)\s*/, '');
-        
-        if (totalUnread > 0) {
-            document.title = `(${totalUnread}) ${originalTitle}`;
-        } else {
-            document.title = originalTitle;
-        }
-    }
-
-    // Check if we're currently viewing a conversation
-    function isViewingConversation(convId) {
-        return !!(convId && isChatOpen && currentView === 'chat' && conversationId === convId);
-    }
-
-    // ============================================================================
-    // SSE: Server-Sent Events for Real-Time Notifications
-    // ============================================================================
+    const updateUnreadUI = () => {calculateTotalUnread();saveUnreadCounts();updateBadges();};
+    function loadUnreadCounts(){try{const stored=localStorage.getItem('chat_unread_counts');if(stored)unreadCounts=new Map(Object.entries(JSON.parse(stored)));calculateTotalUnread();}catch(e){}}
+    const saveUnreadCounts=()=>{try{localStorage.setItem('chat_unread_counts',JSON.stringify(Object.fromEntries(unreadCounts)));}catch(e){}};
+    const calculateTotalUnread=()=>{totalUnread=Array.from(unreadCounts.values()).reduce((s,c)=>s+c,0);};
+    const incrementUnreadCount=(id,n=1)=>{if(!id)return;unreadCounts.set(id,(unreadCounts.get(id)||0)+n);updateUnreadUI();};
+    const clearUnreadCount=id=>{if(!id||!unreadCounts.has(id))return;unreadCounts.delete(id);updateUnreadUI();};
+    const updateBadges=()=>{updateToggleButtonBadge();updateConversationListBadges();updateTitleNotification();if(currentView==='list')renderConversationList();};
+    const updateToggleButtonBadge=()=>{if(!toggleBtn)return;let b=document.querySelector('.chat-toggle-badge');if(!b){b=document.createElement('div');b.className='chat-toggle-badge';toggleBtn.style.position='relative';toggleBtn.appendChild(b);}b.style.display=totalUnread>0?'flex':'none';if(totalUnread>0)b.textContent=totalUnread>99?'99+':totalUnread;};
+    const updateConversationListBadges=()=>{if(currentView!=='list')return;document.querySelectorAll('.conversation-item').forEach(item=>{const id=item.getAttribute('data-conv-id');if(!id)return;const c=unreadCounts.get(id)||0;let b=item.querySelector('.conversation-badge');if(c>0){if(!b){b=document.createElement('div');b.className='conversation-badge';item.style.position='relative';item.appendChild(b);}b.textContent=c>99?'99+':c;b.style.display='flex';item.classList.add('conversation-unread');}else{if(b)b.style.display='none';item.classList.remove('conversation-unread');}});};
+    const updateTitleNotification=()=>{const o=document.title.replace(/^\(\d+\)\s*/,'');document.title=totalUnread>0?`(${totalUnread}) ${o}`:o;};
+    const isViewingConversation=c=>!!(c&&isChatOpen&&currentView==='chat'&&conversationId===c);
+    const setLS=(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}};
+    const getLS=k=>{try{return localStorage.getItem(k);}catch(e){}};
     let sseConnection = null;
     let sseReconnectAttempts = 0;
     const sseMaxReconnectAttempts = 10;
@@ -204,16 +60,11 @@ document.addEventListener('DOMContentLoaded', function () {
         const url = isGlobal ? '/api/notifications/stream/global' : `/api/notifications/stream/${convId}`;
         
         if (!convId && !isGlobal) {
-            console.log('⚠️ [SSE] No conversation ID to connect');
             return;
         }
-        
-        // Don't reconnect if already connected to this endpoint
         if (sseConnection && sseConnection.url === url && sseConnection.eventSource) {
             return;
         }
-        
-        // Close existing connection
         if (sseConnection && sseConnection.eventSource) {
             sseConnection.eventSource.close();
         }
@@ -230,9 +81,7 @@ document.addEventListener('DOMContentLoaded', function () {
         };
         sseReconnectAttempts = 0;
         
-        eventSource.addEventListener('connected', () => {
-            // Connected
-        });
+        eventSource.addEventListener('connected', () => {});
         
         eventSource.addEventListener('new_message', (e) => {
             const data = JSON.parse(e.data);
@@ -240,59 +89,33 @@ document.addEventListener('DOMContentLoaded', function () {
             const backendUnreadCount = data.unreadCount;
             const messageTimestamp = data.timestamp ? new Date(data.timestamp).getTime() : Date.now();
             const isRecentNotification = messageTimestamp >= sseConnectionStartTime - 2000;
-            
-            // For global stream, always show badge (user is on conversation list)
             if (isGlobal) {
-                console.log('📬 [SSE-GLOBAL]', notificationConvId, 'unread:', backendUnreadCount, isRecentNotification ? '✅ NEW' : '⏭️ OLD', 'msgTime:', new Date(messageTimestamp).toISOString(), 'connTime:', new Date(sseConnectionStartTime).toISOString());
-                
-                // ⭐ Skip only if OLD notification AND there's no unread count
                 if (!isRecentNotification && (!backendUnreadCount || backendUnreadCount === 0)) {
-                    console.log('⏭️ [SSE-GLOBAL] Skipping OLD notification with no unread:', notificationConvId);
                     return;
                 }
-                
-                // ⭐ Check if user is viewing this conversation
                 const isUserViewingThisConv = isViewingConversation(notificationConvId);
-                console.log(`📬 [SSE-GLOBAL] User viewing this conversation? ${isUserViewingThisConv}`);
-                
-                // ⭐ Only update badge if user is NOT viewing AND there are unread messages
                 if (!isUserViewingThisConv && backendUnreadCount && backendUnreadCount > 0) {
-                    console.log(`📬 [SSE-GLOBAL] ✅ Setting badge for ${notificationConvId} with count: ${backendUnreadCount}`);
                     unreadCounts.set(notificationConvId, backendUnreadCount);
                     calculateTotalUnread();
                     saveUnreadCounts();
                     updateBadges();
                 } else if (isUserViewingThisConv) {
-                    console.log(`📬 [SSE-GLOBAL] User is viewing - NOT setting badge`);
                 }
-                
-                // Update conversation list with message preview
                 saveConversation(notificationConvId, null, data.messagePreview, data.timestamp);
                 renderConversationList();
             } else {
-                // For single-conversation stream, check if user is actively viewing
                 const isUserViewing = isViewingConversation(notificationConvId);
                 
                 if (!isUserViewing) {
-                    // User is NOT viewing this conversation
-                    console.log('📬 [SSE]', notificationConvId, 'unread:', backendUnreadCount, isRecentNotification ? '✅ NEW' : '⏭️ OLD');
-                    
-                    // ⭐ Skip only if OLD notification AND there's no unread count
                     if (!isRecentNotification && (!backendUnreadCount || backendUnreadCount === 0)) {
-                        console.log('⏭️ [SSE] Skipping OLD notification with no unread for:', notificationConvId);
                         return;
                     }
-                    
-                    // SET the count to backend value (don't increment)
                     if (backendUnreadCount && backendUnreadCount > 0) {
-                        console.log(`📬 [SSE] ✅ Setting badge with count: ${backendUnreadCount}`);
                         unreadCounts.set(notificationConvId, backendUnreadCount);
                         calculateTotalUnread();
                         saveUnreadCounts();
                         updateBadges();
                     }
-                    
-                    // Update conversation list with message preview
                     saveConversation(notificationConvId, null, data.messagePreview, data.timestamp);
                     renderConversationList();
                 }
@@ -300,7 +123,6 @@ document.addEventListener('DOMContentLoaded', function () {
         });
         
         eventSource.onerror = (e) => {
-            console.error('❌ [SSE] Connection error:', e);
             eventSource.close();
             
             if (sseReconnectAttempts < sseMaxReconnectAttempts) {
@@ -311,14 +133,7 @@ document.addEventListener('DOMContentLoaded', function () {
         };
     }
     
-    function disconnectSSE() {
-        if (sseConnection && sseConnection.eventSource) {
-            sseConnection.eventSource.close();
-            sseConnection = null;
-        }
-    }
-
-    // Notify backend of viewing status
+    const disconnectSSE=()=>{if(sseConnection&&sseConnection.eventSource){sseConnection.eventSource.close();sseConnection=null;}};
     function notifyBackendViewingStatus(conversationId, isViewing) {
         if (!conversationId) return;
         fetch('/api/chat/viewing-status', {
@@ -327,26 +142,18 @@ document.addEventListener('DOMContentLoaded', function () {
             body: JSON.stringify({ conversationId, isViewing })
         }).catch(() => {});
     }
-
-    // ============================================================================
-    // CONVERSATION LIST MANAGEMENT
-    // ============================================================================
-    
     function getStoredConversations() {
-        const stored = localStorage.getItem('chat_conversations');
+        const stored = getLS('chat_conversations');
         return stored ? JSON.parse(stored) : [];
     }
     
     function saveConversation(convId, title, lastMessage, timestamp) {
         let conversations = getStoredConversations();
-        
-        // Check if conversation already exists
         const existingIndex = conversations.findIndex(c => c.id === convId);
         const existingConv = existingIndex >= 0 ? conversations[existingIndex] : null;
         
         const convData = {
             id: convId,
-            // ⭐ NEW: Preserve existing title if no new title provided
             title: title || existingConv?.title || 'Conversation',
             lastMessage: lastMessage || '',
             timestamp: timestamp || new Date().toISOString(),
@@ -358,11 +165,9 @@ document.addEventListener('DOMContentLoaded', function () {
         } else {
             conversations.unshift(convData);
         }
-        
-        // Keep only last 50 conversations
         conversations = conversations.slice(0, 50);
         
-        localStorage.setItem('chat_conversations', JSON.stringify(conversations));
+        setLS('chat_conversations', JSON.stringify(conversations));
         renderConversationList();
     }
     
@@ -399,8 +204,6 @@ document.addEventListener('DOMContentLoaded', function () {
                 </div>
             `;
         }).join('');
-        
-        // Add click handlers
         conversationList.querySelectorAll('.conversation-item').forEach(item => {
             item.addEventListener('click', () => {
                 const convId = item.getAttribute('data-conv-id');
@@ -409,21 +212,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
     
-    function getTimeAgo(timestamp) {
-        if (!timestamp) return '';
-        const now = new Date();
-        const then = new Date(timestamp);
-        const diffMs = now - then;
-        const diffMins = Math.floor(diffMs / 60000);
-        const diffHours = Math.floor(diffMs / 3600000);
-        const diffDays = Math.floor(diffMs / 86400000);
-        
-        if (diffMins < 1) return 'Just now';
-        if (diffMins < 60) return `${diffMins}m ago`;
-        if (diffHours < 24) return `${diffHours}h ago`;
-        if (diffDays < 7) return `${diffDays}d ago`;
-        return then.toLocaleDateString();
-    }
+    const getTimeAgo=t=>{if(!t)return'';const d=(new Date()-new Date(t)),m=Math.floor(d/60000),h=Math.floor(d/3600000),dy=Math.floor(d/86400000);return m<1?'Just now':m<60?`${m}m ago`:h<24?`${h}h ago`:dy<7?`${dy}d ago`:new Date(t).toLocaleDateString();};
     
     function showConversationList() {
         if (conversationId) notifyBackendViewingStatus(conversationId, false);
@@ -434,10 +223,7 @@ document.addEventListener('DOMContentLoaded', function () {
         backBtn.style.display = 'none';
         chatHeaderTitle.textContent = 'Yatri Bandhu';
         connectSSE(null, true);
-        
-        // Reset current conversation state but keep the data
         if (conversationId) {
-            // Save state before switching - include agent name for restoration
             const agentName = localStorage.getItem('chat_agentName') || 'Agent';
             const convState = {
                 isAgentConnected: isAgentConnected,
@@ -480,26 +266,17 @@ document.addEventListener('DOMContentLoaded', function () {
         const storedAppUserId = localStorage.getItem(`chat_appUserId_${convId}`);
         if (storedAppUserId) {
             appUserId = storedAppUserId;
-            console.log('✅ [CONV] Restored appUserId:', appUserId.substring(0, 10) + '...');
         } else {
-            // ⭐ NEW: Try to get from generic storage as fallback
             const genericUserId = localStorage.getItem('chat_user_id');
             if (genericUserId) {
                 appUserId = genericUserId;
-                // Store it for this conversation
                 localStorage.setItem(`chat_appUserId_${convId}`, genericUserId);
-                console.log('✅ [CONV] Using generic userId:', appUserId.substring(0, 10) + '...');
             } else {
-                console.error('❌ [CONV] No appUserId found - will fetch from API');
                 appUserId = null;
             }
         }
-        
-        // Clear display state
         displayedMessageIds.clear();
         displayedImageFileNames.clear();
-        
-        // Load conversation state
         const convState = localStorage.getItem(`chat_conv_state_${convId}`);
         let restoredAgentName = 'Agent';
         if (convState) {
@@ -508,9 +285,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 isAgentConnected = state.isAgentConnected || false;
                 agentJoinAnnounced = state.agentJoinAnnounced || false;
                 restoredAgentName = state.agentName || 'Agent';
-                console.log('📂 [CONV] Restored state:', { isAgentConnected, agentJoinAnnounced, agentName: restoredAgentName });
             } catch (e) {
-                console.error('❌ [CONV] Failed to parse conversation state:', e);
                 isAgentConnected = false;
                 agentJoinAnnounced = false;
             }
@@ -518,14 +293,8 @@ document.addEventListener('DOMContentLoaded', function () {
             isAgentConnected = false;
             agentJoinAnnounced = false;
         }
-        
-        // Clear messages container
         messagesContainer.innerHTML = '';
-        
-        // Switch to chat view
         showChatView();
-        
-        // Show/hide input based on agent connection
         if (isAgentConnected) {
             chatInputArea.style.display = 'flex';
             chatHeaderTitle.textContent = restoredAgentName;
@@ -534,34 +303,23 @@ document.addEventListener('DOMContentLoaded', function () {
             chatInputArea.style.display = 'none';
             chatHeaderTitle.textContent = 'Yatri Bandhu';
         }
-        
-        // Disconnect existing WebSocket
         if (sunshineSocket) {
             sunshineSocket.disconnect();
             sunshineSocket = null;
         }
-        
-        // Connect new WebSocket
         sunshineSocket = new SunshineWebSocketManager(conversationId);
         sunshineSocket.connect();
-        
-        // ⭐ NEW: If we don't have appUserId, fetch it from API before fetching messages
         if (!appUserId) {
-            console.log('🔄 [CONV] appUserId missing, fetching conversation details...');
             fetchConversationDetails(convId).then(() => {
-                // After getting appUserId, fetch messages
                 fetchMessages();
             });
         } else {
-            // We have appUserId, fetch messages immediately
             fetchMessages();
         }
     }
     
     function fetchConversationDetails(convId) {
         return new Promise((resolve, reject) => {
-            console.log('🔍 [API] Fetching conversation details for:', convId);
-            
             fetch(`/api/chat/get-messages?conversationId=${convId}`)
                 .then(response => {
                     if (!response.ok) {
@@ -570,7 +328,6 @@ document.addEventListener('DOMContentLoaded', function () {
                     return response.json();
                 })
                 .then(data => {
-                    // Try to extract appUserId from conversation data
                     if (data.conversation && data.conversation.participants) {
                         const userParticipant = data.conversation.participants.find(
                             p => p.userExternalId || p.userId
@@ -579,69 +336,45 @@ document.addEventListener('DOMContentLoaded', function () {
                             appUserId = userParticipant.userId || userParticipant.userExternalId;
                             localStorage.setItem(`chat_appUserId_${convId}`, appUserId);
                             localStorage.setItem('chat_user_id', appUserId);
-                            console.log('✅ [API] Restored appUserId from API:', appUserId.substring(0, 10) + '...');
                             resolve();
                             return;
                         }
                     }
-                    
-                    console.warn('⚠️ [API] Could not extract appUserId from response');
                     resolve(); // Still resolve to continue
                 })
                 .catch(error => {
-                    console.error('❌ [API] Error fetching conversation details:', error);
                     resolve(); // Don't reject, allow flow to continue
                 });
         });
     }
     
     function startNewConversation() {
-        console.log('🆕 [CONV] Starting new conversation flow (no API call yet)');
-        
-        // Reset all state - but DON'T create conversation yet
         conversationId = null;
         appUserId = null;
         displayedMessageIds.clear();
         displayedImageFileNames.clear();
         isAgentConnected = false;
         agentJoinAnnounced = false;
-        hasConfirmedAgentActivity = false;
         sessionEnded = false;
         lastContext = "General Inquiry";
         window.lastAppRelatedCategory = null;
-        
-        // Clear current conversation from storage
         localStorage.removeItem('chat_current_conversation');
         localStorage.removeItem('chat_isAgentConnected');
         localStorage.removeItem('chat_agentJoinAnnounced');
-        localStorage.removeItem('chat_hasConfirmedAgentActivity');
         localStorage.removeItem('chat_agentName');
-        
-        // Disconnect existing WebSocket
         if (sunshineSocket) {
             sunshineSocket.disconnect();
             sunshineSocket = null;
         }
-        
-        // Clear messages container
         messagesContainer.innerHTML = '';
-        
-        // Switch to chat view
         showChatView();
         chatInputArea.style.display = 'none';
         chatHeaderTitle.textContent = 'Yatri Bandhu';
-        
-        // Show welcome message and options WITHOUT creating a conversation
-        // Conversation will be created only when user clicks "Connect to Agent"
         appendMessage("Hello! 👋 How can I help you today?", 'bot-message');
         showMainOptions();
     }
     
     function createConversationAndEscalate(reason, category) {
-        // This function creates the conversation ONLY when user wants to connect to agent
-        console.log('🚀 [CHAT] Creating conversation for escalation...');
-        console.log('🚀 [CHAT] Reason:', reason, 'Category:', category);
-
         const storedUserId = localStorage.getItem('chat_user_id');
         const payload = {
             userId: storedUserId || null,
@@ -656,7 +389,6 @@ document.addEventListener('DOMContentLoaded', function () {
             .then(response => {
                 if (!response.ok) {
                     return response.text().then(text => {
-                        console.error('❌ [CHAT] Server error:', text);
                         throw new Error(`HTTP ${response.status}: ${text}`);
                     });
                 }
@@ -670,40 +402,24 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (data.externalId) {
                         localStorage.setItem('chat_user_id', data.externalId);
                     }
-                    
-                    // Store appUserId for this conversation (for restoration after refresh)
                     localStorage.setItem(`chat_appUserId_${conversationId}`, appUserId);
 
-                    console.log("✅ [CHAT] Conversation created:", {
-                        conversationId: conversationId.substring(0, 10) + '...'
-                    });
-                    
-                    // Save to storage
                     localStorage.setItem('chat_current_conversation', conversationId);
                     saveConversation(conversationId, category || 'Support Request', '', new Date().toISOString());
-
-                    // Initialize WebSocket
                     sunshineSocket = new SunshineWebSocketManager(conversationId);
                     sunshineSocket.connect();
-                    
-                    // NOW escalate to agent
                     performEscalation(reason, category);
 
                 } else {
-                    console.error("❌ [CHAT] Failed to create conversation:", data);
                     appendMessage("Failed to connect. Please try again.", 'system-message');
                 }
             })
             .catch(error => {
-                console.error('❌ [CHAT] Error creating conversation:', error);
                 appendMessage("Connection error. Please try again.", 'system-message');
             });
     }
     
     function performEscalation(reason, category) {
-        // Actually perform the escalation API call
-        console.log('🚀 [ESCALATE] Escalating to agent...');
-        
         fetch('/api/chat/escalate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -721,30 +437,18 @@ document.addEventListener('DOMContentLoaded', function () {
                 return response.json();
             })
             .then(data => {
-                console.log("✅ [ESCALATE] Success:", data);
-                
-                // Set agent connected state
                 isAgentConnected = true;
-                lastAgentRequestTime = Date.now();
                 agentJoinAnnounced = false;
                 localStorage.setItem('chat_isAgentConnected', 'true');
-                localStorage.setItem('chat_lastAgentRequestTime', lastAgentRequestTime.toString());
                 localStorage.setItem('chat_agentJoinAnnounced', 'false');
-                
-                // Show loading and enable input
                 showLoadingIndicator();
                 chatInputArea.style.display = 'flex';
                 chatInput.focus();
             })
             .catch(error => {
-                console.error('❌ [ESCALATE] Error:', error);
                 appendMessage("Error connecting to agent. Please try again.", 'system-message');
             });
     }
-
-    // ============================================================================
-    // FIXED: Sunshine WebSocket Manager - SIMPLIFIED & GUARANTEED TO WORK
-    // ============================================================================
     class SunshineWebSocketManager {
         constructor(conversationId) {
             this.conversationId = conversationId;
@@ -753,43 +457,23 @@ document.addEventListener('DOMContentLoaded', function () {
             this.reconnectAttempts = 0;
             this.maxReconnectAttempts = 10;
             this.pingInterval = null;
-            this.messageHandler = null;
-
-            console.log(`🎯 [WEBSOCKET] Manager created for conversation: ${conversationId}`);
         }
 
         connect() {
             if (!this.conversationId) {
-                console.error('❌ [WEBSOCKET] Cannot connect: missing conversationId');
                 return;
             }
-
-            // Close existing connection
             if (this.socket) {
                 this.disconnect();
             }
-
-            // Create WebSocket URL - use secure when page is https, otherwise plain ws
             const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
             const wsUrl = `${wsProtocol}://${window.location.host}/ws/chat/${this.conversationId}/`;
-
-            console.log('🔌 [WEBSOCKET] Connecting to:', wsUrl);
-
             this.socket = new WebSocket(wsUrl);
 
             this.socket.onopen = () => {
-                console.log('✅ [WEBSOCKET] CONNECTED!');
                 this.connected = true;
                 this.reconnectAttempts = 0;
-                webSocketConnected = true;
-
-                // Start ping interval (25 seconds for keepalive)
                 this.startPingInterval();
-
-                // Log success
-                console.log(`✅ [WEBSOCKET] ReadyState: ${this.socket.readyState} (OPEN=1)`);
-
-                // Send connection established test message
                 this.send({
                     type: 'echo',
                     message: 'WebSocket connected',
@@ -800,32 +484,21 @@ document.addEventListener('DOMContentLoaded', function () {
             this.socket.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
-                    console.log('📨 [WEBSOCKET] Received:', data.type || 'unknown');
-
-                    // Handle different message types
                     this.handleIncomingMessage(data);
 
                 } catch (error) {
-                    console.error('❌ [WEBSOCKET] Error parsing message:', error);
                 }
             };
 
             this.socket.onerror = (error) => {
-                console.error('❌ [WEBSOCKET] Error:', error);
             };
 
             this.socket.onclose = (event) => {
-                console.log(`🔌 [WEBSOCKET] CLOSED: Code ${event.code}, Reason: ${event.reason}`);
                 this.connected = false;
-                webSocketConnected = false;
-
-                // Clear ping interval
                 if (this.pingInterval) {
                     clearInterval(this.pingInterval);
                     this.pingInterval = null;
                 }
-
-                // Auto-reconnect (except for normal closure)
                 if (!sessionEnded && event.code !== 1000) {
                     this.reconnect();
                 }
@@ -833,19 +506,15 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         startPingInterval() {
-            // Clear existing interval
             if (this.pingInterval) {
                 clearInterval(this.pingInterval);
             }
-
-            // Send ping every 25 seconds to keep connection alive
             this.pingInterval = setInterval(() => {
                 if (this.socket && this.socket.readyState === WebSocket.OPEN) {
                     this.send({
                         type: 'ping',
                         timestamp: Date.now()
                     });
-                    console.log('🏓 [WEBSOCKET] Sent ping');
                 }
             }, 25000);
         }
@@ -854,65 +523,37 @@ document.addEventListener('DOMContentLoaded', function () {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
                 try {
                     this.socket.send(JSON.stringify(data));
-                    console.log('📤 [WEBSOCKET] Sent:', data.type || 'unknown');
                     return true;
                 } catch (error) {
-                    console.error('❌ [WEBSOCKET] Send error:', error);
                     return false;
                 }
-            } else {
-                console.warn('⚠️ [WEBSOCKET] Not ready to send. State:', this.socket?.readyState);
-                return false;
             }
+            return false;
         }
 
         handleIncomingMessage(data) {
-            // Handle connection established
             if (data.type === 'connection_established') {
-                console.log('✅ [WEBSOCKET] ' + data.message);
-                console.log('✅ [WEBSOCKET] Group:', data.group_name);
                 return;
             }
-
-            // Handle pong response
             if (data.type === 'pong') {
-                console.log('🏓 [WEBSOCKET] Pong received');
                 return;
             }
-
-            // Handle echo response
             if (data.type === 'echo_response') {
-                console.log('📨 [WEBSOCKET] Echo response received');
                 return;
             }
-
-            // Handle keepalive
             if (data.type === 'keepalive') {
-                console.log('💓 [WEBSOCKET] Keepalive received');
                 return;
             }
-
-            // 🎯 CRITICAL: Handle agent messages
             if (data.type === 'agent_message') {
-                console.log('🎯 [WEBSOCKET] AGENT MESSAGE received!');
                 this.processAgentMessage(data.payload || data);
                 return;
             }
-
-            // Handle error
             if (data.type === 'error') {
-                console.error('❌ [WEBSOCKET] Error from server:', data.message);
                 return;
             }
-
-            // Handle other message types
-            console.log('📨 [WEBSOCKET] Unhandled type:', data.type, 'Data:', JSON.stringify(data).substring(0, 200));
         }
 
         processAgentMessage(message) {
-            console.log('🎯 [WEBSOCKET] Processing agent message:', JSON.stringify(message).substring(0, 300));
-
-            // Check if this is an agent message
             const isAgent = message.author && (
                 message.author.type === 'business' ||
                 message.author.type === 'agent' ||
@@ -921,59 +562,31 @@ document.addEventListener('DOMContentLoaded', function () {
             );
 
             if (!isAgent) {
-                console.log('⚠️ [WEBSOCKET] Not an agent message:', message.author?.type, message.source);
                 return;
             }
-
-            // Extract text content
             const text = message.content?.text || message.text || '';
             const messageId = message.id || `agent_${Date.now()}`;
             const agentName = message.author?.displayName || 'Agent';
             const msgConversationId = message.conversationId || this.conversationId;
-            
-            // ⭐ NEW: Extract choices/actions for interactive messages
             const choices = message.choices || [];
             const actions = message.actions || [];
-
-            console.log(`🎯 [WEBSOCKET] ✅ Agent message detected: ${agentName} in ${msgConversationId?.substring(0, 10)}...`);
-            console.log(`🎯 [WEBSOCKET] Text: ${text.substring(0, 100)}...`);
             
             if (choices.length > 0) {
-                console.log(`🎯 [WEBSOCKET] 🎯 Message has ${choices.length} choices!`);
             }
             if (actions.length > 0) {
-                console.log(`🎯 [WEBSOCKET] 🎯 Message has ${actions.length} actions!`);
             }
-
-            // Skip duplicates
             if (displayedMessageIds.has(messageId)) {
-                console.log('⚠️ [WEBSOCKET] Duplicate message ID, skipping:', messageId);
                 return;
             }
-
-            // ============================================================================
-            // COMBINED APPROACH: Badge logic handled by webhook
-            // WebSocket only needs to display message
-            // ============================================================================
-            
-            // ⭐ NEW: Only save as preview if user is NOT viewing (it's a notification)
             const isUserViewingThisConv = msgConversationId === conversationId && isChatOpen && currentView === 'chat';
             
             if (msgConversationId && !isUserViewingThisConv && agentJoinAnnounced) {
-                console.log(`🎯 [WEBSOCKET] User NOT viewing - saving as preview for: ${msgConversationId.substring(0, 10)}...`);
-                // Only save as preview if this is NOT the first agent message (agent already announced)
                 saveConversation(msgConversationId, null, text.substring(0, 50), new Date().toISOString());
             } else if (msgConversationId && isUserViewingThisConv) {
-                console.log(`🎯 [WEBSOCKET] User IS viewing - NOT saving as preview`);
             }
-
-            // Only render if this is the currently active conversation
             if (msgConversationId !== conversationId) {
-                console.log('⚠️ [WEBSOCKET] Message for different conversation, not rendering');
                 return;
             }
-
-            // First agent message: replace loading indicator with single agent announcement
             if (!agentJoinAnnounced) {
                 removeLoadingIndicator();
                 appendMessage(`${agentName} will help you now.`, 'system-message');
@@ -982,55 +595,35 @@ document.addEventListener('DOMContentLoaded', function () {
                 localStorage.setItem('chat_agentName', agentName);
                 chatInputArea.style.display = 'flex';
                 chatHeaderTitle.textContent = agentName;
-                console.log(`🎯 [WEBSOCKET] Announced agent: ${agentName}`);
-                
-                // Scroll after agent announcement
                 ensureScrollToBottom();
             }
-
-            // Render the agent message (no per-message agent name)
             displayedMessageIds.add(messageId);
             appendMessage(text, 'bot-message');
-            
-            // ⭐ NEW: Render choices/actions if present (CSAT surveys, interactive messages)
             if (choices.length > 0) {
-                console.log(`🎯 [WEBSOCKET] Rendering ${choices.length} choices`);
                 appendChoicesMessage(choices, 'bot-message', { choices });
-                
-                // ⭐ NEW: Hide chat input and show session ended message for CSAT
-                console.log('🎯 [WEBSOCKET] CSAT detected - hiding chat input and showing session ended');
                 chatInputArea.style.display = 'none';
                 appendMessage('Messaging session ended', 'agent-announcement');
             } else if (actions.length > 0) {
-                console.log(`🎯 [WEBSOCKET] Rendering ${actions.length} actions`);
                 appendChoicesMessage(actions, 'bot-message', { actions });
             }
-            
-            // Ensure scroll after agent message
             ensureScrollToBottom();
             showMessageReceivedIndicator();
         }
 
         reconnect() {
             if (this.reconnectAttempts >= this.maxReconnectAttempts || sessionEnded) {
-                console.log('❌ [WEBSOCKET] Max reconnection attempts reached');
                 return;
             }
 
             this.reconnectAttempts++;
             const delay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 10000);
 
-            console.log(`🔄 [WEBSOCKET] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
-
             setTimeout(() => {
-                console.log('🔄 [WEBSOCKET] Attempting reconnect...');
                 this.connect();
             }, delay);
         }
 
         disconnect() {
-            console.log('🔌 [WEBSOCKET] Disconnecting...');
-
             if (this.pingInterval) {
                 clearInterval(this.pingInterval);
                 this.pingInterval = null;
@@ -1042,24 +635,16 @@ document.addEventListener('DOMContentLoaded', function () {
             }
 
             this.connected = false;
-            webSocketConnected = false;
         }
-
-        // Test function to verify WebSocket is working
         testConnection() {
             if (!this.connected) {
-                console.log('❌ [WEBSOCKET-TEST] Not connected');
                 return false;
             }
-
-            // Send test message
             const testResult = this.send({
                 type: 'test_agent_message',
                 message: 'Test message from debug function',
                 timestamp: Date.now()
             });
-
-            console.log(`✅ [WEBSOCKET-TEST] Test message ${testResult ? 'sent' : 'failed to send'}`);
             return testResult;
         }
 
@@ -1068,84 +653,11 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    // ============================================================================
-    // Core Functions
-    // ============================================================================
-
-    function initializeChatSession() {
-        console.log('🚀 [CHAT] Initializing chat session...');
-
-        const storedUserId = localStorage.getItem('chat_user_id');
-        const payload = storedUserId ? { userId: storedUserId } : {};
-
-        fetch('/api/chat/init', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-                return response.json();
-            })
-            .then(data => {
-                if (data.appUserId && data.conversationId) {
-                    appUserId = data.appUserId;
-                    conversationId = data.conversationId;
-
-                    if (data.externalId) {
-                        localStorage.setItem('chat_user_id', data.externalId);
-                    }
-
-                    console.log("✅ [CHAT] Initialized:", {
-                        appUserId: appUserId.substring(0, 10) + '...',
-                        conversationId: conversationId.substring(0, 10) + '...'
-                    });
-                    
-                    // Save to current conversation
-                    localStorage.setItem('chat_current_conversation', conversationId);
-                    
-                    // Save to conversation list
-                    saveConversation(conversationId, 'New Conversation', '', new Date().toISOString());
-
-                    if (isAgentConnected) {
-                        chatInputArea.style.display = 'flex';
-                        chatHeaderTitle.textContent = "Agent";
-                        console.log('✅ [CHAT] Agent already connected, showing input');
-                    } else {
-                        // Show welcome message and options for new conversations
-                        appendMessage("Hello! 👋 How can I help you today?", 'bot-message');
-                        showMainOptions();
-                    }
-
-                    // Initialize WebSocket
-                    sunshineSocket = new SunshineWebSocketManager(conversationId);
-                    sunshineSocket.connect();
-
-                    // Add WebSocket test button for debugging
-                    addWebSocketDebugButton();
-
-                } else {
-                    console.error("❌ [CHAT] Failed to initialize:", data);
-                    appendMessage("Failed to initialize chat. Please refresh the page.", 'system-message');
-                }
-            })
-            .catch(error => {
-                console.error('❌ [CHAT] Error initializing:', error);
-                // Removed UI display of connection error message as per request.
-            });
-    }
-
     function fetchMessages() {
         if (!conversationId) {
-            console.warn('⚠️ [MESSAGES] No conversationId, skipping fetch');
             return;
         }
 
-        console.log('📨 [MESSAGES] Fetching full history for:', conversationId.substring(0, 10) + '...');
-
-        // Use the full-history endpoint that leverages Zendesk Conversation Log API
         fetch(`/api/chat/full-history?conversationId=${conversationId}`)
             .then(response => {
                 if (!response.ok) {
@@ -1154,18 +666,11 @@ document.addEventListener('DOMContentLoaded', function () {
                 return response.json();
             })
             .then(data => {
-                console.log(`📨 [MESSAGES] Received ${data.messages?.length || 0} messages from ${data.source}`);
-
-                // Restore appUserId from API response if we don't have it
                 if (data.appUserId && !appUserId) {
                     appUserId = data.appUserId;
                     localStorage.setItem(`chat_appUserId_${conversationId}`, appUserId);
-                    console.log(`📨 [MESSAGES] Restored appUserId from API: ${appUserId.substring(0, 10)}...`);
                 }
-
-                // If we have a ticket ID, we're in an escalated session
                 if (data.ticket_id) {
-                    console.log(`📨 [MESSAGES] Ticket ID: ${data.ticket_id}`);
                     if (!isAgentConnected) {
                         isAgentConnected = true;
                         localStorage.setItem('chat_isAgentConnected', 'true');
@@ -1174,30 +679,22 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
 
                 if (!data.messages || data.messages.length === 0) {
-                    console.log('📨 [MESSAGES] No messages in response');
                     return;
                 }
 
                 const sortedMessages = data.messages.sort(
                     (a, b) => new Date(a.received) - new Date(b.received)
                 );
-
-                console.log(`📨 [MESSAGES] Processing ${sortedMessages.length} messages`);
-
                 let hasNewMessages = false;
 
                 sortedMessages.forEach((msg, index) => {
                     if (!msg || !msg.id) return;
-
-                    // Skip if already displayed
                     if (displayedMessageIds.has(msg.id)) {
                         return;
                     }
 
                     displayedMessageIds.add(msg.id);
                     hasNewMessages = true;
-
-                    // Determine CSS class based on messageClass from backend
                     let cssClass = 'bot-message';
                     if (msg.messageClass === 'user') {
                         cssClass = 'user-message';
@@ -1209,8 +706,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
                     const authorName = msg.author?.displayName || '';
                     const isAgent = msg.messageClass === 'agent';
-
-                    // Announce agent once
                     if (isAgent && !agentJoinAnnounced && authorName) {
                         removeLoadingIndicator();
                         appendMessage(`${authorName} joined the chat`, 'system-message');
@@ -1220,21 +715,15 @@ document.addEventListener('DOMContentLoaded', function () {
                         chatInputArea.style.display = 'flex';
                         chatHeaderTitle.textContent = authorName;
                     }
-
-                    // Handle attachments (images/files)
                     if (msg.attachments && msg.attachments.length > 0) {
-                        console.log(`🖼️ [MESSAGES] Processing ${msg.attachments.length} attachment(s)`);
                         msg.attachments.forEach(att => {
-                            console.log(`🖼️ [MESSAGES] Attachment: type=${att.type}, url=${att.url?.substring(0, 80)}...`);
                             if (att.type === 'image' && att.url) {
                                 const fileName = att.url.split('/').pop() || 'image';
                                 if (!displayedImageFileNames.has(fileName)) {
                                     displayedImageFileNames.add(fileName);
-                                    console.log(`🖼️ [MESSAGES] Appending image: ${fileName}`);
                                     appendImageMessage(att.url, msg.text || '', cssClass);
                                 }
                             } else if (att.type === 'file' && att.url) {
-                                console.log(`📎 [MESSAGES] Appending file: ${att.fileName}`);
                                 appendFileMessage(
                                     att.fileName || 'file',
                                     formatFileSize(att.size || 0),
@@ -1243,75 +732,46 @@ document.addEventListener('DOMContentLoaded', function () {
                                 );
                             }
                         });
-                        // If there's text with attachment, don't show text again
                         if (msg.text && msg.attachments.some(a => a.type === 'image')) {
                             return;
                         }
                     }
-
-                    // Display text message
                     if (msg.text) {
-                        // Skip certain system messages
                         if (msg.text.includes('Connecting to agent') || 
                             msg.text.includes('Escalation Reason:')) {
                             return;
                         }
-                        
-                        // ⭐ NEW: Skip displaying text if this is a CSAT/survey message with webview choices
                         const hasWebviewChoice = msg.choices?.some(c => c.type === 'webview' && c.uri) ||
                                                 msg.actions?.some(a => a.type === 'webview' && a.uri);
                         if (hasWebviewChoice) {
-                            console.log(`🎯 [MESSAGES] Skipping text for webview survey message`);
-                            // Don't display the text, just show the survey
                         } else {
                             appendMessage(msg.text, cssClass);
                         }
                     }
-
-                    // ⭐ NEW: Display interactive choices/actions (CSAT surveys, etc)
                     if (msg.choices && msg.choices.length > 0) {
-                        console.log(`🎯 [MESSAGES] Found ${msg.choices.length} choices/buttons`);
-                        
-                        // ⭐ NEW: Hide chat input for CSAT surveys and show session ended
                         chatInputArea.style.display = 'none';
-                        
-                        // ⭐ Check if this is a webview survey and auto-embed it
                         const webviewChoice = msg.choices.find(c => c.type === 'webview' && c.uri);
                         if (webviewChoice) {
-                            console.log(`🎯 [MESSAGES] Auto-embedding webview survey:`, webviewChoice.uri);
                             appendWebviewSurvey(webviewChoice.uri, webviewChoice.text || 'Survey');
                         } else {
                             appendChoicesMessage(msg.choices, cssClass, msg);
                         }
-                        
-                        // ⭐ NEW: Show session ended message below CSAT
                         appendMessage('Messaging session ended', 'agent-announcement');
                     } else if (msg.actions && msg.actions.length > 0) {
-                        console.log(`🎯 [MESSAGES] Found ${msg.actions.length} actions/buttons`);
-                        
-                        // ⭐ NEW: Hide chat input for interactive messages and show session ended
                         chatInputArea.style.display = 'none';
-                        
-                        // ⭐ Check if this is a webview survey and auto-embed it
                         const webviewAction = msg.actions.find(a => a.type === 'webview' && a.uri);
                         if (webviewAction) {
-                            console.log(`🎯 [MESSAGES] Auto-embedding webview survey:`, webviewAction.uri);
                             appendWebviewSurvey(webviewAction.uri, webviewAction.text || 'Survey');
                         } else {
                             appendChoicesMessage(msg.actions, cssClass, msg);
                         }
-                        
-                        // ⭐ NEW: Show session ended message below survey
                         appendMessage('Messaging session ended', 'agent-announcement');
                     }
                 });
 
                 if (hasNewMessages) {
                     ensureScrollToBottom();
-                    console.log('📨 [MESSAGES] Added new messages, scrolling to bottom');
                 }
-
-                // Session end detection
                 if (sortedMessages.length > 0 && isAgentConnected) {
                     const lastMsg = sortedMessages[sortedMessages.length - 1];
                     if (lastMsg.text) {
@@ -1320,24 +780,18 @@ document.addEventListener('DOMContentLoaded', function () {
                             text.includes("the agent has ended the session");
                         
                         if (isEndSession) {
-                            console.log('🔚 [MESSAGES] Detected session end');
                             endSession();
                         }
                     }
                 }
-
-                console.log('✅ [MESSAGES] Fetch complete');
             })
             .catch(error => {
-                console.error('❌ [MESSAGES] Error fetching:', error);
             });
     }
 
     function endSession() {
-        console.log("🔚 [SESSION] Ending session...");
         isAgentConnected = false;
         agentJoinAnnounced = false;
-        hasConfirmedAgentActivity = false;
         sessionEnded = true;
 
         if (sunshineSocket) {
@@ -1346,38 +800,23 @@ document.addEventListener('DOMContentLoaded', function () {
 
         localStorage.removeItem('chat_isAgentConnected');
         localStorage.removeItem('chat_agentJoinAnnounced');
-        localStorage.removeItem('chat_hasConfirmedAgentActivity');
 
         chatInputArea.style.display = 'none';
         chatHeaderTitle.textContent = "Yatri Bandhu";
         appendMessage("What can I help you with?", 'bot-message');
         showMainOptions();
-
-        console.log('✅ [SESSION] Session ended');
     }
 
     function handleAgentConnect(option) {
         appendMessage(option, 'user-message');
-        
-        // If conversation doesn't exist yet, create it first then escalate
         if (!conversationId) {
-            console.log('🆕 [AGENT] No conversation yet, creating one first...');
             createConversationAndEscalate(lastContext, window.lastAppRelatedCategory);
         } else {
-            // Conversation already exists, just escalate
-            console.log('🔄 [AGENT] Conversation exists, escalating...');
             performEscalation(lastContext, window.lastAppRelatedCategory);
         }
     }
 
-    // ============================================================================
-    // Helper Functions
-    // ============================================================================
-
-    // Debug button removed
-
     function showMessageReceivedIndicator() {
-        // Add visual indicator that a message was received
         const indicator = document.createElement('div');
         indicator.className = 'message-received-indicator';
         indicator.textContent = '📨';
@@ -1390,8 +829,6 @@ document.addEventListener('DOMContentLoaded', function () {
         const chatBoxHeader = document.querySelector('.chat-header');
         if (chatBoxHeader) {
             chatBoxHeader.appendChild(indicator);
-
-            // Remove after animation
             setTimeout(() => {
                 indicator.remove();
             }, 1000);
@@ -1400,11 +837,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function sendToSunshine(text) {
         if (!appUserId || !conversationId) {
-            console.error("❌ [SEND] Cannot send: Chat not initialized");
             return;
         }
-
-        console.log('📤 [SEND] Sending to Sunshine:', text.substring(0, 50) + '...');
 
         fetch('/api/chat/send', {
             method: 'POST',
@@ -1422,21 +856,14 @@ document.addEventListener('DOMContentLoaded', function () {
                 return response.json();
             })
             .then(data => {
-                console.log("✅ [SEND] Success:", data);
-                // ⭐ NEW: Save user message to conversation list preview
                 saveConversation(conversationId, null, text, new Date().toISOString());
                 renderConversationList();
                 
                 if (data.data?.messages?.length > 0) {
                     const msgId = data.data.messages[0].id;
                     displayedMessageIds.add(msgId);
-                    try {
-                        const echoedText = data.data.messages[0].content?.text;
-                        if (echoedText) pendingLocalMessages.delete(echoedText);
-                    } catch (e) { }
                 }
-            })
-            .catch(error => console.error('❌ [SEND] Error:', error));
+            });
     }
 
     function toggleChat() {
@@ -1445,52 +872,36 @@ document.addEventListener('DOMContentLoaded', function () {
             chatBox.style.display = 'flex';
             toggleBtn.innerHTML = '✖';
             toggleBtn.setAttribute('aria-label', 'Close chat');
-
-            // Check if there was an active conversation
             const activeConvId = localStorage.getItem('chat_current_conversation');
             const wasInChat = currentView === 'chat' && conversationId;
             
             if (activeConvId && wasInChat && messagesContainer.children.length > 0) {
-                // User was in a conversation before closing - just show the chat view again
-                console.log('💬 [CHAT] Restoring active conversation:', activeConvId.substring(0, 10) + '...');
                 showChatView();
-                
-                // Reconnect WebSocket if needed
                 if (!sunshineSocket || !sunshineSocket.socket?.readyState === WebSocket.OPEN) {
                     sunshineSocket = new SunshineWebSocketManager(conversationId);
                     sunshineSocket.connect();
                 }
-                
-                // Fetch any new messages
                 fetchMessages();
             } else {
-                // Show conversation list
                 showConversationList();
-                console.log('💬 [CHAT] Opened chat - showing conversation list');
             }
         } else {
             chatBox.style.display = 'none';
             toggleBtn.innerHTML = '💬';
             toggleBtn.setAttribute('aria-label', 'Open chat');
-            
-            // ⭐ Disconnect both WebSocket and SSE when closing chat
             if (sunshineSocket) {
                 sunshineSocket.disconnect();
             }
             disconnectSSE();
-
-            console.log('💬 [CHAT] Closed chat');
         }
     }
 
     function showMainOptions() {
         const options = mainOptions.length > 0 ? mainOptions : ["App Related Issues", "Ride Related Issues", "Delete Account"];
-        console.log('📋 [UI] Showing main options:', options);
         appendOptions(options, handleMainOptionClick);
     }
 
     function handleMainOptionClick(option) {
-        console.log('📋 [UI] Main option selected:', option);
         appendMessage(option, 'user-message');
         lastContext = option;
 
@@ -1516,23 +927,18 @@ document.addEventListener('DOMContentLoaded', function () {
             "My App is Not Responding",
             "Others"
         ];
-        console.log('📋 [UI] Showing app options:', options);
         appendOptions(options, handleAppRelatedOptionClick);
     }
 
     function handleAppRelatedOptionClick(option) {
-        console.log('📋 [UI] App option selected:', option);
         appendMessage(option, 'user-message');
         lastContext = option;
-
-        // Store the selected category globally for escalation
         window.lastAppRelatedCategory = option;  // NEW: Store category
 
         if (option === "Others") {
             appendMessage("Please describe your issue below.", 'bot-message');
             chatInputArea.style.display = 'flex';
             chatInput.focus();
-            awaitingFeedback = false;
         } else if (troubleshootingSteps[option]) {
             setTimeout(() => {
                 appendMessage(troubleshootingSteps[option], 'bot-message');
@@ -1554,7 +960,6 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function handleFeedbackClick(option) {
-        console.log('📋 [UI] Feedback selected:', option);
         appendMessage(option, 'user-message');
 
         if (option === "Yes") {
@@ -1587,22 +992,12 @@ document.addEventListener('DOMContentLoaded', function () {
         `;
         messagesContainer.appendChild(loaderDiv);
         ensureScrollToBottom();
-
-        console.log('⏳ [UI] Showing loading indicator');
     }
 
-    function removeLoadingIndicator() {
-        const loader = document.getElementById('agent-loading-indicator');
-        if (loader) {
-            loader.remove();
-            console.log('✅ [UI] Removed loading indicator');
-        }
-    }
+    const removeLoadingIndicator=()=>{const l=document.getElementById('agent-loading-indicator');if(l)l.remove();};
 
     function sendMessage() {
         const messageText = chatInput.value.trim();
-
-        // Handle pending image
         if (pendingImage) {
             const caption = messageText;
             sendDocument(pendingImage, caption);
@@ -1613,20 +1008,12 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         if (messageText === "") return;
-
-        // ⭐ NEW: Validate chat is initialized
         if (!appUserId || !conversationId) {
-            console.error("❌ [SEND] Chat not initialized properly");
-            console.error("❌ [SEND] appUserId:", appUserId ? appUserId.substring(0, 10) + '...' : 'MISSING');
-            console.error("❌ [SEND] conversationId:", conversationId ? conversationId.substring(0, 10) + '...' : 'MISSING');
-            
-            // Try to restore from localStorage
             if (conversationId && !appUserId) {
                 const storedUserId = localStorage.getItem(`chat_appUserId_${conversationId}`) 
                                   || localStorage.getItem('chat_user_id');
                 if (storedUserId) {
                     appUserId = storedUserId;
-                    console.log('✅ [SEND] Restored appUserId from storage:', appUserId.substring(0, 10) + '...');
                 } else {
                     appendMessage("Error: Chat not initialized. Please refresh and try again.", 'system-message');
                     return;
@@ -1636,14 +1023,9 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             }
         }
-
-        console.log('📤 [UI] Sending message:', messageText);
         appendMessage(messageText, 'user-message');
         
-        // ⭐ NEW: Update conversation preview with user's message
         saveConversation(conversationId, null, messageText, new Date().toISOString());
-        
-        pendingLocalMessages.add(messageText);
         sendToSunshine(messageText);
         chatInput.value = '';
 
@@ -1655,21 +1037,9 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    function appendMessage(text, className, senderName = null) {
-        const messageDiv = document.createElement('div');
-        messageDiv.classList.add('message', className);
-        messageDiv.style.whiteSpace = "pre-wrap";
-        messageDiv.textContent = text;
-        messagesContainer.appendChild(messageDiv);
-        ensureScrollToBottom();
-    }
+    const appendMessage=(t,c)=>{const d=document.createElement('div');d.classList.add('message',c);d.style.whiteSpace="pre-wrap";d.textContent=t;messagesContainer.appendChild(d);ensureScrollToBottom();};
 
     function appendImageMessage(imageUrl, caption, className) {
-        console.log('🖼️ [UI] Appending image:', imageUrl.substring(0, 50) + '...');
-
-        // NOTE: Removed zendesk.com filter - Conversation Log API returns valid Zendesk-hosted image URLs
-        // These URLs are authenticated and should work for display
-
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', className, 'image-bubble');
 
@@ -1694,8 +1064,6 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function appendFileMessage(fileName, fileSize, className, caption = '') {
-        console.log('📎 [UI] Appending file:', fileName);
-
         const bubble = document.createElement('div');
         bubble.classList.add('message', className, 'file-bubble');
 
@@ -1736,8 +1104,6 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function appendOptions(options, callback) {
-        console.log('📋 [UI] Appending options:', options);
-
         const optionsDiv = document.createElement('div');
         optionsDiv.classList.add('options-container');
 
@@ -1746,7 +1112,6 @@ document.addEventListener('DOMContentLoaded', function () {
             btn.classList.add('option-btn');
             btn.textContent = option;
             btn.addEventListener('click', function () {
-                console.log('📋 [UI] Option clicked:', option);
                 optionsDiv.remove();
                 callback(option);
             });
@@ -1754,21 +1119,11 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         messagesContainer.appendChild(optionsDiv);
-        
-        // Scroll after a small delay to ensure options are rendered
         setTimeout(() => scrollToBottom(), 50);
     }
-
-    // ⭐ NEW: Display interactive choices/actions from CSAT surveys or other interactive messages
     function appendChoicesMessage(choices, className, msg) {
-        console.log(`🎯 [UI] Appending ${choices.length} choices`);
-        console.log(`🎯 [UI] Full choices data:`, JSON.stringify(choices, null, 2));
-
         const choicesDiv = document.createElement('div');
         choicesDiv.classList.add('choices-container', className);
-        
-        // Check if all choices are emojis to apply emoji layout
-        let hasAllEmojis = true;
         let emojiCount = 0;
         let hasWebview = false;
 
@@ -1783,24 +1138,16 @@ document.addEventListener('DOMContentLoaded', function () {
             
             if (choiceEmoji) {
                 emojiCount++;
-            } else {
-                hasAllEmojis = false;
             }
         });
-        
-        // If all or most choices have emojis, apply emoji layout
         if (emojiCount > 0 && emojiCount >= choices.length * 0.5) {
             choicesDiv.classList.add('emoji-layout');
         }
-        
-        // If webview detected, apply webview layout
         if (hasWebview) {
             choicesDiv.classList.add('webview-layout');
         }
 
         choices.forEach((choice, index) => {
-            // Extract various fields from choice object
-            // Zendesk can send: text, label, value, emoji, icon, uri, type, etc.
             const choiceObj = typeof choice === 'string' ? { text: choice } : choice;
             
             const choiceText = choiceObj.text || choiceObj.label || choiceObj.value || '';
@@ -1811,8 +1158,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
             const btn = document.createElement('button');
             btn.classList.add('choice-btn');
-            
-            // ⭐ NEW: Handle webview surveys (external survey links)
             if (choiceType === 'webview' && choiceUri) {
                 btn.textContent = choiceText || 'Open Survey';
                 btn.classList.add('webview-btn');
@@ -1820,8 +1165,6 @@ document.addEventListener('DOMContentLoaded', function () {
                 btn.addEventListener('click', function (e) {
                     e.preventDefault();
                     e.stopPropagation();
-                    
-                    // Prevent double-clicks and repeated submissions
                     if (btn.dataset.clicked === 'true' || btn.disabled) {
                         return;
                     }
@@ -1829,26 +1172,15 @@ document.addEventListener('DOMContentLoaded', function () {
                     btn.disabled = true;
                     btn.style.opacity = '0.5';
                     btn.classList.add('selected');
-                    
-                    console.log(`🎯 [UI] Webview survey clicked:`, choiceUri);
-                    
-                    // Display as user selection (only once)
                     appendMessage(choiceText || 'Opened survey', 'user-message');
-                    
-                    // ⭐ EMBED SURVEY IN BOT INSTEAD OF NEW WINDOW
                     appendWebviewSurvey(choiceUri, choiceText);
-                    
-                    // Also send notification that user opened survey (only once)
                     sendToSunshine(choiceText || 'survey_opened');
-                    
-                    // Disable all buttons in this container
                     choicesDiv.querySelectorAll('.choice-btn').forEach(b => {
                         b.disabled = true;
                         b.style.opacity = '0.5';
                     });
                 });
             }
-            // Handle emoji choices
             else if (choiceEmoji) {
                 btn.textContent = choiceEmoji;
                 btn.title = choiceText; // Show text as tooltip
@@ -1857,58 +1189,37 @@ document.addEventListener('DOMContentLoaded', function () {
                 btn.addEventListener('click', function (e) {
                     e.preventDefault();
                     e.stopPropagation();
-                    
-                    // Prevent double-clicks
                     if (btn.dataset.clicked === 'true' || btn.disabled) {
                         return;
                     }
                     btn.dataset.clicked = 'true';
                     btn.disabled = true;
-                    
-                    console.log(`🎯 [UI] Emoji choice selected:`, choiceValue);
-                    
-                    // Display the emoji in chat
                     appendMessage(choiceEmoji, 'user-message');
-                    
-                    // Disable all buttons
                     choicesDiv.querySelectorAll('.choice-btn').forEach(b => {
                         b.disabled = true;
                         b.style.opacity = '0.5';
                     });
-                    
-                    // Send the value to backend (only once)
                     sendToSunshine(choiceValue);
                     
                     btn.classList.add('selected');
                 });
             }
-            // Handle text choices
             else {
                 btn.textContent = choiceText;
                 
                 btn.addEventListener('click', function (e) {
                     e.preventDefault();
                     e.stopPropagation();
-                    
-                    // Prevent double-clicks
                     if (btn.dataset.clicked === 'true' || btn.disabled) {
                         return;
                     }
                     btn.data.clicked = 'true';
                     btn.disabled = true;
-                    
-                    console.log(`🎯 [UI] Text choice selected:`, choiceValue);
-                    
-                    // Display text in chat
                     appendMessage(choiceValue, 'user-message');
-                    
-                    // Disable all buttons
                     choicesDiv.querySelectorAll('.choice-btn').forEach(b => {
                         b.disabled = true;
                         b.style.opacity = '0.5';
                     });
-                    
-                    // Send to backend (only once)
                     sendToSunshine(choiceValue);
                     
                     btn.classList.add('selected');
@@ -1921,42 +1232,29 @@ document.addEventListener('DOMContentLoaded', function () {
         messagesContainer.appendChild(choicesDiv);
         ensureScrollToBottom();
     }
-
-    // ⭐ NEW: Embed webview survey directly in the chat
     function appendWebviewSurvey(surveyUri, surveyTitle) {
         const surveyContainer = document.createElement('div');
         surveyContainer.classList.add('message', 'survey-bubble');
-
-        // Create title
         const titleDiv = document.createElement('div');
         titleDiv.classList.add('survey-title');
         titleDiv.textContent = surveyTitle || 'Survey';
         surveyContainer.appendChild(titleDiv);
-
-        // Create iframe wrapper
         const iframeWrapper = document.createElement('div');
         iframeWrapper.classList.add('survey-iframe-wrapper');
-
-        // Add loading state
         const loadingDiv = document.createElement('div');
         loadingDiv.classList.add('survey-loading');
         loadingDiv.textContent = 'Loading survey...';
         iframeWrapper.appendChild(loadingDiv);
-
-        // Create iframe WITHOUT sandbox for Zendesk surveys (they need to communicate with parent)
         const iframe = document.createElement('iframe');
         iframe.classList.add('survey-iframe');
         iframe.src = surveyUri;
         iframe.title = surveyTitle || 'Survey';
         iframe.allow = 'geolocation; microphone; camera; payment; usb; magnetometer; gyroscope; accelerometer';
-        // DO NOT add sandbox - Zendesk surveys won't load with sandbox restrictions
         iframe.style.width = '100%';
         iframe.style.height = '600px';
         iframe.style.border = 'none';
         iframe.style.borderRadius = '0 0 8px 8px';
         iframe.style.display = 'block';
-
-        // Hide loading after iframe appends
         iframeWrapper.appendChild(iframe);
         
         setTimeout(() => {
@@ -1966,10 +1264,7 @@ document.addEventListener('DOMContentLoaded', function () {
             iframe.style.display = 'block';
             ensureScrollToBottom();
         }, 500);
-
-        // Also try to detect when content loads
         iframe.addEventListener('load', function () {
-            console.log(`✅ [SURVEY] Iframe loaded successfully`);
             if (loadingDiv && loadingDiv.parentElement) {
                 loadingDiv.style.display = 'none';
             }
@@ -1978,7 +1273,6 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         iframe.addEventListener('error', function () {
-            console.error(`❌ [SURVEY] Failed to load iframe`);
             loadingDiv.textContent = 'Survey could not be loaded. Please try again.';
             loadingDiv.style.color = '#dc3545';
             iframe.style.display = 'none';
@@ -1989,30 +1283,10 @@ document.addEventListener('DOMContentLoaded', function () {
         ensureScrollToBottom();
     }
 
-    function scrollToBottom() {
-        if (messagesContainer) {
-            // Use requestAnimationFrame for smoother scrolling
-            requestAnimationFrame(() => {
-                messagesContainer.scrollTop = messagesContainer.scrollHeight;
-            });
-        }
-    }
-    
-    // Auto-scroll helper - call this after any content change
-    function ensureScrollToBottom() {
-        // Multiple attempts to ensure scroll happens after render
-        scrollToBottom();
-        setTimeout(scrollToBottom, 100);
-        setTimeout(scrollToBottom, 300);
-    }
-
-    // ============================================================================
-    // File Handling Functions (with added logging)
-    // ============================================================================
+    const scrollToBottom=()=>messagesContainer&&requestAnimationFrame(()=>{messagesContainer.scrollTop=messagesContainer.scrollHeight;});
+    const ensureScrollToBottom=()=>{scrollToBottom();setTimeout(scrollToBottom,100);setTimeout(scrollToBottom,300);};
 
     function showDocumentPreviewModal(file) {
-        console.log('📎 [FILE] Previewing file:', file.name, file.type);
-
         const modal = document.createElement('div');
         modal.classList.add('document-preview-modal');
 
@@ -2030,7 +1304,6 @@ document.addEventListener('DOMContentLoaded', function () {
         closeBtn.classList.add('close-btn');
         closeBtn.innerHTML = '×';
         closeBtn.addEventListener('click', function () {
-            console.log('📎 [FILE] Closing preview modal');
             modal.remove();
         });
 
@@ -2044,7 +1317,6 @@ document.addEventListener('DOMContentLoaded', function () {
         info.classList.add('document-preview-info');
 
         if (file.type.startsWith('image/')) {
-            console.log('📎 [FILE] Displaying image preview');
             const img = document.createElement('img');
             img.src = URL.createObjectURL(file);
             img.style.maxWidth = '100%';
@@ -2053,7 +1325,6 @@ document.addEventListener('DOMContentLoaded', function () {
             img.style.borderRadius = '12px';
             info.appendChild(img);
         } else {
-            console.log('📎 [FILE] Displaying file icon preview');
             const fileIcon = document.createElement('div');
             fileIcon.classList.add('document-file-icon');
             fileIcon.innerHTML = '📄';
@@ -2107,7 +1378,6 @@ document.addEventListener('DOMContentLoaded', function () {
         sendBtn.style.fontWeight = '500';
 
         sendBtn.addEventListener('click', function () {
-            console.log('📎 [FILE] Send button clicked for:', file.name);
             sendDocument(file, '');
             modal.remove();
         });
@@ -2122,17 +1392,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const chatBox = document.querySelector('.chat-box');
         chatBox.appendChild(modal);
-
-        console.log('📎 [FILE] Preview modal displayed');
     }
 
-    function formatFileSize(bytes) {
-        if (bytes === 0) return '0 Bytes';
-        const k = 1024;
-        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    }
+    const formatFileSize=b=>{if(b===0)return'0 Bytes';const k=1024,s=['Bytes','KB','MB','GB'],i=Math.floor(Math.log(b)/Math.log(k));return parseFloat((b/Math.pow(k,i)).toFixed(2))+' '+s[i];};
 
     function getFileType(mimeType) {
         if (!mimeType) return 'File';
@@ -2161,21 +1423,12 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function sendDocument(file, message) {
-        console.log('📎 [FILE] Sending document:', file.name, 'Size:', formatFileSize(file.size));
-
-        // ⭐ NEW: Validate and restore if needed
         if (!appUserId || !conversationId) {
-            console.error("❌ [FILE] Cannot send document: Chat not initialized");
-            console.error("❌ [FILE] appUserId:", appUserId ? appUserId.substring(0, 10) + '...' : 'MISSING');
-            console.error("❌ [FILE] conversationId:", conversationId ? conversationId.substring(0, 10) + '...' : 'MISSING');
-            
-            // Try to restore from localStorage
             if (conversationId && !appUserId) {
                 const storedUserId = localStorage.getItem(`chat_appUserId_${conversationId}`) 
                                   || localStorage.getItem('chat_user_id');
                 if (storedUserId) {
                     appUserId = storedUserId;
-                    console.log('✅ [FILE] Restored appUserId from storage:', appUserId.substring(0, 10) + '...');
                 } else {
                     appendMessage("Error: Chat not initialized. Please refresh and try again.", 'system-message');
                     return;
@@ -2187,13 +1440,10 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         const isImage = file.type.startsWith('image/');
-        console.log('📎 [FILE] Is image:', isImage);
-
         if (isImage) {
             const imageUrl = URL.createObjectURL(file);
             appendImageMessage(imageUrl, '', 'user-message');
             displayedImageFileNames.add(file.name);
-            console.log('📎 [FILE] Image preview added to chat');
         }
 
         const formData = new FormData();
@@ -2202,7 +1452,6 @@ document.addEventListener('DOMContentLoaded', function () {
         formData.append('conversationId', conversationId);
         if (message && !isImage) {
             formData.append('message', message);
-            console.log('📎 [FILE] Added caption:', message);
         }
 
         let progressContainer = null;
@@ -2217,59 +1466,45 @@ document.addEventListener('DOMContentLoaded', function () {
             `;
             messagesContainer.appendChild(progressContainer);
             ensureScrollToBottom();
-            console.log('📎 [FILE] Added progress container');
         }
 
         const progressFill = progressContainer ? progressContainer.querySelector('.upload-progress-fill') : null;
         const statusText = progressContainer ? progressContainer.querySelector('.upload-status') : null;
 
         const xhr = new XMLHttpRequest();
-        console.log('📎 [FILE] Starting upload...');
-
         xhr.upload.addEventListener('progress', function (e) {
             if (e.lengthComputable && progressContainer) {
                 const percentComplete = (e.loaded / e.total) * 100;
                 progressFill.style.width = percentComplete + '%';
                 statusText.textContent = `Uploading... ${Math.round(percentComplete)}%`;
-                console.log('📎 [FILE] Upload progress:', Math.round(percentComplete) + '%');
             }
         });
 
         xhr.addEventListener('load', function () {
-            console.log('📎 [FILE] Upload complete. Status:', xhr.status);
-
             if (xhr.status === 200) {
                 try {
                     const data = JSON.parse(xhr.responseText);
-                    console.log("✅ [FILE] Document sent successfully:", data);
-
                     if (data.data?.messages) {
                         data.data.messages.forEach(msg => {
                             displayedMessageIds.add(msg.id);
                         });
-                        console.log('📎 [FILE] Added message IDs from response');
                     }
 
                     if (progressContainer) {
                         statusText.textContent = 'Sent successfully!';
                         progressFill.style.backgroundColor = '#28a745';
                         progressContainer.classList.add('upload-complete');
-                        console.log('✅ [FILE] Upload marked as complete');
-
                         setTimeout(() => {
                             progressContainer.remove();
-                            console.log('📎 [FILE] Progress container removed');
                         }, 2000);
                     }
                 } catch (e) {
-                    console.error('❌ [FILE] Error parsing response:', e);
                     if (progressContainer) {
                         statusText.textContent = 'Error processing response';
                         progressFill.style.backgroundColor = '#dc3545';
                     }
                 }
             } else {
-                console.error('❌ [FILE] Upload failed:', xhr.status, xhr.responseText);
                 if (progressContainer) {
                     statusText.textContent = 'Error sending document';
                     progressFill.style.backgroundColor = '#dc3545';
@@ -2279,7 +1514,6 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         xhr.addEventListener('error', function () {
-            console.error('❌ [FILE] Network error sending document');
             if (progressContainer) {
                 statusText.textContent = 'Network error - please try again';
                 progressFill.style.backgroundColor = '#dc3545';
@@ -2288,7 +1522,6 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         xhr.addEventListener('abort', function () {
-            console.log('📎 [FILE] Upload aborted');
             if (progressContainer) {
                 statusText.textContent = 'Upload cancelled';
                 progressFill.style.backgroundColor = '#ffc107';
@@ -2299,12 +1532,9 @@ document.addEventListener('DOMContentLoaded', function () {
         xhr.send(formData);
 
         fileInput.value = '';
-        console.log('📎 [FILE] File input cleared');
     }
 
     function showImageZoomModal(imageUrl) {
-        console.log('🖼️ [FILE] Showing image zoom modal');
-
         const modal = document.createElement('div');
         modal.classList.add('zoom-modal');
 
@@ -2313,63 +1543,21 @@ document.addEventListener('DOMContentLoaded', function () {
         modal.appendChild(img);
 
         modal.addEventListener('click', function () {
-            console.log('🖼️ [FILE] Closing zoom modal');
             modal.remove();
         });
 
         document.addEventListener('keydown', function (e) {
             if (e.key === 'Escape') {
-                console.log('🖼️ [FILE] Closing zoom modal with Escape key');
                 modal.remove();
             }
         });
 
         document.body.appendChild(modal);
-        console.log('🖼️ [FILE] Zoom modal displayed');
     }
 
-    function showImagePreviewInInput(file) {
-        console.log('🖼️ [FILE] Showing image preview in input');
-
-        const previewContainer = document.createElement('div');
-        previewContainer.id = 'image-preview-container';
-        previewContainer.classList.add('image-preview-container');
-
-        const img = document.createElement('img');
-        img.src = URL.createObjectURL(file);
-        img.classList.add('image-preview-thumbnail');
-
-        const removeBtn = document.createElement('button');
-        removeBtn.classList.add('image-preview-remove');
-        removeBtn.innerHTML = '×';
-        removeBtn.addEventListener('click', clearImagePreview);
-
-        previewContainer.appendChild(img);
-        previewContainer.appendChild(removeBtn);
-
-        chatInputArea.insertBefore(previewContainer, chatInput);
-        chatInput.placeholder = 'Add a caption (optional)...';
-        pendingImage = file;
-
-        console.log('🖼️ [FILE] Image preview added to input');
-    }
-
-    function clearImagePreview() {
-        console.log('🖼️ [FILE] Clearing image preview');
-
-        const preview = document.getElementById('image-preview-container');
-        if (preview) {
-            preview.remove();
-            console.log('🖼️ [FILE] Preview removed from DOM');
-        }
-        pendingImage = null;
-        chatInput.placeholder = 'Type a message...';
-        console.log('🖼️ [FILE] Input placeholder reset');
-    }
+    const clearImagePreview=()=>{const p=document.getElementById('image-preview-container');if(p)p.remove();pendingImage=null;chatInput.placeholder='Type a message...';};
 
     function showDeleteAccountModal() {
-        console.log('🗑️ [UI] Showing delete account modal');
-
         const modal = document.createElement('div');
         modal.classList.add('chat-modal');
 
@@ -2388,9 +1576,6 @@ document.addEventListener('DOMContentLoaded', function () {
             "Not required as of now",
             "Others"
         ];
-
-        console.log('🗑️ [UI] Delete reasons:', reasons);
-
         let selectedReason = null;
 
         reasons.forEach((reason, index) => {
@@ -2413,8 +1598,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
             radio.addEventListener('change', function () {
                 selectedReason = this.value;
-                console.log('🗑️ [UI] Selected reason:', selectedReason);
-
                 if (selectedReason === "Others") {
                     otherInput.style.display = 'block';
                     otherInput.focus();
@@ -2453,39 +1636,27 @@ document.addEventListener('DOMContentLoaded', function () {
         modal.appendChild(buttonsDiv);
 
         chatBox.appendChild(modal);
-        console.log('🗑️ [UI] Delete modal added to DOM');
-
         function validateDeleteButton() {
-            console.log('🗑️ [UI] Validating delete button, selectedReason:', selectedReason);
-
             if (selectedReason === "Others") {
                 const hasText = otherInput.value.trim() !== "";
                 deleteBtn.disabled = !hasText;
-                console.log('🗑️ [UI] Others selected, has text:', hasText, 'disabled:', deleteBtn.disabled);
             } else {
                 deleteBtn.disabled = selectedReason === null;
-                console.log('🗑️ [UI] Regular reason, disabled:', deleteBtn.disabled);
             }
         }
 
         backBtn.addEventListener('click', function () {
-            console.log('🗑️ [UI] Back button clicked');
             modal.remove();
             appendMessage("What can I help you with?", 'bot-message');
             showMainOptions();
         });
 
         deleteBtn.addEventListener('click', function () {
-            console.log('🗑️ [UI] Delete button clicked');
-
             let reasonText = selectedReason;
             if (selectedReason === "Others") {
                 const otherText = otherInput.value.trim();
                 reasonText += ": " + otherText;
-                console.log('🗑️ [UI] With other text:', otherText);
             }
-
-            console.log('🗑️ [UI] Sending delete request:', reasonText);
             sendToSunshine("Delete Account Request: " + reasonText);
 
             modal.remove();
@@ -2493,38 +1664,22 @@ document.addEventListener('DOMContentLoaded', function () {
 
             setTimeout(() => {
                 appendMessage("Your request has been submitted. Our team will contact you shortly.", 'bot-message');
-                console.log('✅ [UI] Delete request completed');
             }, 500);
         });
     }
-
-    // ============================================================================
-    // Event Listeners
-    // ============================================================================
 
     toggleBtn.addEventListener('click', toggleChat);
     closeBtn.addEventListener('click', function (e) {
         e.stopPropagation();
         toggleChat();
     });
-    
-    // New conversation button
     newConversationBtn.addEventListener('click', function () {
-        console.log('🆕 [UI] New conversation button clicked');
         startNewConversation();
     });
-    
-    // Back button
     backBtn.addEventListener('click', function () {
-        console.log('⬅️ [UI] Back button clicked');
-        
-        // ⭐ Clear unread for this conversation since user was viewing it
         if (conversationId) {
             clearUnreadCount(conversationId);
-            console.log('⬅️ [UI] Cleared unread count for conversation:', conversationId);
         }
-        
-        // Save current conversation state before going back - include agent name
         if (conversationId) {
             const agentName = localStorage.getItem('chat_agentName') || 'Agent';
             const convState = {
@@ -2534,8 +1689,6 @@ document.addEventListener('DOMContentLoaded', function () {
             };
             localStorage.setItem(`chat_conv_state_${conversationId}`, JSON.stringify(convState));
         }
-        
-        // Disconnect WebSocket
         if (sunshineSocket) {
             sunshineSocket.disconnect();
         }
@@ -2544,14 +1697,12 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     fileAttachBtn.addEventListener('click', function () {
-        console.log('📎 [UI] File attach clicked');
         fileInput.click();
     });
 
     fileInput.addEventListener('change', function (e) {
         const file = e.target.files[0];
         if (file) {
-            console.log('📎 [UI] File selected:', file.name);
             showDocumentPreviewModal(file);
         }
     });
@@ -2560,13 +1711,6 @@ document.addEventListener('DOMContentLoaded', function () {
     chatInput.addEventListener('keypress', function (e) {
         if (e.key === 'Enter') sendMessage();
     });
-
-    // ============================================================================
-    // Initialization
-    // ============================================================================
-
-    console.log('🚀 [APP] Initializing chat widget...');
-
     const issuesUrl = window.issuesUrl || 'static/js/issues.json';
     fetch(issuesUrl)
         .then(response => response.json())
@@ -2575,244 +1719,25 @@ document.addEventListener('DOMContentLoaded', function () {
             mainOptions = data.mainOptions;
             appRelatedOptions = data.appRelatedOptions;
             deleteAccountReasons = data.deleteAccountReasons;
-            console.log('✅ [APP] Loaded issues data');
-        })
-        .catch(error => console.error('❌ [APP] Error loading issues:', error));
-
-    // ⭐ NEW: Better initialization flow
+        });
     const lastConversationId = localStorage.getItem('chat_current_conversation');
 
     if (lastConversationId) {
-        console.log('🔄 [INIT] Found last conversation, checking conversations list...');
         const conversations = getStoredConversations();
         const lastConv = conversations.find(c => c.id === lastConversationId);
         
         if (lastConv) {
-            console.log('✅ [INIT] Restoring last active conversation:', lastConversationId);
-            // Don't open yet - wait for widget to be opened
             conversationId = lastConversationId;
-            
-            // Restore appUserId immediately
             const storedUserId = localStorage.getItem(`chat_appUserId_${lastConversationId}`) 
                               || localStorage.getItem('chat_user_id');
             if (storedUserId) {
                 appUserId = storedUserId;
-                console.log('✅ [INIT] Pre-loaded appUserId:', appUserId.substring(0, 10) + '...');
             }
         } else {
-            console.log('⚠️ [INIT] Last conversation not in list, clearing...');
             localStorage.removeItem('chat_current_conversation');
         }
     } else {
-        console.log('ℹ️ [INIT] No active conversation to restore');
     }
-
-    // Show conversation list by default
     showConversationList();
-    
-    // ⭐ Initialize notification system
     initNotificationSystem();
-
-    // Global debug functions
-    window.debugChat = {
-        status: () => {
-            const result = {
-                appUserId: appUserId ? appUserId.substring(0, 10) + '...' : null,
-                conversationId: conversationId ? conversationId.substring(0, 10) + '...' : null,
-                isChatOpen: isChatOpen,
-                currentView: currentView,
-                isViewingConversation: conversationId ? isViewingConversation(conversationId) : null,
-                isAgentConnected: isAgentConnected,
-                webSocketConnected: webSocketConnected,
-                storedConversations: getStoredConversations().length,
-                sunshineSocket: sunshineSocket ? {
-                    connected: sunshineSocket.connected,
-                    readyState: sunshineSocket.socket?.readyState,
-                    conversationId: sunshineSocket.conversationId
-                } : 'No instance',
-                notifications: {
-                    totalUnread: totalUnread,
-                    perConversation: Object.fromEntries(unreadCounts)
-                }
-            };
-            
-            // Pretty print for console
-            console.log('📊 [STATUS] Current Application State:');
-            console.log('  Chat:', { 
-                open: result.isChatOpen, 
-                view: result.currentView, 
-                viewingConv: result.isViewingConversation 
-            });
-            console.log('  Conversation:', {
-                id: result.conversationId,
-                agent: result.isAgentConnected,
-                stored: result.storedConversations
-            });
-            console.log('  WebSocket:', {
-                connected: result.webSocketConnected,
-                socket: result.sunshineSocket
-            });
-            console.log('  Notifications:', result.notifications);
-            
-            return result;
-        },
-        testWebSocket: () => sunshineSocket ? sunshineSocket.testConnection() : 'No WebSocket',
-        reconnect: () => sunshineSocket ? sunshineSocket.connect() : 'No WebSocket',
-        fixAppUserId: () => {
-            if (conversationId) {
-                const stored = localStorage.getItem(`chat_appUserId_${conversationId}`) 
-                            || localStorage.getItem('chat_user_id');
-                if (stored) {
-                    appUserId = stored;
-                    console.log('✅ Fixed appUserId:', appUserId.substring(0, 10) + '...');
-                    return true;
-                }
-            }
-            return false;
-        },
-        clearConversations: () => {
-            localStorage.removeItem('chat_conversations');
-            renderConversationList();
-            console.log('✅ Cleared all conversations');
-        },
-        // ⭐ Notification debug functions
-        notifications: () => ({
-            unreadCounts: Object.fromEntries(unreadCounts),
-            totalUnread: totalUnread,
-            currentView: currentView,
-            viewingConversation: conversationId,
-            isChatOpen: isChatOpen,
-            isViewingCheckFor: (convId) => {
-                const result = isViewingConversation(convId);
-                console.log(`📊 [DEBUG] isViewingConversation('${convId.substring(0, 10)}...') = ${result}`);
-                console.log(`   - isChatOpen: ${isChatOpen}`);
-                console.log(`   - currentView: ${currentView}`);
-                console.log(`   - conversationId: ${conversationId?.substring(0, 10) || 'null'}...`);
-                return result;
-            }
-        }),
-        clearNotifications: () => {
-            markAllAsRead();
-            console.log('✅ Cleared all notifications');
-        },
-        // ⭐ SIMPLE TEST FUNCTION: One-click testing
-        testNotificationSimple: () => {
-            const testConvId = conversationId || 'test_conv_' + Date.now();
-            
-            console.log('🧪 TESTING NOTIFICATION LOGIC:');
-            console.log('  Conversation ID:', testConvId.substring(0, 15));
-            console.log('  isChatOpen:', isChatOpen);
-            console.log('  currentView:', currentView);
-            console.log('  conversationId:', conversationId?.substring(0, 15));
-            
-            const isUserViewing = isViewingConversation(testConvId);
-            const shouldShowBadge = !isUserViewing;
-            
-            console.log('  Is user viewing?', isUserViewing ? '✅ YES' : '❌ NO');
-            console.log('  Should show badge?', shouldShowBadge ? '✅ YES' : '❌ NO');
-            
-            if (shouldShowBadge) {
-                incrementUnreadCount(testConvId);
-                console.log('✅ Badge incremented! Check toggle button.');
-            } else {
-                console.log('⚠️ Cannot show badge - user is actively viewing this conversation.');
-                console.log('💡 To test: Switch to conversation list view first, then run again.');
-            }
-        },
-        // ⭐ Test notification without needing backend message
-        testNotification: (convId = null) => {
-            const testConvId = convId || (conversationId || 'test_conv_12345');
-            console.log(`🧪 [TEST] Simulating agent message for: ${testConvId.substring(0, 10)}...`);
-            console.log(`🧪 [TEST] Current state: isChatOpen=${isChatOpen}, view=${currentView}, viewingConv=${conversationId?.substring(0, 10) || 'null'}...`);
-            
-            // Check if user is viewing
-            const isUserViewing = isViewingConversation(testConvId);
-            console.log(`🧪 [TEST] isViewingConversation returned: ${isUserViewing}`);
-            
-            if (isUserViewing) {
-                console.log(`🧪 [TEST] ⚠️ User IS viewing - would skip badge increment`);
-                console.log(`🧪 [TEST] To test notifications:`);
-                console.log(`🧪 [TEST]   1. Close chat (click toggle button)`);
-                console.log(`🧪 [TEST]   2. Run window.debugChat.testNotification() again`);
-                console.log(`🧪 [TEST]   OR`);
-                console.log(`🧪 [TEST]   1. Switch to conversation list`);
-                console.log(`🧪 [TEST]   2. Run window.debugChat.testNotification()`);
-            } else {
-                console.log(`🧪 [TEST] ✅ User NOT viewing - would increment badge!`);
-                incrementUnreadCount(testConvId);
-            }
-        },
-        // ⭐ NEW: Test combined approach
-        testCombinedApproach: () => {
-            console.log('🧪 TESTING COMBINED APPROACH:');
-            console.log('1. Switch to conversation list view');
-            console.log('2. Have agent send a message');
-            console.log('3. Check console for: "[SUNSHINE-BADGE] ✅ Incrementing badge via webhook"');
-            console.log('4. Badge should appear on toggle button');
-            console.log('5. Click into conversation');
-            console.log('6. Badge should clear (user is now viewing)');
-            console.log('7. Agent sends another message');
-            console.log('8. Should see: "[SUNSHINE-BADGE] User is viewing - skipping badge increment"');
-            console.log('9. Go back to conversation list');
-            console.log('10. Agent sends another message - badge should appear again');
-        },
-        // ⭐ NEW: Test webhook badge flow
-        testWebhookBadgeFlow: () => {
-            console.log('🧪 TEST WEBHOOK BADGE FLOW:');
-            console.log('1. Make sure backend code is updated');
-            console.log('2. Switch to conversation list view');
-            console.log('3. Have an agent send a real message via Zendesk');
-            console.log('4. Watch Django logs for: "[SUNSHINE-BADGE] ✅ Incrementing badge via webhook"');
-            console.log('5. Badge should appear automatically');
-        },
-        // ⭐ NEW: Check current viewing status
-        checkViewingStatus: () => {
-            console.log('📊 CURRENT VIEWING STATUS:');
-            console.log('  - isChatOpen:', isChatOpen);
-            console.log('  - currentView:', currentView);
-            console.log('  - conversationId:', conversationId?.substring(0, 15));
-            console.log('  - Last backend call: check Django logs for VIEWING-TRACKER');
-            console.log('');
-            console.log('To test:');
-            console.log('  1. Click into conversation (should see "started viewing")');
-            console.log('  2. Click back (should see "stopped viewing")');
-            console.log('  3. Agent sends message (should see "Incrementing badge")');
-        },
-        // ⭐ NEW: Debug SSE and badge logic
-        debugSSELogic: () => {
-            console.log('🔍 DEBUG SSE LOGIC:');
-            console.log('Current state:');
-            console.log('  - conversationId:', conversationId?.substring(0, 15) || 'none');
-            console.log('  - isChatOpen:', isChatOpen);
-            console.log('  - currentView:', currentView);
-            console.log('');
-            
-            // Test with current conversation
-            if (conversationId) {
-                const result = isViewingConversation(conversationId);
-                console.log(`isViewingConversation('${conversationId.substring(0, 15)}...') = ${result}`);
-                
-                if (result) {
-                    console.log('✅ CORRECT: User IS viewing this conversation');
-                    console.log('   → Badges will NOT be incremented');
-                } else {
-                    console.log('✅ CORRECT: User is NOT viewing this conversation');
-                    console.log('   → Badges WILL be incremented');
-                }
-            } else {
-                console.log('⚠️ No active conversation');
-            }
-            
-            console.log('');
-            console.log('Test flow:');
-            console.log('1. Open a conversation (currentView should be "chat")');
-            console.log('2. isViewingConversation should return TRUE');
-            console.log('3. Switch to list (currentView should be "list")');
-            console.log('4. isViewingConversation should return FALSE');
-            console.log('5. Agent sends message → Badge appears');
-        }
-    };
-
-    console.log('✅ [APP] Chat widget initialized');
-    console.log('🔧 Debug: window.debugChat.status() to check state');
 });
