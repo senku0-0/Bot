@@ -56,13 +56,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Initialize notification system
     function initNotificationSystem() {
-        console.log('🔔 [INIT] Starting notification system...');
-        // ⭐ Load persisted unread counts from previous session
-        // These were saved by SSE when messages arrived
         loadUnreadCounts();
         calculateTotalUnread();
         updateBadges();
-        console.log('✅ [INIT] Notification badges loaded and ready');
     }
 
     // Load unread counts from localStorage
@@ -74,19 +70,14 @@ document.addEventListener('DOMContentLoaded', function () {
                 unreadCounts = new Map(Object.entries(counts));
                 calculateTotalUnread();
             }
-        } catch (e) {
-            console.error('❌ Error loading unread counts:', e);
-        }
+        } catch (e) {}
     }
 
     // Save unread counts to localStorage
     function saveUnreadCounts() {
         try {
-            const obj = Object.fromEntries(unreadCounts);
-            localStorage.setItem('chat_unread_counts', JSON.stringify(obj));
-        } catch (e) {
-            console.error('❌ Error saving unread counts:', e);
-        }
+            localStorage.setItem('chat_unread_counts', JSON.stringify(Object.fromEntries(unreadCounts)));
+        } catch (e) {}
     }
 
     // Calculate total unread across all conversations
@@ -108,25 +99,17 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Clear unread count for a conversation
     function clearUnreadCount(convId) {
-        if (!convId) return;
-        
-        console.log('🗑️ [BADGES] Clearing unread count for conversation (UI only):', convId);
-        if (unreadCounts.has(convId)) {
-            unreadCounts.delete(convId);
-            calculateTotalUnread();
-            // ⭐ Update localStorage to match (since we're clearing UI temporarily while viewing)
-            // Backend is source of truth - if there are still unread messages, SSE will restore them
-            saveUnreadCounts();
-            updateBadges();
-            console.log('🗑️ [BADGES] Cleared from UI and localStorage - total unread:', totalUnread);
-        }
+        if (!convId || !unreadCounts.has(convId)) return;
+        unreadCounts.delete(convId);
+        calculateTotalUnread();
+        saveUnreadCounts();
+        updateBadges();
     }
 
     // Mark all as read
     function markAllAsRead() {
         unreadCounts.clear();
         calculateTotalUnread();
-        // ⭐ Still save markAllAsRead since it's explicit user action
         saveUnreadCounts();
         updateBadges();
     }
@@ -206,22 +189,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Check if we're currently viewing a conversation
     function isViewingConversation(convId) {
-        if (!convId) return false;
-        
-        // ⭐ CRITICAL: Check ALL conditions - chat must be open, in chat view, AND this specific conversation
-        const isViewing = isChatOpen && 
-                         currentView === 'chat' && 
-                         conversationId && 
-                         conversationId === convId;
-        
-        console.log(`🔍 [VIEWING-CHECK] convId=${convId?.substring(0,10)}... isChatOpen=${isChatOpen} currentView=${currentView} conversationId=${conversationId?.substring(0,10)}... → isViewing=${isViewing}`);
-        
-        return isViewing;
+        return !!(convId && isChatOpen && currentView === 'chat' && conversationId === convId);
     }
-
-    // ============================================================================
-    // VISUAL DEBUGGER: Removed in production
-    // ============================================================================
 
     // ============================================================================
     // SSE: Server-Sent Events for Real-Time Notifications
@@ -229,7 +198,7 @@ document.addEventListener('DOMContentLoaded', function () {
     let sseConnection = null;
     let sseReconnectAttempts = 0;
     const sseMaxReconnectAttempts = 10;
-    let sseConnectionStartTime = 0;  // ⭐ Track when SSE connection started
+    let sseConnectionStartTime = 0;
     
     function connectSSE(convId, isGlobal = false) {
         const url = isGlobal ? '/api/notifications/stream/global' : `/api/notifications/stream/${convId}`;
@@ -241,20 +210,14 @@ document.addEventListener('DOMContentLoaded', function () {
         
         // Don't reconnect if already connected to this endpoint
         if (sseConnection && sseConnection.url === url && sseConnection.eventSource) {
-            console.log('✅ [SSE] Already connected to this endpoint');
             return;
         }
         
         // Close existing connection
         if (sseConnection && sseConnection.eventSource) {
-            console.log('🔌 [SSE] Closing existing connection');
             sseConnection.eventSource.close();
         }
         
-        // Create new SSE connection
-        console.log('🔌 [SSE] Connecting to:', url);
-        
-        // ⭐ Track connection time for filtering old notifications
         sseConnectionStartTime = Date.now();
         
         const eventSource = new EventSource(url);
@@ -267,19 +230,16 @@ document.addEventListener('DOMContentLoaded', function () {
         };
         sseReconnectAttempts = 0;
         
-        eventSource.addEventListener('connected', (e) => {
-            const data = JSON.parse(e.data);
-            console.log('✅ [SSE] Connected to notification stream:', data);
+        eventSource.addEventListener('connected', () => {
+            // Connected
         });
         
         eventSource.addEventListener('new_message', (e) => {
             const data = JSON.parse(e.data);
             const notificationConvId = data.conversationId;
-            const backendUnreadCount = data.unreadCount;  // ⭐ Use backend's calculated count
-            
-            // ⭐ CRITICAL: Filter out old notifications from queue by timestamp
+            const backendUnreadCount = data.unreadCount;
             const messageTimestamp = data.timestamp ? new Date(data.timestamp).getTime() : Date.now();
-            const isRecentNotification = messageTimestamp >= sseConnectionStartTime - 2000;  // 2s buffer
+            const isRecentNotification = messageTimestamp >= sseConnectionStartTime - 2000;
             
             // For global stream, always show badge (user is on conversation list)
             if (isGlobal) {
@@ -343,7 +303,6 @@ document.addEventListener('DOMContentLoaded', function () {
             console.error('❌ [SSE] Connection error:', e);
             eventSource.close();
             
-            // Attempt reconnection
             if (sseReconnectAttempts < sseMaxReconnectAttempts) {
                 sseReconnectAttempts++;
                 const delay = Math.min(1000 * Math.pow(1.5, sseReconnectAttempts), 10000);
@@ -359,24 +318,14 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    // ============================================================================
-    // VIEWING STATUS TRACKING - COMBINED APPROACH
-    // ============================================================================
+    // Notify backend of viewing status
     function notifyBackendViewingStatus(conversationId, isViewing) {
         if (!conversationId) return;
-        
         fetch('/api/chat/viewing-status', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                conversationId: conversationId,
-                isViewing: isViewing
-            })
-        })
-        .catch(error => {
-            console.error('👁️ [VIEWING] Error:', error);
-        });
-
+            body: JSON.stringify({ conversationId, isViewing })
+        }).catch(() => {});
     }
 
     // ============================================================================
@@ -477,23 +426,14 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     
     function showConversationList() {
-        console.log('📋 [VIEW] Switching to conversation list view');
-        console.log(`⚠️ [VIEW] Telling backend user is NOT viewing any conversation`);
-        
-        // ⭐ NEW: Notify backend user stopped viewing conversation
-        if (conversationId) {
-            notifyBackendViewingStatus(conversationId, false);
-        }
+        if (conversationId) notifyBackendViewingStatus(conversationId, false);
         
         currentView = 'list';
         conversationListView.style.display = 'flex';
         chatView.style.display = 'none';
         backBtn.style.display = 'none';
         chatHeaderTitle.textContent = 'Yatri Bandhu';
-        
-        // ⭐ NEW: Connect to GLOBAL SSE for real-time notifications about ANY conversation
-        console.log('📡 [SSE] Connecting to GLOBAL notification stream...');
-        connectSSE(null, true);  // null convId, isGlobal=true
+        connectSSE(null, true);
         
         // Reset current conversation state but keep the data
         if (conversationId) {
@@ -512,54 +452,31 @@ document.addEventListener('DOMContentLoaded', function () {
     
     
     function showChatView() {
-        console.log('💬 [VIEW] Switching to chat view');
-        console.log(`⚠️ [VIEW] Telling backend user IS viewing this conversation`);
-        
-        // ⭐ NEW: Notify backend user is viewing this conversation
-        if (conversationId) {
-            notifyBackendViewingStatus(conversationId, true);
-        }
+        if (conversationId) notifyBackendViewingStatus(conversationId, true);
         
         currentView = 'chat';
         conversationListView.style.display = 'none';
         chatView.style.display = 'flex';
         backBtn.style.display = 'block';
-        
-        // ⭐ NEW: Disconnect SSE (WebSocket handles notifications)
-        console.log('📡 [SSE] Disconnecting from notification stream (using WebSocket instead)');
         disconnectSSE();
     }
     
     function openExistingConversation(convId) {
-        console.log('📂 [CONV] Opening existing conversation:', convId);
-        
-        // ⭐ CRITICAL: Clear previous conversation's viewing status BEFORE switching
         const previousConvId = localStorage.getItem('chat_current_conversation');
         if (previousConvId && previousConvId !== convId) {
-            console.log('📂 [CONV] Clearing viewing status for previous conversation:', previousConvId);
             notifyBackendViewingStatus(previousConvId, false);
         }
         
-        // ⭐ Clear unread count when opening conversation (local + backend)
         clearUnreadCount(convId);
         
-        // ⭐ NEW: Also clear the badge on the backend so it doesn't re-increment
         fetch('/api/chat/clear-badge', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                conversationId: convId
-            })
-        })
-        .catch(error => {
-            console.error('❌ [BADGE] Error clearing badge:', error);
-        });
+            body: JSON.stringify({ conversationId: convId })
+        }).catch(() => {});
         
-        // Set the conversation ID FIRST
         conversationId = convId;
         localStorage.setItem('chat_current_conversation', convId);
-        
-        // ⭐ CRITICAL FIX: Restore appUserId IMMEDIATELY
         const storedAppUserId = localStorage.getItem(`chat_appUserId_${convId}`);
         if (storedAppUserId) {
             appUserId = storedAppUserId;
@@ -1739,15 +1656,11 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function appendMessage(text, className, senderName = null) {
-        console.log(`💬 [UI] Appending ${className}:`, text.substring(0, 50) + '...');
-
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', className);
         messageDiv.style.whiteSpace = "pre-wrap";
         messageDiv.textContent = text;
         messagesContainer.appendChild(messageDiv);
-        
-        // Ensure scroll to bottom after message is added
         ensureScrollToBottom();
     }
 
