@@ -222,6 +222,18 @@ document.addEventListener('DOMContentLoaded', function () {
     let lastSoundPlayTime = 0;
     let audioContext = null;
 
+    // Initialize audio context on first user interaction
+    function initAudioContext() {
+        if (!audioContext) {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                console.log('🔔 [SOUND] AudioContext initialized on user interaction, state:', audioContext.state);
+            } catch (e) {
+                console.error('❌ [SOUND] Failed to initialize AudioContext:', e);
+            }
+        }
+    }
+
     // Play notification sound - with deduplication and proper async handling
     function playNotificationSound() {
         try {
@@ -235,10 +247,15 @@ document.addEventListener('DOMContentLoaded', function () {
             lastSoundPlayTime = now;
             console.log('🔔 [SOUND] Attempting to play notification sound');
             
-            // ⭐ Create or reuse audio context
+            // ⭐ Ensure audio context exists
             if (!audioContext) {
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                console.log('🔔 [SOUND] Created new AudioContext, state:', audioContext.state);
+                try {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    console.log('🔔 [SOUND] Created new AudioContext on demand');
+                } catch (e) {
+                    console.error('❌ [SOUND] Failed to create AudioContext:', e);
+                    return;
+                }
             }
             
             // ⭐ Function to actually play the beep
@@ -265,7 +282,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
             };
             
-            // ⭐ Handle suspended context - must resume before playing
+            // ⭐ Handle different context states
             if (audioContext.state === 'suspended') {
                 console.log('🔔 [SOUND] Context suspended, resuming...');
                 audioContext.resume().then(() => {
@@ -278,7 +295,10 @@ document.addEventListener('DOMContentLoaded', function () {
                 console.log('🔔 [SOUND] Context running, playing beep immediately');
                 playBeep();
             } else {
-                console.log('🔔 [SOUND] Context state:', audioContext.state);
+                console.log('🔔 [SOUND] Context state:', audioContext.state, '- attempting to resume');
+                if (audioContext.resume) {
+                    audioContext.resume().then(() => playBeep()).catch(e => console.error('❌ [SOUND]', e));
+                }
             }
         } catch (e) {
             console.error('❌ [SOUND] Error in playNotificationSound:', e);
@@ -2657,9 +2677,15 @@ document.addEventListener('DOMContentLoaded', function () {
     // Event Listeners
     // ============================================================================
 
-    toggleBtn.addEventListener('click', toggleChat);
+    toggleBtn.addEventListener('click', function() {
+        // ⭐ Initialize audio context on first user interaction (required by browsers)
+        initAudioContext();
+        toggleChat();
+    });
     closeBtn.addEventListener('click', function (e) {
         e.stopPropagation();
+        // ⭐ Initialize audio context on first user interaction
+        initAudioContext();
         toggleChat();
     });
     
