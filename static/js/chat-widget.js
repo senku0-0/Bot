@@ -347,26 +347,28 @@ document.addEventListener('DOMContentLoaded', function () {
             if (isGlobal) {
                 console.log('📬 [SSE-GLOBAL]', notificationConvId, 'unread:', backendUnreadCount, isRecentNotification ? '✅ NEW' : '⏭️ OLD');
                 
-                // ⭐ NEW: Check if user is viewing this conversation
+                // ⭐ CRITICAL FIX: Skip OLD notifications FIRST before any processing
+                if (!isRecentNotification) {
+                    console.log('⏭️ [SSE-GLOBAL] Skipping OLD notification - not recent:', notificationConvId);
+                    return;
+                }
+                
+                // ⭐ Check if user is viewing this conversation
                 const isUserViewingThisConv = isViewingConversation(notificationConvId);
                 console.log(`📬 [SSE-GLOBAL] User viewing this conversation? ${isUserViewingThisConv}`);
                 
-                // ⭐ Always update badge - but only if it's a recent notification or unread is actually 0
-                // AND only if user is NOT currently viewing this conversation
+                // ⭐ Only update badge if user is NOT viewing AND there are unread messages
                 if (!isUserViewingThisConv && backendUnreadCount && backendUnreadCount > 0) {
+                    console.log(`📬 [SSE-GLOBAL] ✅ Setting badge for ${notificationConvId} with count: ${backendUnreadCount}`);
                     unreadCounts.set(notificationConvId, backendUnreadCount);
                     calculateTotalUnread();
                     saveUnreadCounts();
                     updateBadges();
                     
-                    // ⭐ Only play sound for recent notifications
-                    if (isRecentNotification) {
-                        playNotificationSound();
-                    }
-                } else if (!isRecentNotification) {
-                    // ⭐ Old notification - skip completely
-                    console.log('⏭️ [SSE-GLOBAL] Skipping old notification for:', notificationConvId);
-                    return;
+                    // ⭐ Play sound for unread messages
+                    playNotificationSound();
+                } else if (isUserViewingThisConv) {
+                    console.log(`📬 [SSE-GLOBAL] User is viewing - NOT setting badge`);
                 }
                 
                 // Update conversation list with message preview
@@ -379,23 +381,23 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (!isUserViewing) {
                     // User is NOT viewing this conversation
                     console.log('📬 [SSE]', notificationConvId, 'unread:', backendUnreadCount, isRecentNotification ? '✅ NEW' : '⏭️ OLD');
-                    // ⭐ Only process recent notifications
-                    if (!isRecentNotification && (!backendUnreadCount || backendUnreadCount === 0)) {
-                        console.log('⏭️ [SSE] Skipping old notification for:', notificationConvId);
+                    
+                    // ⭐ CRITICAL FIX: Skip OLD notifications FIRST
+                    if (!isRecentNotification) {
+                        console.log('⏭️ [SSE] Skipping OLD notification for:', notificationConvId);
                         return;
                     }
                     
                     // SET the count to backend value (don't increment)
                     if (backendUnreadCount && backendUnreadCount > 0) {
+                        console.log(`📬 [SSE] ✅ Setting badge with count: ${backendUnreadCount}`);
                         unreadCounts.set(notificationConvId, backendUnreadCount);
                         calculateTotalUnread();
                         saveUnreadCounts();
                         updateBadges();
                         
-                        // Only play sound for recent ones
-                        if (isRecentNotification) {
-                            playNotificationSound();
-                        }
+                        // Play sound for unread messages
+                        playNotificationSound();
                     }
                     
                     // Update conversation list with message preview
