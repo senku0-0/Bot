@@ -365,11 +365,11 @@ document.addEventListener('DOMContentLoaded', function () {
             
             // For global stream, always show badge (user is on conversation list)
             if (isGlobal) {
-                console.log('📬 [SSE-GLOBAL]', notificationConvId, 'unread:', backendUnreadCount, isRecentNotification ? '✅ NEW' : '⏭️ OLD');
+                console.log('📬 [SSE-GLOBAL]', notificationConvId, 'unread:', backendUnreadCount, isRecentNotification ? '✅ NEW' : '⏭️ OLD', 'msgTime:', new Date(messageTimestamp).toISOString(), 'connTime:', new Date(sseConnectionStartTime).toISOString());
                 
-                // ⭐ CRITICAL FIX: Skip OLD notifications FIRST before any processing
-                if (!isRecentNotification) {
-                    console.log('⏭️ [SSE-GLOBAL] Skipping OLD notification - not recent:', notificationConvId);
+                // ⭐ Skip only if OLD notification AND there's no unread count
+                if (!isRecentNotification && (!backendUnreadCount || backendUnreadCount === 0)) {
+                    console.log('⏭️ [SSE-GLOBAL] Skipping OLD notification with no unread:', notificationConvId);
                     return;
                 }
                 
@@ -402,9 +402,9 @@ document.addEventListener('DOMContentLoaded', function () {
                     // User is NOT viewing this conversation
                     console.log('📬 [SSE]', notificationConvId, 'unread:', backendUnreadCount, isRecentNotification ? '✅ NEW' : '⏭️ OLD');
                     
-                    // ⭐ CRITICAL FIX: Skip OLD notifications FIRST
-                    if (!isRecentNotification) {
-                        console.log('⏭️ [SSE] Skipping OLD notification for:', notificationConvId);
+                    // ⭐ Skip only if OLD notification AND there's no unread count
+                    if (!isRecentNotification && (!backendUnreadCount || backendUnreadCount === 0)) {
+                        console.log('⏭️ [SSE] Skipping OLD notification with no unread for:', notificationConvId);
                         return;
                     }
                     
