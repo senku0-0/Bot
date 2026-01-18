@@ -1064,12 +1064,16 @@ document.addEventListener('DOMContentLoaded', function () {
             // COMBINED APPROACH: Badge logic handled by webhook
             // WebSocket only needs to display message
             // ============================================================================
-            if (msgConversationId) {
-                console.log(`🎯 [WEBSOCKET] Agent message for ${msgConversationId.substring(0, 10)}...`);
-                console.log(`🎯 [WEBSOCKET] Badge handled by webhook, just displaying message`);
-                
-                // ⭐ NEW: Always save message preview, even for CSAT (for conversation list display)
+            
+            // ⭐ NEW: Only save as preview if user is NOT viewing (it's a notification)
+            const isUserViewingThisConv = msgConversationId === conversationId && isChatOpen && currentView === 'chat';
+            
+            if (msgConversationId && !isUserViewingThisConv) {
+                console.log(`🎯 [WEBSOCKET] User NOT viewing - saving as preview for: ${msgConversationId.substring(0, 10)}...`);
+                // Only save as preview if this is a true notification (user not viewing)
                 saveConversation(msgConversationId, null, text.substring(0, 50), new Date().toISOString());
+            } else if (msgConversationId && isUserViewingThisConv) {
+                console.log(`🎯 [WEBSOCKET] User IS viewing - NOT saving as preview`);
             }
 
             // Only render if this is the currently active conversation
