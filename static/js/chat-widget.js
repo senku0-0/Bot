@@ -217,6 +217,7 @@ document.addEventListener('DOMContentLoaded', function () {
     
     // ⭐ Track last sound play time for deduplication
     let lastSoundPlayTime = 0;
+    let audioContext = null;
 
     // Play notification sound - with deduplication
     function playNotificationSound() {
@@ -231,7 +232,21 @@ document.addEventListener('DOMContentLoaded', function () {
             lastSoundPlayTime = now;
             console.log('🔔 [SOUND] Playing notification sound');
             
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            // ⭐ Create or reuse audio context
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                console.log('🔔 [SOUND] Created new AudioContext');
+            }
+            
+            // ⭐ Resume if suspended (needed after user interaction)
+            if (audioContext.state === 'suspended') {
+                audioContext.resume().then(() => {
+                    console.log('🔔 [SOUND] AudioContext resumed');
+                }).catch(e => {
+                    console.error('❌ [SOUND] Failed to resume AudioContext:', e);
+                });
+            }
+            
             const oscillator = audioContext.createOscillator();
             const gainNode = audioContext.createGain();
             
@@ -244,10 +259,11 @@ document.addEventListener('DOMContentLoaded', function () {
             gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
             gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
             
-            oscillator.start();
+            oscillator.start(audioContext.currentTime);
             oscillator.stop(audioContext.currentTime + 0.5);
+            console.log('🔔 [SOUND] Sound scheduled successfully');
         } catch (e) {
-            // Silent fail - audio context might not be available
+            console.error('❌ [SOUND] Error playing notification sound:', e);
         }
     }
 
@@ -1068,9 +1084,9 @@ document.addEventListener('DOMContentLoaded', function () {
             // ⭐ NEW: Only save as preview if user is NOT viewing (it's a notification)
             const isUserViewingThisConv = msgConversationId === conversationId && isChatOpen && currentView === 'chat';
             
-            if (msgConversationId && !isUserViewingThisConv) {
+            if (msgConversationId && !isUserViewingThisConv && agentJoinAnnounced) {
                 console.log(`🎯 [WEBSOCKET] User NOT viewing - saving as preview for: ${msgConversationId.substring(0, 10)}...`);
-                // Only save as preview if this is a true notification (user not viewing)
+                // Only save as preview if this is NOT the first agent message (agent already announced)
                 saveConversation(msgConversationId, null, text.substring(0, 50), new Date().toISOString());
             } else if (msgConversationId && isUserViewingThisConv) {
                 console.log(`🎯 [WEBSOCKET] User IS viewing - NOT saving as preview`);
@@ -1748,6 +1764,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
         console.log('📤 [UI] Sending message:', messageText);
         appendMessage(messageText, 'user-message');
+        
+        // ⭐ NEW: Update conversation preview with user's message
+        saveConversation(conversationId, null, messageText, new Date().toISOString());
+        
         pendingLocalMessages.add(messageText);
         sendToSunshine(messageText);
         chatInput.value = '';
