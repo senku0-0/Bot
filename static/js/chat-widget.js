@@ -217,7 +217,6 @@ document.addEventListener('DOMContentLoaded', function () {
     
     // ⭐ Track last sound play time for deduplication
     let lastSoundPlayTime = 0;
-    let audioContext = null;
 
     // Play notification sound - with deduplication
     function playNotificationSound() {
@@ -232,36 +231,35 @@ document.addEventListener('DOMContentLoaded', function () {
             lastSoundPlayTime = now;
             console.log('🔔 [SOUND] Playing notification sound');
             
-            // ⭐ Create or reuse audio context
-            if (!audioContext) {
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                console.log('🔔 [SOUND] Created new AudioContext');
+            // ⭐ Create a fresh audio context each time (simpler, more reliable)
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            
+            // ⭐ If context is suspended, resume it first
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
             }
             
-            // ⭐ Resume if suspended (needed after user interaction)
-            if (audioContext.state === 'suspended') {
-                audioContext.resume().then(() => {
-                    console.log('🔔 [SOUND] AudioContext resumed');
-                }).catch(e => {
-                    console.error('❌ [SOUND] Failed to resume AudioContext:', e);
-                });
-            }
-            
-            const oscillator = audioContext.createOscillator();
-            const gainNode = audioContext.createGain();
+            // Create a simple sine wave beep
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
             
             oscillator.connect(gainNode);
-            gainNode.connect(audioContext.destination);
+            gainNode.connect(audioCtx.destination);
             
-            oscillator.frequency.value = 800;
+            // Configure the tone
+            oscillator.frequency.setValueAtTime(800, audioCtx.currentTime);
             oscillator.type = 'sine';
             
-            gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+            // Volume envelope: quick fade in and exponential fade out
+            gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+            gainNode.gain.linearRampToValueAtTime(0.3, audioCtx.currentTime + 0.05);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
             
-            oscillator.start(audioContext.currentTime);
-            oscillator.stop(audioContext.currentTime + 0.5);
-            console.log('🔔 [SOUND] Sound scheduled successfully');
+            // Play the beep
+            oscillator.start(audioCtx.currentTime);
+            oscillator.stop(audioCtx.currentTime + 0.5);
+            
+            console.log('🔔 [SOUND] Beep scheduled at', audioCtx.currentTime);
         } catch (e) {
             console.error('❌ [SOUND] Error playing notification sound:', e);
         }
@@ -328,8 +326,14 @@ document.addEventListener('DOMContentLoaded', function () {
             // For global stream, always show badge (user is on conversation list)
             if (isGlobal) {
                 console.log('📬 [SSE-GLOBAL]', notificationConvId, 'unread:', backendUnreadCount, isRecentNotification ? '✅ NEW' : '⏭️ OLD');
+                
+                // ⭐ NEW: Check if user is viewing this conversation
+                const isUserViewingThisConv = isViewingConversation(notificationConvId);
+                console.log(`📬 [SSE-GLOBAL] User viewing this conversation? ${isUserViewingThisConv}`);
+                
                 // ⭐ Always update badge - but only if it's a recent notification or unread is actually 0
-                if (backendUnreadCount && backendUnreadCount > 0) {
+                // AND only if user is NOT currently viewing this conversation
+                if (!isUserViewingThisConv && backendUnreadCount && backendUnreadCount > 0) {
                     unreadCounts.set(notificationConvId, backendUnreadCount);
                     calculateTotalUnread();
                     saveUnreadCounts();
@@ -2646,6 +2650,12 @@ document.addEventListener('DOMContentLoaded', function () {
     // Back button
     backBtn.addEventListener('click', function () {
         console.log('⬅️ [UI] Back button clicked');
+        
+        // ⭐ Clear unread for this conversation since user was viewing it
+        if (conversationId) {
+            clearUnreadCount(conversationId);
+            console.log('⬅️ [UI] Cleared unread count for conversation:', conversationId);
+        }
         
         // Save current conversation state before going back - include agent name
         if (conversationId) {
