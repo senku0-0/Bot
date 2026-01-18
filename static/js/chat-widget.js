@@ -217,93 +217,6 @@ document.addEventListener('DOMContentLoaded', function () {
     // ============================================================================
     // VISUAL DEBUGGER: Removed in production
     // ============================================================================
-    
-    // ⭐ Track last sound play time for deduplication
-    let lastSoundPlayTime = 0;
-    let audioContext = null;
-
-    // Initialize audio context on first user interaction
-    function initAudioContext() {
-        if (!audioContext) {
-            try {
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                console.log('🔔 [SOUND] AudioContext initialized on user interaction, state:', audioContext.state);
-            } catch (e) {
-                console.error('❌ [SOUND] Failed to initialize AudioContext:', e);
-            }
-        }
-    }
-
-    // Play notification sound - with deduplication and proper async handling
-    function playNotificationSound() {
-        try {
-            // ⭐ DEDUPLICATION: Only skip if sound played within last 500ms (prevents double-trigger)
-            const now = Date.now();
-            if (now - lastSoundPlayTime < 500) {
-                console.log('🔕 [SOUND] Skipping - sound played too recently');
-                return;
-            }
-            
-            lastSoundPlayTime = now;
-            console.log('🔔 [SOUND] Attempting to play notification sound');
-            
-            // ⭐ Ensure audio context exists
-            if (!audioContext) {
-                try {
-                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                    console.log('🔔 [SOUND] Created new AudioContext on demand');
-                } catch (e) {
-                    console.error('❌ [SOUND] Failed to create AudioContext:', e);
-                    return;
-                }
-            }
-            
-            // ⭐ Function to actually play the beep
-            const playBeep = () => {
-                try {
-                    const osc = audioContext.createOscillator();
-                    const gain = audioContext.createGain();
-                    
-                    osc.connect(gain);
-                    gain.connect(audioContext.destination);
-                    
-                    osc.frequency.value = 800;
-                    osc.type = 'sine';
-                    
-                    gain.gain.setValueAtTime(0.3, audioContext.currentTime);
-                    gain.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
-                    
-                    osc.start(audioContext.currentTime);
-                    osc.stop(audioContext.currentTime + 0.5);
-                    
-                    console.log('🔔 [SOUND] ✅ Beep played successfully');
-                } catch (e) {
-                    console.error('❌ [SOUND] Error playing beep:', e);
-                }
-            };
-            
-            // ⭐ Handle different context states
-            if (audioContext.state === 'suspended') {
-                console.log('🔔 [SOUND] Context suspended, resuming...');
-                audioContext.resume().then(() => {
-                    console.log('🔔 [SOUND] Context resumed, playing beep');
-                    playBeep();
-                }).catch(e => {
-                    console.error('❌ [SOUND] Failed to resume context:', e);
-                });
-            } else if (audioContext.state === 'running') {
-                console.log('🔔 [SOUND] Context running, playing beep immediately');
-                playBeep();
-            } else {
-                console.log('🔔 [SOUND] Context state:', audioContext.state, '- attempting to resume');
-                if (audioContext.resume) {
-                    audioContext.resume().then(() => playBeep()).catch(e => console.error('❌ [SOUND]', e));
-                }
-            }
-        } catch (e) {
-            console.error('❌ [SOUND] Error in playNotificationSound:', e);
-        }
-    }
 
     // ============================================================================
     // SSE: Server-Sent Events for Real-Time Notifications
@@ -384,9 +297,6 @@ document.addEventListener('DOMContentLoaded', function () {
                     calculateTotalUnread();
                     saveUnreadCounts();
                     updateBadges();
-                    
-                    // ⭐ Play sound for unread messages
-                    playNotificationSound();
                 } else if (isUserViewingThisConv) {
                     console.log(`📬 [SSE-GLOBAL] User is viewing - NOT setting badge`);
                 }
@@ -415,9 +325,6 @@ document.addEventListener('DOMContentLoaded', function () {
                         calculateTotalUnread();
                         saveUnreadCounts();
                         updateBadges();
-                        
-                        // Play sound for unread messages
-                        playNotificationSound();
                     }
                     
                     // Update conversation list with message preview
@@ -2677,15 +2584,9 @@ document.addEventListener('DOMContentLoaded', function () {
     // Event Listeners
     // ============================================================================
 
-    toggleBtn.addEventListener('click', function() {
-        // ⭐ Initialize audio context on first user interaction (required by browsers)
-        initAudioContext();
-        toggleChat();
-    });
+    toggleBtn.addEventListener('click', toggleChat);
     closeBtn.addEventListener('click', function (e) {
         e.stopPropagation();
-        // ⭐ Initialize audio context on first user interaction
-        initAudioContext();
         toggleChat();
     });
     
