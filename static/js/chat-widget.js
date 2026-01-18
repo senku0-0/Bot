@@ -114,10 +114,11 @@ document.addEventListener('DOMContentLoaded', function () {
         if (unreadCounts.has(convId)) {
             unreadCounts.delete(convId);
             calculateTotalUnread();
-            // ⭐ DON'T save to localStorage - let backend be source of truth
-            // Only clear the UI locally while user is viewing
+            // ⭐ Update localStorage to match (since we're clearing UI temporarily while viewing)
+            // Backend is source of truth - if there are still unread messages, SSE will restore them
+            saveUnreadCounts();
             updateBadges();
-            console.log('🗑️ [BADGES] Cleared from UI - total unread:', totalUnread);
+            console.log('🗑️ [BADGES] Cleared from UI and localStorage - total unread:', totalUnread);
         }
     }
 
