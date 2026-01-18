@@ -54,8 +54,14 @@ document.addEventListener('DOMContentLoaded', function () {
     let sseConnection = null;
     let sseReconnectAttempts = 0;
     const sseMaxReconnectAttempts = 10;
-    let sseConnectionStartTime = 0;
     
+    function playNotificationSound() {
+        try {
+            const audio = new Audio('data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAAB9AAACABAAZGF0YQIAAAAAAA==');
+            audio.play().catch(() => {});
+        } catch (e) {}
+    }
+
     function connectSSE(convId, isGlobal = false) {
         const url = isGlobal ? '/api/notifications/stream/global' : `/api/notifications/stream/${convId}`;
         
@@ -69,15 +75,12 @@ document.addEventListener('DOMContentLoaded', function () {
             sseConnection.eventSource.close();
         }
         
-        sseConnectionStartTime = Date.now();
-        
         const eventSource = new EventSource(url);
         sseConnection = {
             url: url,
             conversationId: convId,
             eventSource: eventSource,
-            isGlobal: isGlobal,
-            startTime: sseConnectionStartTime
+            isGlobal: isGlobal
         };
         sseReconnectAttempts = 0;
         
@@ -87,38 +90,33 @@ document.addEventListener('DOMContentLoaded', function () {
             const data = JSON.parse(e.data);
             const notificationConvId = data.conversationId;
             const backendUnreadCount = data.unreadCount;
-            const messageTimestamp = data.timestamp ? new Date(data.timestamp).getTime() : Date.now();
-            const isRecentNotification = messageTimestamp >= sseConnectionStartTime - 2000;
+            
             if (isGlobal) {
-                if (!isRecentNotification && (!backendUnreadCount || backendUnreadCount === 0)) {
-                    return;
-                }
                 const isUserViewingThisConv = isViewingConversation(notificationConvId);
+                
                 if (!isUserViewingThisConv && backendUnreadCount && backendUnreadCount > 0) {
                     unreadCounts.set(notificationConvId, backendUnreadCount);
                     calculateTotalUnread();
                     saveUnreadCounts();
                     updateBadges();
-                } else if (isUserViewingThisConv) {
+                    playNotificationSound();
                 }
+                
                 saveConversation(notificationConvId, null, data.messagePreview, data.timestamp);
                 renderConversationList();
             } else {
                 const isUserViewing = isViewingConversation(notificationConvId);
                 
-                if (!isUserViewing) {
-                    if (!isRecentNotification && (!backendUnreadCount || backendUnreadCount === 0)) {
-                        return;
-                    }
-                    if (backendUnreadCount && backendUnreadCount > 0) {
-                        unreadCounts.set(notificationConvId, backendUnreadCount);
-                        calculateTotalUnread();
-                        saveUnreadCounts();
-                        updateBadges();
-                    }
-                    saveConversation(notificationConvId, null, data.messagePreview, data.timestamp);
-                    renderConversationList();
+                if (!isUserViewing && backendUnreadCount && backendUnreadCount > 0) {
+                    unreadCounts.set(notificationConvId, backendUnreadCount);
+                    calculateTotalUnread();
+                    saveUnreadCounts();
+                    updateBadges();
+                    playNotificationSound();
                 }
+                
+                saveConversation(notificationConvId, null, data.messagePreview, data.timestamp);
+                renderConversationList();
             }
         });
         
@@ -238,7 +236,15 @@ document.addEventListener('DOMContentLoaded', function () {
     
     
     function showChatView() {
-        if (conversationId) notifyBackendViewingStatus(conversationId, true);
+        if (conversationId) {
+            notifyBackendViewingStatus(conversationId, true);
+            clearUnreadCount(conversationId);
+            fetch('/api/chat/clear-badge', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ conversationId: conversationId })
+            }).catch(() => {});
+        }
         
         currentView = 'chat';
         conversationListView.style.display = 'none';
@@ -580,9 +586,16 @@ document.addEventListener('DOMContentLoaded', function () {
             }
             const isUserViewingThisConv = msgConversationId === conversationId && isChatOpen && currentView === 'chat';
             
-            if (msgConversationId && !isUserViewingThisConv && agentJoinAnnounced) {
+            if (msgConversationId && isUserViewingThisConv) {
+                clearUnreadCount(msgConversationId);
+                fetch('/api/chat/clear-badge', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ conversationId: msgConversationId })
+                }).catch(() => {});
                 saveConversation(msgConversationId, null, text.substring(0, 50), new Date().toISOString());
-            } else if (msgConversationId && isUserViewingThisConv) {
+            } else if (msgConversationId && !isUserViewingThisConv && agentJoinAnnounced) {
+                saveConversation(msgConversationId, null, text.substring(0, 50), new Date().toISOString());
             }
             if (msgConversationId !== conversationId) {
                 return;
