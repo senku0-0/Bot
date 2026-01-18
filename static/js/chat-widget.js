@@ -203,10 +203,13 @@ document.addEventListener('DOMContentLoaded', function () {
     function isViewingConversation(convId) {
         if (!convId) return false;
         
-        // ULTRA-SIMPLE: Return TRUE if user IS actively viewing this specific conversation
+        // ⭐ CRITICAL: Check ALL conditions - chat must be open, in chat view, AND this specific conversation
         const isViewing = isChatOpen && 
                          currentView === 'chat' && 
+                         conversationId && 
                          conversationId === convId;
+        
+        console.log(`🔍 [VIEWING-CHECK] convId=${convId?.substring(0,10)}... isChatOpen=${isChatOpen} currentView=${currentView} conversationId=${conversationId?.substring(0,10)}... → isViewing=${isViewing}`);
         
         return isViewing;
     }
@@ -217,8 +220,9 @@ document.addEventListener('DOMContentLoaded', function () {
     
     // ⭐ Track last sound play time for deduplication
     let lastSoundPlayTime = 0;
+    let audioContext = null;
 
-    // Play notification sound - with deduplication
+    // Play notification sound - with deduplication and proper async handling
     function playNotificationSound() {
         try {
             // ⭐ DEDUPLICATION: Only skip if sound played within last 500ms (prevents double-trigger)
@@ -229,39 +233,55 @@ document.addEventListener('DOMContentLoaded', function () {
             }
             
             lastSoundPlayTime = now;
-            console.log('🔔 [SOUND] Playing notification sound');
+            console.log('🔔 [SOUND] Attempting to play notification sound');
             
-            // ⭐ Create a fresh audio context each time (simpler, more reliable)
-            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            
-            // ⭐ If context is suspended, resume it first
-            if (audioCtx.state === 'suspended') {
-                audioCtx.resume();
+            // ⭐ Create or reuse audio context
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                console.log('🔔 [SOUND] Created new AudioContext, state:', audioContext.state);
             }
             
-            // Create a simple sine wave beep
-            const oscillator = audioCtx.createOscillator();
-            const gainNode = audioCtx.createGain();
+            // ⭐ Function to actually play the beep
+            const playBeep = () => {
+                try {
+                    const osc = audioContext.createOscillator();
+                    const gain = audioContext.createGain();
+                    
+                    osc.connect(gain);
+                    gain.connect(audioContext.destination);
+                    
+                    osc.frequency.value = 800;
+                    osc.type = 'sine';
+                    
+                    gain.gain.setValueAtTime(0.3, audioContext.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+                    
+                    osc.start(audioContext.currentTime);
+                    osc.stop(audioContext.currentTime + 0.5);
+                    
+                    console.log('🔔 [SOUND] ✅ Beep played successfully');
+                } catch (e) {
+                    console.error('❌ [SOUND] Error playing beep:', e);
+                }
+            };
             
-            oscillator.connect(gainNode);
-            gainNode.connect(audioCtx.destination);
-            
-            // Configure the tone
-            oscillator.frequency.setValueAtTime(800, audioCtx.currentTime);
-            oscillator.type = 'sine';
-            
-            // Volume envelope: quick fade in and exponential fade out
-            gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
-            gainNode.gain.linearRampToValueAtTime(0.3, audioCtx.currentTime + 0.05);
-            gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
-            
-            // Play the beep
-            oscillator.start(audioCtx.currentTime);
-            oscillator.stop(audioCtx.currentTime + 0.5);
-            
-            console.log('🔔 [SOUND] Beep scheduled at', audioCtx.currentTime);
+            // ⭐ Handle suspended context - must resume before playing
+            if (audioContext.state === 'suspended') {
+                console.log('🔔 [SOUND] Context suspended, resuming...');
+                audioContext.resume().then(() => {
+                    console.log('🔔 [SOUND] Context resumed, playing beep');
+                    playBeep();
+                }).catch(e => {
+                    console.error('❌ [SOUND] Failed to resume context:', e);
+                });
+            } else if (audioContext.state === 'running') {
+                console.log('🔔 [SOUND] Context running, playing beep immediately');
+                playBeep();
+            } else {
+                console.log('🔔 [SOUND] Context state:', audioContext.state);
+            }
         } catch (e) {
-            console.error('❌ [SOUND] Error playing notification sound:', e);
+            console.error('❌ [SOUND] Error in playNotificationSound:', e);
         }
     }
 
