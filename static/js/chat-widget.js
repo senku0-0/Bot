@@ -56,11 +56,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Initialize notification system
     function initNotificationSystem() {
-        // ⭐ CRITICAL: Don't load old localStorage on init
-        // Let SSE stream from backend provide authoritative counts
-        unreadCounts.clear();
+        console.log('🔔 [INIT] Starting notification system...');
+        // ⭐ Load persisted unread counts from previous session
+        // These were saved by SSE when messages arrived
+        loadUnreadCounts();
         calculateTotalUnread();
         updateBadges();
+        console.log('✅ [INIT] Notification badges loaded and ready');
     }
 
     // Load unread counts from localStorage
@@ -108,13 +110,14 @@ document.addEventListener('DOMContentLoaded', function () {
     function clearUnreadCount(convId) {
         if (!convId) return;
         
-        console.log('🗑️ [BADGES] Clearing unread count for conversation:', convId);
+        console.log('🗑️ [BADGES] Clearing unread count for conversation (UI only):', convId);
         if (unreadCounts.has(convId)) {
             unreadCounts.delete(convId);
             calculateTotalUnread();
-            saveUnreadCounts();
+            // ⭐ DON'T save to localStorage - let backend be source of truth
+            // Only clear the UI locally while user is viewing
             updateBadges();
-            console.log('🗑️ [BADGES] Successfully cleared - total unread:', totalUnread);
+            console.log('🗑️ [BADGES] Cleared from UI - total unread:', totalUnread);
         }
     }
 
@@ -122,6 +125,7 @@ document.addEventListener('DOMContentLoaded', function () {
     function markAllAsRead() {
         unreadCounts.clear();
         calculateTotalUnread();
+        // ⭐ Still save markAllAsRead since it's explicit user action
         saveUnreadCounts();
         updateBadges();
     }
