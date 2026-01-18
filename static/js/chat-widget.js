@@ -214,6 +214,9 @@ document.addEventListener('DOMContentLoaded', function () {
     // ============================================================================
     // VISUAL DEBUGGER: Removed in production
     // ============================================================================
+    
+    // ⭐ Track last sound play time for deduplication
+    let lastSoundPlayTime = 0;
 
     // Play notification sound - with deduplication
     function playNotificationSound() {
@@ -255,7 +258,6 @@ document.addEventListener('DOMContentLoaded', function () {
     let sseReconnectAttempts = 0;
     const sseMaxReconnectAttempts = 10;
     let sseConnectionStartTime = 0;  // ⭐ Track when SSE connection started
-    let lastSoundPlayTime = 0;  // ⭐ Prevent sound spam - track last sound play time
     
     function connectSSE(convId, isGlobal = false) {
         const url = isGlobal ? '/api/notifications/stream/global' : `/api/notifications/stream/${convId}`;
@@ -1507,6 +1509,10 @@ document.addEventListener('DOMContentLoaded', function () {
             })
             .then(data => {
                 console.log("✅ [SEND] Success:", data);
+                // ⭐ NEW: Save user message to conversation list preview
+                saveConversation(conversationId, null, text, new Date().toISOString());
+                renderConversationList();
+                
                 if (data.data?.messages?.length > 0) {
                     const msgId = data.data.messages[0].id;
                     displayedMessageIds.add(msgId);

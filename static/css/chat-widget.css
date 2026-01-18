@@ -1035,9 +1035,6 @@
     box-shadow: 0 5px 25px rgba(0, 0, 0, 0.5);
 }
 
-/* ============================================================================
-   CONVERSATION LIST VIEW
-   ============================================================================ */
 
 .conversation-list-view {
     display: flex;
@@ -1055,6 +1052,7 @@
     scrollbar-width: none; /* Firefox */
     -ms-overflow-style: none; /* IE/Edge */
     min-height: 0;  /* ⭐ Allow shrinking below flex items */
+    margin-bottom: 50px;
 }
 
 .conversation-list::-webkit-scrollbar {
