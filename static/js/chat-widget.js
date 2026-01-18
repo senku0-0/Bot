@@ -221,9 +221,9 @@ document.addEventListener('DOMContentLoaded', function () {
     // Play notification sound - with deduplication
     function playNotificationSound() {
         try {
-            // ⭐ DEDUPLICATION: Only play if at least 1.5 seconds since last sound
+            // ⭐ DEDUPLICATION: Only skip if sound played within last 500ms (prevents double-trigger)
             const now = Date.now();
-            if (now - lastSoundPlayTime < 1500) {
+            if (now - lastSoundPlayTime < 500) {
                 console.log('🔕 [SOUND] Skipping - sound played too recently');
                 return;
             }
@@ -419,10 +419,12 @@ document.addEventListener('DOMContentLoaded', function () {
         
         // Check if conversation already exists
         const existingIndex = conversations.findIndex(c => c.id === convId);
+        const existingConv = existingIndex >= 0 ? conversations[existingIndex] : null;
         
         const convData = {
             id: convId,
-            title: title || 'Conversation',
+            // ⭐ NEW: Preserve existing title if no new title provided
+            title: title || existingConv?.title || 'Conversation',
             lastMessage: lastMessage || '',
             timestamp: timestamp || new Date().toISOString(),
             updatedAt: new Date().toISOString()
@@ -1066,12 +1068,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 console.log(`🎯 [WEBSOCKET] Agent message for ${msgConversationId.substring(0, 10)}...`);
                 console.log(`🎯 [WEBSOCKET] Badge handled by webhook, just displaying message`);
                 
-                // ⭐ NEW: Don't save CSAT/interactive messages to conversation preview
-                if (!choices.length && !actions.length) {
-                    saveConversation(msgConversationId, null, text.substring(0, 50), new Date().toISOString());
-                } else {
-                    console.log('🎯 [WEBSOCKET] Skipping preview save for CSAT/interactive message');
-                }
+                // ⭐ NEW: Always save message preview, even for CSAT (for conversation list display)
+                saveConversation(msgConversationId, null, text.substring(0, 50), new Date().toISOString());
             }
 
             // Only render if this is the currently active conversation
