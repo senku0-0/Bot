@@ -618,6 +618,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 appendMessage('Messaging session ended', 'agent-announcement');
             } else if (actions.length > 0) {
                 appendChoicesMessage(actions, 'bot-message', { actions });
+                chatInputArea.style.display = 'none';
+                appendMessage('Messaging session ended', 'agent-announcement');
             }
             ensureScrollToBottom();
             showMessageReceivedIndicator();
@@ -763,21 +765,13 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                     if (msg.choices && msg.choices.length > 0) {
                         chatInputArea.style.display = 'none';
-                        const webviewChoice = msg.choices.find(c => c.type === 'webview' && c.uri);
-                        if (webviewChoice) {
-                            appendWebviewSurvey(webviewChoice.uri, webviewChoice.text || 'Survey');
-                        } else {
-                            appendChoicesMessage(msg.choices, cssClass, msg);
-                        }
+                        // ✅ ALWAYS show interactive buttons (even for webview choices)
+                        appendChoicesMessage(msg.choices, cssClass, msg);
                         appendMessage('Messaging session ended', 'agent-announcement');
                     } else if (msg.actions && msg.actions.length > 0) {
                         chatInputArea.style.display = 'none';
-                        const webviewAction = msg.actions.find(a => a.type === 'webview' && a.uri);
-                        if (webviewAction) {
-                            appendWebviewSurvey(webviewAction.uri, webviewAction.text || 'Survey');
-                        } else {
-                            appendChoicesMessage(msg.actions, cssClass, msg);
-                        }
+                        // ✅ ALWAYS show interactive buttons (even for webview actions)
+                        appendChoicesMessage(msg.actions, cssClass, msg);
                         appendMessage('Messaging session ended', 'agent-announcement');
                     }
                 });
@@ -1144,15 +1138,16 @@ document.addEventListener('DOMContentLoaded', function () {
             const choiceObj = typeof choice === 'string' ? { text: choice } : choice;
             const choiceEmoji = choiceObj.emoji || choiceObj.icon || '';
             const choiceType = choiceObj.type || '';
-            
+
             if (choiceType === 'webview') {
                 hasWebview = true;
             }
-            
+
             if (choiceEmoji) {
                 emojiCount++;
             }
         });
+
         if (emojiCount > 0 && emojiCount >= choices.length * 0.5) {
             choicesDiv.classList.add('emoji-layout');
         }
@@ -1162,19 +1157,20 @@ document.addEventListener('DOMContentLoaded', function () {
 
         choices.forEach((choice, index) => {
             const choiceObj = typeof choice === 'string' ? { text: choice } : choice;
-            
+
             const choiceText = choiceObj.text || choiceObj.label || choiceObj.value || '';
             const choiceValue = choiceObj.value || choiceObj.text || choiceObj.label || index.toString();
             const choiceEmoji = choiceObj.emoji || choiceObj.icon || '';
-            const choiceUri = choiceObj.uri || choiceObj.fallback || ''; // For webview surveys
-            const choiceType = choiceObj.type || ''; // 'webview', 'action', etc.
+            const choiceUri = choiceObj.uri || choiceObj.fallback || '';
+            const choiceType = choiceObj.type || '';
 
             const btn = document.createElement('button');
             btn.classList.add('choice-btn');
+
             if (choiceType === 'webview' && choiceUri) {
                 btn.textContent = choiceText || 'Open Survey';
                 btn.classList.add('webview-btn');
-                
+
                 btn.addEventListener('click', function (e) {
                     e.preventDefault();
                     e.stopPropagation();
@@ -1185,9 +1181,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     btn.disabled = true;
                     btn.style.opacity = '0.5';
                     btn.classList.add('selected');
-                    appendMessage(choiceText || 'Opened survey', 'user-message');
                     appendWebviewSurvey(choiceUri, choiceText);
-                    sendToSunshine(choiceText || 'survey_opened');
                     choicesDiv.querySelectorAll('.choice-btn').forEach(b => {
                         b.disabled = true;
                         b.style.opacity = '0.5';
@@ -1196,9 +1190,9 @@ document.addEventListener('DOMContentLoaded', function () {
             }
             else if (choiceEmoji) {
                 btn.textContent = choiceEmoji;
-                btn.title = choiceText; // Show text as tooltip
+                btn.title = choiceText;
                 btn.classList.add('emoji-choice');
-                
+
                 btn.addEventListener('click', function (e) {
                     e.preventDefault();
                     e.stopPropagation();
@@ -1213,20 +1207,19 @@ document.addEventListener('DOMContentLoaded', function () {
                         b.style.opacity = '0.5';
                     });
                     sendToSunshine(choiceValue);
-                    
                     btn.classList.add('selected');
                 });
             }
             else {
                 btn.textContent = choiceText;
-                
+
                 btn.addEventListener('click', function (e) {
                     e.preventDefault();
                     e.stopPropagation();
                     if (btn.dataset.clicked === 'true' || btn.disabled) {
                         return;
                     }
-                    btn.data.clicked = 'true';
+                    btn.dataset.clicked = 'true';
                     btn.disabled = true;
                     appendMessage(choiceValue, 'user-message');
                     choicesDiv.querySelectorAll('.choice-btn').forEach(b => {
@@ -1234,11 +1227,10 @@ document.addEventListener('DOMContentLoaded', function () {
                         b.style.opacity = '0.5';
                     });
                     sendToSunshine(choiceValue);
-                    
                     btn.classList.add('selected');
                 });
             }
-            
+
             choicesDiv.appendChild(btn);
         });
 
