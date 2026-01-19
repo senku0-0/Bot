@@ -615,13 +615,13 @@ document.addEventListener('DOMContentLoaded', function () {
             displayedMessageIds.add(messageId);
             appendMessage(text, 'bot-message');
             if (choices.length > 0) {
+                chatInputArea.style.display = 'none';
+                appendMessage('Messaging session ended', 'agent-announcement');
                 appendChoicesMessage(choices, 'bot-message', { choices });
-                chatInputArea.style.display = 'none';
-                appendMessage('Messaging session ended', 'agent-announcement');
             } else if (actions.length > 0) {
-                appendChoicesMessage(actions, 'bot-message', { actions });
                 chatInputArea.style.display = 'none';
                 appendMessage('Messaging session ended', 'agent-announcement');
+                appendChoicesMessage(actions, 'bot-message', { actions });
             }
             ensureScrollToBottom();
             showMessageReceivedIndicator();
@@ -771,9 +771,9 @@ document.addEventListener('DOMContentLoaded', function () {
                             return;
                         }
                         chatInputArea.style.display = 'none';
-                        // ✅ ALWAYS show interactive buttons (even for webview choices)
-                        appendChoicesMessage(msg.choices, cssClass, msg);
+                        // Show session ended first, then CSAT bubble
                         appendMessage('Messaging session ended', 'agent-announcement');
+                        appendChoicesMessage(msg.choices, cssClass, msg);
                         surveyMessageShown = true;
                     } else if (msg.actions && msg.actions.length > 0) {
                         // Skip re-rendering if survey with actions has already been shown
@@ -781,9 +781,9 @@ document.addEventListener('DOMContentLoaded', function () {
                             return;
                         }
                         chatInputArea.style.display = 'none';
-                        // ✅ ALWAYS show interactive buttons (even for webview actions)
-                        appendChoicesMessage(msg.actions, cssClass, msg);
+                        // Show session ended first, then CSAT bubble
                         appendMessage('Messaging session ended', 'agent-announcement');
+                        appendChoicesMessage(msg.actions, cssClass, msg);
                         surveyMessageShown = true;
                     }
                 });
