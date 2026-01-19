@@ -1282,10 +1282,6 @@ document.addEventListener('DOMContentLoaded', function () {
         
         const surveyContainer = document.createElement('div');
         surveyContainer.classList.add('survey-iframe-wrapper');
-        const titleDiv = document.createElement('div');
-        titleDiv.classList.add('survey-title');
-        titleDiv.textContent = surveyTitle || 'Survey';
-        surveyContainer.appendChild(titleDiv);
         const iframeWrapper = document.createElement('div');
         iframeWrapper.classList.add('survey-iframe-wrapper');
         const loadingDiv = document.createElement('div');
