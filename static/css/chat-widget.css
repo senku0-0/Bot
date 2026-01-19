@@ -431,7 +431,8 @@
     border: 2px solid #0056b3;
     padding: 10px 18px;
     border-radius: 8px;
-    font-size: 0.9em;\n    font-weight: 600;
+    font-size: 0.9em;
+    font-weight: 600;
     cursor: pointer;
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     text-align: center;
