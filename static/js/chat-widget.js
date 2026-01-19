@@ -33,6 +33,7 @@ document.addEventListener('DOMContentLoaded', function () {
     let deleteAccountReasons = [];
     let unreadCounts = new Map(); // conversationId -> count
     let totalUnread = 0;
+    let surveyMessageShown = false; // Track if survey has been displayed
     function initNotificationSystem() {
         loadUnreadCounts();
         calculateTotalUnread();
@@ -359,6 +360,7 @@ document.addEventListener('DOMContentLoaded', function () {
         appUserId = null;
         displayedMessageIds.clear();
         displayedImageFileNames.clear();
+        surveyMessageShown = false; // Reset survey flag
         isAgentConnected = false;
         agentJoinAnnounced = false;
         sessionEnded = false;
@@ -764,15 +766,25 @@ document.addEventListener('DOMContentLoaded', function () {
                         }
                     }
                     if (msg.choices && msg.choices.length > 0) {
+                        // Skip re-rendering if survey with choices has already been shown
+                        if (msg.choices.some(c => c.type === 'webview' && c.uri) && surveyMessageShown) {
+                            return;
+                        }
                         chatInputArea.style.display = 'none';
                         // ✅ ALWAYS show interactive buttons (even for webview choices)
                         appendChoicesMessage(msg.choices, cssClass, msg);
                         appendMessage('Messaging session ended', 'agent-announcement');
+                        surveyMessageShown = true;
                     } else if (msg.actions && msg.actions.length > 0) {
+                        // Skip re-rendering if survey with actions has already been shown
+                        if (msg.actions.some(a => a.type === 'webview' && a.uri) && surveyMessageShown) {
+                            return;
+                        }
                         chatInputArea.style.display = 'none';
                         // ✅ ALWAYS show interactive buttons (even for webview actions)
                         appendChoicesMessage(msg.actions, cssClass, msg);
                         appendMessage('Messaging session ended', 'agent-announcement');
+                        surveyMessageShown = true;
                     }
                 });
 
@@ -1129,8 +1141,25 @@ document.addEventListener('DOMContentLoaded', function () {
         setTimeout(() => scrollToBottom(), 50);
     }
     function appendChoicesMessage(choices, className, msg) {
+        // Create outer bubble to contain message + choices + survey
+        const messageBubble = document.createElement('div');
+        messageBubble.classList.add('message', className, 'combined-message-bubble');
+        messageBubble.id = `bubble_${Date.now()}`;
+        
+        // Add message text if present
+        if (msg && msg.text) {
+            const textDiv = document.createElement('div');
+            textDiv.classList.add('message-text-content');
+            textDiv.style.whiteSpace = 'pre-wrap';
+            textDiv.textContent = msg.text;
+            messageBubble.appendChild(textDiv);
+        }
+        
+        // Create choices container inside the bubble
         const choicesDiv = document.createElement('div');
-        choicesDiv.classList.add('choices-container', className);
+        choicesDiv.classList.add('choices-container', 'inline-choices');
+        choicesDiv.id = `choices_${Date.now()}`;
+        
         let emojiCount = 0;
         let hasWebview = false;
 
@@ -1154,6 +1183,9 @@ document.addEventListener('DOMContentLoaded', function () {
         if (hasWebview) {
             choicesDiv.classList.add('webview-layout');
         }
+        
+        // Store reference to bubble for survey injection
+        choicesDiv.dataset.bubbleId = messageBubble.id;
 
         choices.forEach((choice, index) => {
             const choiceObj = typeof choice === 'string' ? { text: choice } : choice;
@@ -1181,7 +1213,8 @@ document.addEventListener('DOMContentLoaded', function () {
                     btn.disabled = true;
                     btn.style.opacity = '0.5';
                     btn.classList.add('selected');
-                    appendWebviewSurvey(choiceUri, choiceText);
+                    // Pass bubble ID so survey is added to same bubble
+                    appendWebviewSurvey(choiceUri, choiceText, messageBubble);
                     choicesDiv.querySelectorAll('.choice-btn').forEach(b => {
                         b.disabled = true;
                         b.style.opacity = '0.5';
@@ -1234,12 +1267,21 @@ document.addEventListener('DOMContentLoaded', function () {
             choicesDiv.appendChild(btn);
         });
 
-        messagesContainer.appendChild(choicesDiv);
+        // Add choices to message bubble
+        messageBubble.appendChild(choicesDiv);
+        // Add the entire bubble to messages container
+        messagesContainer.appendChild(messageBubble);
         ensureScrollToBottom();
     }
-    function appendWebviewSurvey(surveyUri, surveyTitle) {
+    function appendWebviewSurvey(surveyUri, surveyTitle, parentBubble) {
+        // If parent bubble provided, append survey inside it; otherwise create new bubble
+        const targetContainer = parentBubble || document.createElement('div');
+        if (!parentBubble) {
+            targetContainer.classList.add('message', 'survey-bubble');
+        }
+        
         const surveyContainer = document.createElement('div');
-        surveyContainer.classList.add('message', 'survey-bubble');
+        surveyContainer.classList.add('survey-iframe-wrapper');
         const titleDiv = document.createElement('div');
         titleDiv.classList.add('survey-title');
         titleDiv.textContent = surveyTitle || 'Survey';
@@ -1262,6 +1304,14 @@ document.addEventListener('DOMContentLoaded', function () {
         iframe.style.display = 'block';
         iframeWrapper.appendChild(iframe);
         
+        surveyContainer.appendChild(iframeWrapper);
+        targetContainer.appendChild(surveyContainer);
+        
+        // Only append to messagesContainer if this is a standalone bubble
+        if (!parentBubble) {
+            messagesContainer.appendChild(targetContainer);
+        }
+        
         setTimeout(() => {
             if (loadingDiv && loadingDiv.parentElement) {
                 loadingDiv.style.display = 'none';
@@ -1282,10 +1332,6 @@ document.addEventListener('DOMContentLoaded', function () {
             loadingDiv.style.color = '#dc3545';
             iframe.style.display = 'none';
         });
-
-        surveyContainer.appendChild(iframeWrapper);
-        messagesContainer.appendChild(surveyContainer);
-        ensureScrollToBottom();
     }
 
     const scrollToBottom=()=>messagesContainer&&requestAnimationFrame(()=>{messagesContainer.scrollTop=messagesContainer.scrollHeight;});

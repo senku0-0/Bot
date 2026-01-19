@@ -279,23 +279,31 @@
 
 .option-btn {
     background-color: white;
-    border: 1px solid #007bff;
+    border: 2px solid #007bff;
     color: #007bff;
-    padding: 10px 16px;
-    border-radius: 12px;
+    padding: 12px 18px;
+    border-radius: 10px;
     cursor: pointer;
     font-size: 0.95em;
-    transition: all 0.2s;
-    font-weight: 500;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    font-weight: 600;
     text-align: left;
     width: 100%;
+    box-shadow: 0 2px 4px rgba(0, 123, 255, 0.1);
+    letter-spacing: 0.3px;
 }
 
 .option-btn:hover {
-    background-color: #f0f7ff;
+    background-color: #007bff;
     border-color: #0056b3;
-    color: #0056b3;
-    transform: translateX(2px);
+    color: white;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0, 123, 255, 0.3);
+}
+
+.option-btn:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 6px rgba(0, 123, 255, 0.2);
 }
 
 /* ⭐ NEW: Choices Container (for CSAT surveys and interactive messages) */
@@ -318,51 +326,64 @@
     background-color: white;
     border: 2px solid #007bff;
     color: #007bff;
-    padding: 12px 18px;
-    border-radius: 8px;
+    padding: 12px 20px;
+    border-radius: 10px;
     cursor: pointer;
     font-size: 0.95em;
-    transition: all 0.2s;
-    font-weight: 500;
+    font-weight: 600;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     text-align: center;
     width: 100%;
     min-height: 44px;
     display: flex;
     align-items: center;
     justify-content: center;
+    box-shadow: 0 2px 6px rgba(0, 123, 255, 0.1);
+    letter-spacing: 0.2px;
 }
 
 .choice-btn:hover:not(:disabled) {
     background-color: #007bff;
     color: white;
-    transform: scale(1.02);
-    box-shadow: 0 2px 8px rgba(0, 123, 255, 0.3);
+    border-color: #0056b3;
+    transform: translateY(-3px);
+    box-shadow: 0 8px 20px rgba(0, 123, 255, 0.4);
+}
+
+.choice-btn:active:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.25);
 }
 
 .choice-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+    background-color: #f5f5f5;
+    color: #999;
 }
 
 .choice-btn.selected {
     background-color: #007bff;
     color: white;
     border-color: #0056b3;
+    box-shadow: 0 8px 20px rgba(0, 123, 255, 0.4);
 }
 
 /* ⭐ NEW: Emoji-based choice buttons (for CSAT surveys with emoji ratings) */
 .choice-btn.emoji-choice {
     background-color: white;
     border: 2px solid #ddd;
-    padding: 16px;
+    padding: 12px;
     font-size: 2.5em;
-    width: auto;
-    min-width: 70px;
+    width: 70px;
     height: 70px;
-    border-radius: 50%;
+    border-radius: 16px;
     flex: 0 0 auto;
-    margin: 0 4px;
-    transition: all 0.2s ease;
+    margin: 6px;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .choices-container.emoji-layout {
@@ -370,27 +391,28 @@
     justify-content: center;
     flex-wrap: wrap;
     background-color: transparent;
-    padding: 8px;
+    padding: 12px;
     width: 100%;
 }
 
 .choices-container.emoji-layout .choice-btn.emoji-choice {
-    border-color: #ccc;
-    background-color: #f5f5f5;
+    border-color: #ddd;
+    background-color: #f8f9fa;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
 }
 
 .choices-container.emoji-layout .choice-btn.emoji-choice:hover:not(:disabled) {
     background-color: #fff;
     border-color: #007bff;
-    transform: scale(1.15);
-    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.4);
+    transform: scale(1.12) translateY(-3px);
+    box-shadow: 0 8px 20px rgba(0, 123, 255, 0.35);
 }
 
 .choices-container.emoji-layout .choice-btn.emoji-choice.selected {
     background-color: #e7f3ff;
     border-color: #007bff;
-    transform: scale(1.15);
-    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.4);
+    transform: scale(1.12) translateY(-3px);
+    box-shadow: 0 8px 20px rgba(0, 123, 255, 0.35);
 }
 
 /* ⭐ NEW: Webview survey buttons (for external survey links) */
@@ -403,37 +425,47 @@
 }
 
 .choice-btn.webview-btn {
-    background-color: #007bff;
+    background: linear-gradient(135deg, #007bff 0%, #0056b3 100%);
     color: white;
     border: 2px solid #0056b3;
-    padding: 14px 18px;
-    border-radius: 8px;
+    padding: 14px 24px;
+    border-radius: 10px;
     font-size: 0.98em;
     font-weight: 600;
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     text-align: center;
     width: 100%;
     min-height: 48px;
     display: flex;
     align-items: center;
     justify-content: center;
+    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.25);
+    letter-spacing: 0.3px;
 }
 
 .choice-btn.webview-btn:hover:not(:disabled) {
-    background-color: #0056b3;
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.5);
+    background: linear-gradient(135deg, #0056b3 0%, #003d82 100%);
+    border-color: #003d82;
+    transform: translateY(-3px);
+    box-shadow: 0 10px 28px rgba(0, 123, 255, 0.45);
+}
+
+.choice-btn.webview-btn:active:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px rgba(0, 123, 255, 0.3);
 }
 
 .choice-btn.webview-btn:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+    background: #ccc;
 }
 
 .choice-btn.webview-btn.selected {
-    background-color: #28a745;
+    background: linear-gradient(135deg, #28a745 0%, #1e7e34 100%);
     border-color: #1e7e34;
+    box-shadow: 0 10px 28px rgba(40, 167, 69, 0.35);
 }
 
 /* ⭐ NEW: Embedded webview survey bubble */
@@ -1233,4 +1265,39 @@
 
 .chat-back-btn:hover {
     opacity: 1;
+}
+
+/* ============================================================================
+   COMBINED MESSAGE BUBBLE - Message + Choices + Survey in one bubble
+   ============================================================================ */
+
+.combined-message-bubble {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.combined-message-bubble .message-text-content {
+    margin-bottom: 8px;
+    line-height: 1.4;
+}
+
+.inline-choices {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    justify-content: flex-start;
+}
+
+.combined-message-bubble .survey-iframe-wrapper {
+    width: 100%;
+    margin-top: 16px;
+    border-top: 1px solid #e0e0e0;
+    padding-top: 12px;
+}
+
+.combined-message-bubble .survey-iframe {
+    border-radius: 8px;
+    max-width: 100%;
 }
