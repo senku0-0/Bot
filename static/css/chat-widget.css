@@ -310,16 +310,16 @@
 .choices-container {
     display: flex;
     flex-direction: column;
-    gap: 8px;
     margin-top: 8px;
     align-self: flex-start;
     width: 100%;
-    opacity: 0;
     animation: messageSlide 0.3s ease-out forwards;
     animation-delay: 0.1s;
+    border-radius: 12px;
+    opacity: 0;
+    gap: 8px;
     padding: 8px 0;
     background-color: transparent;
-    border-radius: 12px;
 }
 
 .choice-btn {
@@ -419,17 +419,17 @@
 .choices-container.webview-layout {
     flex-direction: column;
     background-color: #f0f7ff;
+    width: 100%;
     border: 1px solid #007bff;
     border-radius: 12px;
     padding: 8px 0;
-    width: 100%;
 }
 
 .choice-btn.webview-btn {
     background: linear-gradient(135deg, #007bff 0%, #0056b3 100%);
     color: white;
     border: 2px solid #0056b3;
-    padding: 10px 18px;
+    padding: 8px 16px;
     border-radius: 8px;
     font-size: 0.9em;
     font-weight: 600;
@@ -437,7 +437,7 @@
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     text-align: center;
     width: 100%;
-    min-height: 40px;
+    min-height: 36px;
     display: flex;
     align-items: center;
     justify-content: center;
