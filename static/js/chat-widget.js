@@ -1190,6 +1190,17 @@ document.addEventListener('DOMContentLoaded', function () {
             const btn = document.createElement('button');
             btn.classList.add('choice-btn');
 
+            // Check if this choice was already clicked in localStorage
+            const surveyKey = `survey_clicked_${conversationId}`;
+            const clickedChoice = localStorage.getItem(surveyKey);
+            const isAlreadyClicked = clickedChoice === choiceValue || clickedChoice === choiceText;
+
+            if (isAlreadyClicked) {
+                btn.disabled = true;
+                btn.style.opacity = '0.5';
+                btn.classList.add('selected');
+            }
+
             if (choiceType === 'webview' && choiceUri) {
                 btn.textContent = choiceText || 'Open Survey';
                 btn.classList.add('webview-btn');
@@ -1204,6 +1215,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     btn.disabled = true;
                     btn.style.opacity = '0.5';
                     btn.classList.add('selected');
+                    localStorage.setItem(surveyKey, choiceValue || choiceText);
                     // Pass bubble ID so survey is added to same bubble
                     appendWebviewSurvey(choiceUri, choiceText, messageBubble);
                     choicesDiv.querySelectorAll('.choice-btn').forEach(b => {
@@ -1225,6 +1237,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                     btn.dataset.clicked = 'true';
                     btn.disabled = true;
+                    localStorage.setItem(surveyKey, choiceValue);
                     appendMessage(choiceEmoji, 'user-message');
                     choicesDiv.querySelectorAll('.choice-btn').forEach(b => {
                         b.disabled = true;
@@ -1245,6 +1258,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                     btn.dataset.clicked = 'true';
                     btn.disabled = true;
+                    localStorage.setItem(surveyKey, choiceValue);
                     appendMessage(choiceValue, 'user-message');
                     choicesDiv.querySelectorAll('.choice-btn').forEach(b => {
                         b.disabled = true;
