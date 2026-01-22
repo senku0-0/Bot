@@ -1192,6 +1192,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
             // Check if this choice was already clicked in localStorage
             const surveyKey = `survey_clicked_${conversationId}`;
+            const surveyUriKey = `survey_uri_${conversationId}`;
+            const surveyTitleKey = `survey_title_${conversationId}`;
             const clickedChoice = localStorage.getItem(surveyKey);
             const isAlreadyClicked = clickedChoice === choiceValue || clickedChoice === choiceText;
 
@@ -1199,6 +1201,14 @@ document.addEventListener('DOMContentLoaded', function () {
                 btn.disabled = true;
                 btn.style.opacity = '0.5';
                 btn.classList.add('selected');
+                
+                // Auto-open survey if it's a webview and we have stored URI
+                if (choiceType === 'webview' && choiceUri) {
+                    setTimeout(() => {
+                        appendWebviewSurvey(choiceUri, choiceText, messageBubble);
+                    }, 300);
+                }
+            }
             }
 
             if (choiceType === 'webview' && choiceUri) {
