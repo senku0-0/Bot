@@ -767,24 +767,15 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                     if (msg.choices && msg.choices.length > 0) {
                         // Skip re-rendering if survey with choices has already been shown
-                        if (msg.choices.some(c => c.type === 'webview' && c.uri) && surveyMessageShown) {
-                            return;
-                        }
                         chatInputArea.style.display = 'none';
                         // Show session ended first, then CSAT bubble
                         appendMessage('Messaging session ended', 'agent-announcement');
                         appendChoicesMessage(msg.choices, cssClass, msg);
-                        surveyMessageShown = true;
                     } else if (msg.actions && msg.actions.length > 0) {
-                        // Skip re-rendering if survey with actions has already been shown
-                        if (msg.actions.some(a => a.type === 'webview' && a.uri) && surveyMessageShown) {
-                            return;
-                        }
                         chatInputArea.style.display = 'none';
                         // Show session ended first, then CSAT bubble
                         appendMessage('Messaging session ended', 'agent-announcement');
                         appendChoicesMessage(msg.actions, cssClass, msg);
-                        surveyMessageShown = true;
                     }
                 });
 
