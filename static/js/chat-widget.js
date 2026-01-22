@@ -1209,7 +1209,6 @@ document.addEventListener('DOMContentLoaded', function () {
                     }, 300);
                 }
             }
-            }
 
             if (choiceType === 'webview' && choiceUri) {
                 btn.textContent = choiceText || 'Open Survey';
