@@ -1,0 +1,1674 @@
+# Zendesk Sunshine Conversation Bot - Complete Documentation
+
+## 📋 Table of Contents
+
+1. [Project Introduction](#project-introduction)
+2. [System Overview](#system-overview)
+3. [Technology Stack](#technology-stack)
+4. [Architecture Diagram](#architecture-diagram)
+5. [Zendesk Sunshine Conversations](#zendesk-sunshine-conversations)
+6. [API Documentation](#api-documentation)
+7. [WebSocket Implementation](#websocket-implementation)
+8. [CSAT & Attachments](#csat--attachments)
+9. [Message History](#message-history)
+10. [Notifications System](#notifications-system)
+11. [Environment Configuration](#environment-configuration)
+12. [Deployment Guide](#deployment-guide)
+
+---
+
+## 📌 Project Introduction {#project-introduction}
+
+This is a **Django-based Conversational Bot** that integrates with **Zendesk Sunshine Conversations** (formerly Smooch) to provide real-time chat support. The system enables:
+
+- **Real-time messaging** between customers and support agents
+- **Bot escalation** to live agents when needed
+- **Bi-directional communication** between Zendesk Sunshine and Zendesk Support tickets
+- **WebSocket-based live chat** with persistent connections
+- **File attachments and media** support
+- **Chat history** with deduplication
+- **Notification system** for new messages
+- **CSAT (Customer Satisfaction)** feedback collection
+- **Server-Sent Events (SSE)** for real-time notifications
+
+The bot acts as a **middleware** that bridges customer conversations in Zendesk Sunshine with support tickets in Zendesk, allowing agents to respond to customers through either platform.
+
+---
+
+## 🎯 System Overview {#system-overview}
+
+### Core Components
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Customer Browser                         │
+│  (Chat Widget + WebSocket + SSE Notifications)              │
+└────────────────────┬────────────────────────────────────────┘
+                     │
+                     │ WebSocket (ws://)
+                     │ API Requests (http://)
+                     │ SSE Streams (text/event-stream)
+                     ▼
+┌─────────────────────────────────────────────────────────────┐
+│          Django Application (Bot)                           │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │ Views (webhook handlers, API endpoints)              │   │
+│  │ Consumers (WebSocket handlers)                       │   │
+│  │ Cache (Redis for session & notification storage)     │   │
+│  └──────────────────────────────────────────────────────┘   │
+└────────┬────────────────────────────────────────────────────┘
+         │
+         ├──────────► Zendesk Sunshine Conversations API
+         │            (Send/receive messages, escalate)
+         │
+         └──────────► Zendesk Support API
+                      (Create tickets, update fields, webhooks)
+```
+
+### Data Flow
+
+1. **Customer Message** → Chat Widget → WebSocket → Django View → Sunshine API
+2. **Agent Response** → Sunshine Webhook → Django View → WebSocket → Chat Widget + SSE
+3. **Escalation** → Chat Widget → Django View → Sunshine passControl → Zendesk Ticket Creation
+4. **Agent Reply** → Zendesk Webhook → Django View → Sunshine API → Chat Widget + WebSocket
+
+---
+
+## 🛠 Technology Stack {#technology-stack}
+
+### Backend
+- **Framework**: Django 6.0
+- **Real-time**: Django Channels 4.0 (WebSocket + Groups)
+- **Message Broker**: Redis 7.1.0 (Channel Layer & Cache)
+- **HTTP Client**: Requests 2.32.5
+- **Authentication**: HTTP Basic Auth (Zendesk APIs)
+- **Server**: Uvicorn 0.38.0 (ASGI)
+- **Static Files**: WhiteNoise 6.11.0
+
+### Frontend (Chat Widget)
+- **Protocol**: WebSocket for bidirectional messaging
+- **Notifications**: Server-Sent Events (SSE)
+- **Media**: File upload & attachment display
+
+### External Services
+- **Zendesk Sunshine Conversations**: Message hub for all conversations
+- **Zendesk Support**: Ticket management & agent workspace
+
+---
+
+## 🏗 Architecture Diagram {#architecture-diagram}
+
+### Request-Response Flow
+
+```
+CUSTOMER SIDE                DJANGO BOT              ZENDESK ECOSYSTEM
+─────────────                ──────────              ──────────────────
+
+Chat Widget      ──POST──►  /api/chat/init          ──► Create User
+                                                    ──► Create/Fetch Conversation
+                            (Sunshine API v2)
+
+Chat Widget      ──POST──►  /api/chat/send          ──► Post Message
+                                                    ──► Sunshine API
+
+Chat Widget      ──WS──►    ChatConsumer            ◄── WebSocket Group
+                            (Channels)
+
+Chat Widget      ──GET──►   /api/chat/messages      ◄── Fetch Message List
+                                                    ◄── Sunshine API
+
+Chat Widget      ──GET──►   /api/chat/full-history  ◄── Combined history
+                                                    ◄── Sunshine + Zendesk
+
+Chat Widget      ──POST──►  /api/chat/escalate      ──► Pass Control
+                                                    ──► Create Ticket
+
+Chat Widget      ──POST──►  /api/send-to-zendesk    ──► Upload Attachment
+                                                    ──► Post File Message
+
+Chat Widget      ──POST──►  /api/chat/viewing-status ─► Update cache
+                                                    ─► Track user state
+
+Chat Widget      ──SSE──►   /api/notifications/     ◄── Event stream
+                            stream/<conv_id>        ◄── Unread badges
+
+
+ZENDESK AGENT                DJANGO BOT              SUNSHINE/ZENDESK
+─────────────                ──────────              ──────────────────
+
+Sunshine Agent   ──Message──►  /hooks/sunshine/message  Process agent msgs
+                                                        ──► Forward to WebSocket
+                                                        ──► Update cache
+
+Zendesk Agent    ──Ticket──►   /zendesk/webhook        Process ticket comments
+Comment          Reply          (Notification)         ──► Map ticket to conversation
+                                                        ──► Post to Sunshine
+                                                        ──► Forward to WebSocket
+```
+
+---
+
+## 🌟 Zendesk Sunshine Conversations {#zendesk-sunshine-conversations}
+
+### What is Sunshine Conversations?
+
+Zendesk Sunshine Conversations is a **unified messaging platform** that:
+- Aggregates customer conversations from multiple channels (Chat, WhatsApp, Facebook, etc.)
+- Provides a **single conversation interface** for support agents
+- Offers **rich message support** (text, files, images, choices, actions)
+- Enables **bot escalation** via Switchboard API
+- Sends **webhooks** for conversation events
+
+### Key Concepts
+
+#### 1. **Apps**
+- Each integration (bot, channel) is an "app"
+- Identified by `SUNSHINE_APP_ID`
+- Apps can send/receive messages via API
+
+#### 2. **Users**
+- Customers are identified as "users" in Sunshine
+- Created with `externalId` (matches your user ID system)
+- Can have multiple conversations
+- **API**: `POST /v2/apps/{appId}/users`
+
+#### 3. **Conversations**
+- Persistent chat thread between user and business
+- Type: `personal` (1:1) or `group`
+- Participants include users and business agents
+- **API**: `POST /v2/apps/{appId}/conversations`
+
+#### 4. **Messages**
+- Text, files, images, or interactive content
+- Authors: `user`, `business`, or `bot`
+- Sources: `whatsapp`, `web`, `zd:agentWorkspace`, etc.
+- **API**: `POST /v2/apps/{appId}/conversations/{convId}/messages`
+
+#### 5. **Switchboard**
+- Controls which "app" (bot or agent) has active conversation
+- **Pass Control**: Transfer from bot to agent
+- **Release Control**: Agent ends session
+- **Metadata**: Attach custom data to handoff
+- **API**: `POST /v2/apps/{appId}/conversations/{convId}/passControl`
+
+---
+
+## 📡 API Documentation {#api-documentation}
+
+### Authentication
+
+All Sunshine APIs use **HTTP Basic Auth**:
+```
+Authorization: Basic <base64(API_KEY_ID:API_KEY_SECRET)>
+```
+
+Environment variables:
+```
+SUNSHINE_API_KEY_ID=your_key_id
+SUNSHINE_API_KEY_SECRET=your_secret
+SUNSHINE_API_BASE_URL=https://api.smooch.io
+SUNSHINE_APP_ID=your_app_id
+```
+
+---
+
+### 1. **Initialize Conversation**
+
+**Endpoint**: `POST /api/chat/init`
+
+**Purpose**: Create or fetch a user and conversation
+
+**Request Body**:
+```json
+{
+  "userId": "optional_external_id",
+  "forceNew": false
+}
+```
+
+**Response**:
+```json
+{
+  "appUserId": "sunshine_user_id",
+  "conversationId": "sunshine_conversation_id",
+  "externalId": "external_user_id"
+}
+```
+
+**What it does**:
+1. Calls `POST /v2/apps/{appId}/users` to create user
+2. If 409 (conflict), fetches existing user with `GET /v2/apps/{appId}/users/{externalId}`
+3. Fetches existing conversations with `GET /v2/apps/{appId}/conversations?filter[userId]={userId}`
+4. If no conversation exists, creates new with `POST /v2/apps/{appId}/conversations`
+
+**Sunshine API Calls**:
+- `POST /v2/apps/{appId}/users` - Create user
+- `GET /v2/apps/{appId}/users/{externalId}` - Fetch user
+- `GET /v2/apps/{appId}/conversations` - List conversations
+- `POST /v2/apps/{appId}/conversations` - Create conversation
+
+---
+
+### 2. **Send Message to Sunshine**
+
+**Endpoint**: `POST /api/chat/send`
+
+**Purpose**: Send customer message to Sunshine
+
+**Request Body**:
+```json
+{
+  "appUserId": "sunshine_user_id",
+  "conversationId": "conversation_id",
+  "text": "Customer message text"
+}
+```
+
+**Response**:
+```json
+{
+  "status": "sent",
+  "data": {
+    "message": {
+      "id": "msg_id",
+      "text": "Customer message text",
+      "author": {"type": "user", "userId": "user_id"},
+      "received": "2024-01-22T10:30:00Z"
+    }
+  }
+}
+```
+
+**What it does**:
+1. Posts message to `POST /v2/apps/{appId}/conversations/{convId}/messages`
+2. Saves to cache: `conversation_info_{convId}` (last message, timestamp, user)
+
+**Sunshine API Calls**:
+- `POST /v2/apps/{appId}/conversations/{convId}/messages` - Send message
+
+---
+
+### 3. **Get Conversation Messages**
+
+**Endpoint**: `GET /api/chat/messages?conversationId={convId}`
+
+**Purpose**: Fetch messages for a conversation from Sunshine
+
+**Response**:
+```json
+{
+  "messages": [
+    {
+      "id": "msg_id",
+      "text": "Message text",
+      "author": {
+        "type": "user|business|bot",
+        "displayName": "Agent Name"
+      },
+      "received": "2024-01-22T10:30:00Z",
+      "content": {
+        "type": "text|image|file",
+        "choices": [],
+        "actions": []
+      }
+    }
+  ],
+  "conversation": {
+    "id": "conversation_id",
+    "participants": [],
+    "activeSwitchboardIntegration": {}
+  }
+}
+```
+
+**What it does**:
+1. Fetches messages from `GET /v2/apps/{appId}/conversations/{convId}/messages`
+2. Also fetches conversation metadata for participants
+
+**Sunshine API Calls**:
+- `GET /v2/apps/{appId}/conversations/{convId}/messages` - Fetch messages
+- `GET /v2/apps/{appId}/conversations/{convId}` - Fetch conversation metadata
+
+---
+
+### 4. **Escalate to Agent**
+
+**Endpoint**: `POST /api/chat/escalate`
+
+**Purpose**: Transfer conversation from bot to live agent, creating Zendesk ticket
+
+**Request Body**:
+```json
+{
+  "conversationId": "conversation_id",
+  "appUserId": "user_id",
+  "reason": "User requested agent support",
+  "appRelatedCategory": "Location Not Found or Inaccurate"
+}
+```
+
+**Supported Categories**:
+- `Location Not Found or Inaccurate`
+- `Unable to Login`
+- `My App is Not Responding`
+- `Others`
+
+**Response**:
+```json
+{
+  "status": "escalated",
+  "conversation_id": "conversation_id",
+  "category": "location_not_found_or_inaccurate"
+}
+```
+
+**What it does**:
+1. Stores escalation metadata in cache (7-day timeout)
+2. Posts escalation message to Sunshine: `Escalation Reason: {reason}\nCategory: {category}\n[Sunshine Conversation: {convId}]`
+3. Calls `POST /v2/apps/{appId}/conversations/{convId}/passControl` to transfer control
+4. Includes metadata:
+   - `dataCapture.systemField.tags`: "escalated_from_bot"
+   - `dataCapture.ticketField.{ZENDESK_CHAT_CONVERSATION_FIELD_ID}`: conversation_id
+   - `dataCapture.ticketField.{APP_RELATED_SUB_CATEGORY}`: category_tag
+5. Triggers Zendesk webhook which creates ticket
+
+**Sunshine API Calls**:
+- `POST /v2/apps/{appId}/conversations/{convId}/messages` - Post escalation message
+- `POST /v2/apps/{appId}/conversations/{convId}/passControl` - Transfer to agent
+
+**Zendesk Integration**:
+- Creates ticket via **webhook** (agent workspace auto-creates on passControl)
+- Metadata maps to Zendesk custom fields
+- Conversation ID stored in ticket custom field for tracking
+
+---
+
+### 5. **Get Full Chat History**
+
+**Endpoint**: `GET /api/chat/full-history?conversationId={convId}`
+
+**Purpose**: Get complete message history from both Sunshine AND Zendesk
+
+**Response**:
+```json
+{
+  "messages": [
+    {
+      "id": "msg_id",
+      "text": "Message text",
+      "author": {"type": "user|agent|bot", "displayName": "Name"},
+      "received": "2024-01-22T10:30:00Z",
+      "messageClass": "user|agent|bot",
+      "source": "sunshine|conversation_log",
+      "attachments": []
+    }
+  ],
+  "source": "combined",
+  "ticket_id": "zendesk_ticket_id",
+  "conversation_id": "conversation_id",
+  "appUserId": "user_id"
+}
+```
+
+**What it does**:
+1. Fetches messages from Sunshine API
+2. If conversation maps to ticket, fetches from Zendesk conversation_log
+3. Deduplicates messages using fingerprints (author + timestamp + text)
+4. Parses conversation_log events into message objects
+5. Combines and sorts by received timestamp
+
+**API Calls**:
+- `GET /v2/apps/{appId}/conversations/{convId}/messages` - Sunshine messages
+- `GET /v2/apps/{appId}/conversations/{convId}` - Get participant info
+- `GET /api/v2/search.json?query=custom_field_{fieldId}:{convId}` - Find ticket
+- `GET /api/v2/tickets/{ticketId}/conversation_log.json` - Zendesk history
+
+**Deduplication Logic**:
+```
+Fingerprint = author_type:timestamp[:19]:text[:100].lower()
+```
+
+---
+
+### 6. **Send File/Attachment**
+
+**Endpoint**: `POST /api/send-to-zendesk`
+
+**Purpose**: Upload file and send as attachment in conversation
+
+**Request Type**: `multipart/form-data`
+
+**Parameters**:
+```
+file: <binary file>
+conversationId: conversation_id
+appUserId: user_id
+message: optional text message
+```
+
+**Response**:
+```json
+{
+  "status": "ok"
+}
+```
+
+**What it does**:
+1. Posts file to `POST /v2/apps/{appId}/attachments?access=public` with `files={'source': file}`
+2. Gets back `mediaUrl` from response
+3. Posts file message to conversation with mediaUrl
+4. If message text provided, posts separate text message
+
+**Sunshine API Calls**:
+- `POST /v2/apps/{appId}/attachments` - Upload file
+- `POST /v2/apps/{appId}/conversations/{convId}/messages` - Post file message (x2)
+
+**File Message Format**:
+```json
+{
+  "author": {"type": "user", "userId": "user_id"},
+  "content": {
+    "type": "file",
+    "mediaUrl": "https://api.smooch.io/...",
+    "fileName": "document.pdf",
+    "contentType": "application/pdf",
+    "fileSize": 2048
+  }
+}
+```
+
+---
+
+### 7. **Update Viewing Status**
+
+**Endpoint**: `POST /api/chat/viewing-status`
+
+**Purpose**: Track whether user is actively viewing the chat (for unread badges)
+
+**Request Body**:
+```json
+{
+  "conversationId": "conversation_id",
+  "isViewing": true
+}
+```
+
+**Response**:
+```json
+{
+  "status": "updated",
+  "conversationId": "conversation_id"
+}
+```
+
+**What it does**:
+1. Sets cache key `user_viewing_{convId}` to `True` (1-hour timeout)
+2. Used by webhook to suppress notifications when user is actively reading
+
+**Cache Operations**:
+- `cache.set(f'user_viewing_{convId}', True, timeout=3600)`
+- `cache.delete(f'user_viewing_{convId}')`
+
+---
+
+### 8. **Clear Unread Badge**
+
+**Endpoint**: `POST /api/chat/clear-badge`
+
+**Purpose**: Clear unread message count when user opens chat
+
+**Request Body**:
+```json
+{
+  "conversationId": "conversation_id"
+}
+```
+
+**Response**:
+```json
+{
+  "status": "cleared",
+  "conversationId": "conversation_id"
+}
+```
+
+**What it does**:
+1. Deletes cache key `unread_{convId}`
+2. Reset unread counter to 0
+
+---
+
+### 9. **Image Proxy**
+
+**Endpoint**: `GET /api/image-proxy?url={encoded_url}`
+
+**Purpose**: Proxy Zendesk/Sunshine images through bot for auth/CORS
+
+**Allowed Domains**:
+- `zendesk.com`
+- `zdassets.com`
+- `smooch.io`
+- `zendesk-eu.com`
+
+**What it does**:
+1. Validates URL is from allowed domain
+2. Attempts authentication with Sunshine JWT or Zendesk credentials
+3. Streams image back to client
+
+**Authentication Fallback Chain**:
+- Sunshine API Key (Basic Auth)
+- Sunshine JWT (Bearer token)
+- Zendesk API Key (Basic Auth)
+
+---
+
+### 10. **Sunshine Webhook Handler**
+
+**Endpoint**: `POST /hooks/sunshine/message`
+
+**Purpose**: Receive webhooks from Zendesk Sunshine for conversation events
+
+**Security**: HMAC SHA256 signature verification using `X-Hub-Signature` header
+
+**Supported Triggers**:
+- `conversation:message` - New message from user or agent
+- `switchboard:passControl` - Agent took control of conversation
+- `switchboard:releaseControl` - Agent ended session
+- `switchboard:acceptControl` - Agent accepted transfer
+- `participant:join` - Agent/user joined conversation
+- `participant:leave` - Agent/user left conversation
+- `conversation:read` - Messages marked as read
+- `user:typing` - Agent is typing indicator
+
+**Event Processing**:
+
+#### conversation:message
+```python
+# Check if message is from agent (author.type == "business")
+# If yes:
+#   1. Forward to WebSocket: forward_agent_message_to_websocket()
+#   2. Check if user is viewing (cache.get('user_viewing_{convId}'))
+#   3. If NOT viewing, increment unread counter and send notification
+#   4. Skip system messages and conversation log entries
+
+# Check if message is from AnswerBot
+# If yes:
+#   1. Extract category from message text
+#   2. Create Zendesk ticket
+#   3. Store conversation-to-ticket mapping
+```
+
+#### switchboard:passControl
+```python
+# Extract metadata from event
+# Find ticket_id from metadata.dataCapture.ticketField.id
+# Store mapping: conversation_id <-> ticket_id (7-day cache)
+# If category exists, update ticket custom field
+# Mark ticket as 'active' in cache
+```
+
+#### switchboard:releaseControl
+```python
+# Check if ticket status is 'solved'
+# If yes, post message: "The agent has ended the session"
+# Clear user_viewing status
+```
+
+#### participant:join / participant:leave
+```python
+# Post system message: "{agentName} has joined/left the conversation"
+```
+
+#### user:typing
+```python
+# Forward to WebSocket: agent_typing event
+```
+
+---
+
+### 11. **Zendesk Webhook Handler**
+
+**Endpoint**: `POST /zendesk/webhook`
+
+**Purpose**: Receive webhooks from Zendesk when agents reply to tickets
+
+**Supported Formats**:
+1. **Notification Format** (webhook API v3):
+   ```json
+   {
+     "event": {
+       "type": "ticket.comment_added",
+       "ticket": {
+         "id": 123,
+         "custom_fields": [{"id": 123, "value": "conversation_id"}]
+       },
+       "comment": {
+         "body": "Agent reply text",
+         "author": {"is_staff": true, "name": "Agent Name"}
+       }
+     }
+   }
+   ```
+
+2. **Ticket Format** (older):
+   ```json
+   {
+     "ticket": {...},
+     "comment": {"body": "...", "author": {...}}
+   }
+   ```
+
+**Processing Steps**:
+1. Extract ticket_id and comment_body
+2. Resolve conversation_id from:
+   - Cache: `ticket_{ticketId}`
+   - Ticket custom field: `ZENDESK_CHAT_CONVERSATION_FIELD_ID`
+   - Ticket description: `[Sunshine Conversation: {convId}]` regex
+3. Post comment to Sunshine: `POST /v2/apps/{appId}/conversations/{convId}/messages`
+4. Forward to WebSocket
+5. Filter out:
+   - Non-agent/admin comments (user comments ignored)
+   - Empty comments
+   - Conversation log entries
+   - System messages
+
+**Response**:
+```json
+{
+  "status": "forwarded",
+  "ticket_id": "123",
+  "conversation_id": "conversation_id",
+  "agent_name": "Agent Name"
+}
+```
+
+---
+
+## 🔌 WebSocket Implementation {#websocket-implementation}
+
+### Purpose
+Real-time bidirectional messaging between browser and server
+
+### Protocol
+**URL**: `wss://your-domain/ws/chat/{conversation_id}/`
+
+**Handler**: Django Channels `ChatConsumer` (async WebSocket consumer)
+
+### Connection Flow
+
+```
+1. Browser connects: ws://localhost:8000/ws/chat/{conversation_id}/
+2. ChatConsumer.connect() triggered
+   - Extract conversation_id from URL
+   - Join channel layer group: f'chat_{conversation_id}'
+   - Accept connection
+   - Send welcome message
+   - Start keepalive task (ping every 25 seconds)
+3. WebSocket connection established
+```
+
+### Message Types
+
+#### 1. **ping/pong** (Heartbeat)
+Client sends periodically to keep connection alive:
+```json
+{
+  "type": "ping",
+  "timestamp": 1234567890
+}
+```
+
+Server responds:
+```json
+{
+  "type": "pong",
+  "timestamp": 1234567890,
+  "conversation_id": "conv_id"
+}
+```
+
+#### 2. **echo** (Test)
+Client:
+```json
+{
+  "type": "echo",
+  "message": "test message"
+}
+```
+
+Server:
+```json
+{
+  "type": "echo_response",
+  "message": "test message",
+  "received_at": 1234567890,
+  "conversation_id": "conv_id"
+}
+```
+
+#### 3. **agent_message** (From Webhook)
+Sent when Sunshine webhook receives agent message:
+```json
+{
+  "type": "agent_message",
+  "payload": {
+    "id": "msg_id",
+    "author": {
+      "type": "business",
+      "displayName": "Agent Name",
+      "role": "agent"
+    },
+    "content": {
+      "type": "text",
+      "text": "Agent response"
+    },
+    "received": "2024-01-22T10:30:00Z",
+    "source": "zendesk",
+    "conversationId": "conv_id",
+    "choices": [],
+    "actions": []
+  }
+}
+```
+
+#### 4. **agent_typing** (Typing Indicator)
+When agent starts typing:
+```json
+{
+  "type": "agent_typing",
+  "payload": {
+    "conversationId": "conv_id",
+    "isTyping": true,
+    "agentName": "Agent Name"
+  }
+}
+```
+
+#### 5. **keepalive** (Server -> Client)
+Sent every 25 seconds:
+```json
+{
+  "type": "keepalive",
+  "timestamp": 1234567890
+}
+```
+
+#### 6. **connection_established** (Server -> Client)
+On successful connect:
+```json
+{
+  "type": "connection_established",
+  "message": "Connected to conversation conv_id",
+  "conversation_id": "conv_id",
+  "group_name": "chat_conv_id"
+}
+```
+
+### Channel Layer Groups
+
+**Group Name**: `chat_{conversation_id}`
+
+**Broadcasting Method**: `async_to_sync(channel_layer.group_send)(group_name, {...})`
+
+**Handler Method**: `send_webhook_message(event)` on consumer
+
+### Code Structure
+
+```python
+class ChatConsumer(AsyncWebsocketConsumer):
+    
+    async def connect(self):
+        # 1. Extract conversation_id from URL route
+        # 2. Create group_name = f'chat_{conversation_id}'
+        # 3. Accept connection
+        # 4. Join group
+        # 5. Send welcome message
+        # 6. Start keepalive task
+    
+    async def disconnect(self, close_code):
+        # 1. Mark as disconnected
+        # 2. Cancel keepalive task
+        # 3. Leave group
+    
+    async def receive(self, text_data):
+        # Handle incoming messages from client
+        # Support: ping, pong, echo, test_agent_message
+    
+    async def send_webhook_message(self, event):
+        # Handler for group_send messages
+        # Receives: {'type': 'send_webhook_message', 'message': {...}}
+        # Sends to client via WebSocket
+    
+    async def send_keepalive(self):
+        # Task: Sends keepalive every 25 seconds
+```
+
+### Django Integration
+
+In `views.py`, when webhook receives agent message:
+
+```python
+def forward_agent_message_to_websocket(conversation_id, message_text, agent_name):
+    channel_layer = get_channel_layer()
+    group_name = f'chat_{conversation_id}'
+    
+    websocket_message = {
+        'type': 'agent_message',
+        'payload': {...}
+    }
+    
+    # Queue message to all clients in group
+    async_to_sync(channel_layer.group_send)(
+        group_name, 
+        {'type': 'send_webhook_message', 'message': websocket_message}
+    )
+```
+
+### Redis Channel Layer Configuration
+
+```python
+# settings.py
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            "hosts": [os.environ.get("REDIS_URL")],  # redis://localhost:6379
+        },
+    },
+}
+```
+
+**Purpose**: Enables group messaging across multiple server instances
+
+---
+
+## 📧 CSAT & Attachments {#csat--attachments}
+
+### CSAT (Customer Satisfaction)
+
+While not explicitly coded in views, the system supports CSAT through:
+
+#### Integration Points:
+1. **Zendesk Ticket Custom Fields**
+   - `APP_RELATED_SUB_CATEGORY` - Category feedback
+   - `ZENDESK_CHAT_CONVERSATION_FIELD_ID` - Conversation mapping
+
+2. **Message Choices** (Interactive)
+   - Sunshine messages can include `choices` array
+   - Used for CSAT rating options
+   - Example:
+     ```json
+     {
+       "type": "text",
+       "text": "How satisfied are you?",
+       "choices": [
+         {"label": "Very Satisfied", "value": "5"},
+         {"label": "Satisfied", "value": "4"},
+         {"label": "Neutral", "value": "3"}
+       ]
+     }
+     ```
+
+3. **Sunshine Actions**
+   - Messages can include `actions` array
+   - Triggered by user interaction
+   - Can be mapped to feedback submission
+
+#### CSAT Button State Persistence:
+The code includes CSAT button state tracking via cache:
+```python
+# When CSAT button clicked
+cache.set(f'csat_clicked_{conversation_id}', True, timeout=604800)  # 7 days
+
+# On page refresh, check state
+is_csat_clicked = cache.get(f'csat_clicked_{conversation_id}', False)
+if is_csat_clicked:
+    # Disable CSAT button in frontend
+    pass
+```
+
+### File Attachments
+
+#### Upload Process:
+1. **User selects file** in chat widget
+2. **POST /api/send-to-zendesk**
+   - File uploaded to `POST /v2/apps/{appId}/attachments`
+   - Returns `mediaUrl`
+   - Creates message with file content type
+3. **Message stored** in Sunshine
+4. **Webhook notified**, forwarded to chat
+
+#### Supported File Types:
+- Documents: PDF, DOC, DOCX, XLS, TXT, etc.
+- Images: JPG, PNG, GIF, WebP, HEIC
+- Media: MP3, MP4, etc.
+
+#### File Message Structure:
+```json
+{
+  "author": {
+    "type": "user",
+    "userId": "user_id"
+  },
+  "content": {
+    "type": "file",
+    "mediaUrl": "https://api.smooch.io/v2/apps/123/attachments/file_id",
+    "fileName": "document.pdf",
+    "contentType": "application/pdf",
+    "fileSize": 2048
+  }
+}
+```
+
+#### Image Handling:
+- Images automatically detected by extension
+- Proxied through `/api/image-proxy` for authentication
+- Loaded in `<img>` tags in chat
+- CORS/auth handled by bot
+
+#### Conversation Log Integration:
+Files from Zendesk tickets stored in `attachments` array:
+```python
+parsed_attachments.append({
+    "url": proxied_url,
+    "type": "image|file",
+    "fileName": "document.pdf",
+    "contentType": "application/pdf",
+    "size": 2048
+})
+```
+
+---
+
+## 📜 Message History {#message-history}
+
+### History Sources
+
+The system maintains history from **two sources**:
+
+#### 1. **Sunshine Conversations**
+- Live conversation messages
+- Real-time updates
+- Latest message history
+- API: `GET /v2/apps/{appId}/conversations/{convId}/messages`
+
+#### 2. **Zendesk Conversation Log**
+- Historical messages from agent interactions
+- Comments on resolved tickets
+- Full audit trail
+- API: `GET /api/v2/tickets/{ticketId}/conversation_log.json`
+
+### History Retrieval Flow
+
+```
+GET /api/chat/full-history?conversationId=xyz
+    ├─ Fetch Sunshine messages
+    │  └ GET /v2/apps/{appId}/conversations/{convId}/messages
+    │
+    ├─ Find Zendesk ticket mapping
+    │  ├─ Check cache: ticket_{convId}
+    │  └─ Search: custom_field_{fieldId}:{convId}
+    │
+    ├─ Fetch Zendesk conversation_log (if ticket exists)
+    │  └ GET /api/v2/tickets/{ticketId}/conversation_log.json
+    │
+    └─ Deduplicate & combine
+       ├─ Calculate fingerprints for each message
+       ├─ Remove duplicates
+       └─ Sort by timestamp
+```
+
+### Message Deduplication
+
+**Fingerprint Formula**:
+```
+author_type:timestamp[:19]:text[:100].lower()
+```
+
+**Logic**:
+1. Extract author type (normalized to: user, agent, bot)
+2. Take timestamp up to second precision
+3. Take first 100 characters of message text (lowercased)
+4. If same fingerprint exists, skip duplicate
+
+**Example**:
+```
+Message 1 (Sunshine): "Hello" from Agent at 10:30:00
+Message 2 (Zendesk): "Hello" from Agent at 10:30:00
+Fingerprint: "agent:2024-01-22T10:30:00:hello"
+Result: Only one message shown
+```
+
+### Zendesk Conversation Log Parsing
+
+**Event Types Parsed**:
+- `Messaging::ConversationMessage`
+- `Comment`
+
+**Ignored Events**:
+- System messages ("Connecting to agent")
+- Empty messages
+- Conversation metadata entries
+
+**Field Mapping**:
+```python
+{
+  "id": event["id"],
+  "text": strip_html_tags(event["content"]["text"]),
+  "author": {
+    "type": normalize(event["author"]["type"]),
+    "displayName": event["author"]["display_name"]
+  },
+  "received": event["created_at"],
+  "messageClass": "user|agent|bot",
+  "source": "conversation_log",
+  "attachments": []  # Parsed from event attachments
+}
+```
+
+### Attachment Handling in History
+
+**Image Detection**:
+```python
+image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic']
+
+# Check: file extension OR URL patterns OR content-type
+is_image = (
+    any(ext in filename.lower() for ext in image_extensions) or
+    'image' in url_decoded.lower() or
+    'whatsapp' in url_decoded.lower() or
+    content_type.startswith('image/')
+)
+```
+
+**Proxying**:
+- Zendesk image URLs proxied through `/api/image-proxy`
+- Adds authentication headers
+- Returns image with correct content-type
+
+---
+
+## 🔔 Notifications System {#notifications-system}
+
+### Architecture
+
+The system uses **two notification channels**:
+
+#### 1. **Server-Sent Events (SSE)**
+- Persistent HTTP connection
+- Real-time event streaming
+- Text-based protocol
+- No browser reconnection logic needed
+
+#### 2. **Cache-based Storage**
+- Redis cache for notification queue
+- Notifications stored per conversation
+- Global notification queue for cross-conversation updates
+- Timeout: 30-60 seconds
+
+### SSE Endpoints
+
+#### A. **Per-Conversation Stream**
+**URL**: `GET /api/notifications/stream/{conversation_id}`
+
+**Purpose**: Subscribe to notifications for specific conversation
+
+**Response Type**: `text/event-stream`
+
+**Events Sent**:
+```
+event: connected
+data: {"type": "connected", "conversationId": "conv_id"}
+
+event: new_message
+data: {
+  "type": "new_message",
+  "conversationId": "conv_id",
+  "agentName": "Agent Name",
+  "messagePreview": "First 100 chars...",
+  "unreadCount": 3,
+  "timestamp": "2024-01-22T10:30:00Z",
+  "isInteractive": false,
+  "choices": [],
+  "actions": []
+}
+
+: keepalive
+```
+
+#### B. **Global Notification Stream**
+**URL**: `GET /api/notifications/stream/global`
+
+**Purpose**: Subscribe to all conversations' notifications
+
+**Response Type**: `text/event-stream`
+
+**Events Sent**:
+```
+event: connected
+data: {"type": "connected", "scope": "global"}
+
+event: new_message
+data: {
+  ...same as per-conversation...
+}
+
+: keepalive
+```
+
+### Notification Flow
+
+```
+1. Agent sends message in Sunshine
+              ↓
+2. Sunshine webhook: POST /hooks/sunshine/message
+              ↓
+3. process_message_event() processes the event
+   - Check if author_type == "business"
+   - Check if user is NOT currently viewing (cache.get('user_viewing_{convId}'))
+   - If yes:
+       └─ Increment unread counter
+       └─ Call send_notification_to_client()
+              ↓
+4. send_notification_to_client(conversation_id, message_data)
+   - Store in cache: notification_{convId} (30-second timeout)
+   - Add to global queue: global_notification (60-second timeout)
+              ↓
+5. Browser-side SSE listener receives event
+              ↓
+6. Update unread badge
+   └─ Close chat = show red badge with count
+   └─ Open chat = badge disappears
+```
+
+### Notification Structure
+
+**Data Stored** in cache:
+```python
+{
+  'type': 'new_message',
+  'conversationId': 'conv_id',
+  'agentName': 'Agent Name',
+  'messagePreview': 'text[:100]',
+  'unreadCount': 3,
+  'timestamp': 'ISO8601',
+  'isInteractive': False,
+  'choices': [...],      # If message has choices
+  'actions': [...]       # If message has actions
+}
+```
+
+### Unread Badge Logic
+
+**When incremented**:
+1. User not viewing chat window
+2. Agent sends message
+3. Unread count incremented: `cache.incr(f'unread_{convId}')`
+
+**When decremented**:
+1. User opens chat window
+2. `POST /api/chat/clear-badge` called
+3. `cache.delete(f'unread_{convId}')`
+
+**Suppression Conditions**:
+```python
+is_user_viewing = cache.get(f'user_viewing_{conversation_id}', False)
+if not is_user_viewing:
+    # Send notification and increment unread
+```
+
+### SSE Implementation Details
+
+**Generator Pattern** (Async):
+```python
+async def notification_stream_generator(conversation_id):
+    # 1. Yield initial connection event
+    yield f"event: connected\ndata: {{...}}\n\n"
+    
+    # 2. Loop for 300 seconds (5 minutes)
+    while current_time - start_time < 300:
+        # Check cache for new notifications
+        notification = cache.get(f'notification_{conversation_id}')
+        if notification:
+            yield f"event: new_message\ndata: {json.dumps(notification)}\n\n"
+            cache.delete(notification_key)
+        
+        # Send keepalive every 30 seconds
+        if current_time - last_keepalive >= 30:
+            yield ": keepalive\n\n"
+        
+        await asyncio.sleep(0.1)
+```
+
+**Browser-side Listener**:
+```javascript
+const eventSource = new EventSource(`/api/notifications/stream/${conversationId}`);
+
+eventSource.addEventListener('new_message', (e) => {
+  const data = JSON.parse(e.data);
+  updateUnreadBadge(data.unreadCount);
+  showNotification(data);
+});
+
+eventSource.addEventListener('keepalive', (e) => {
+  // Connection still alive
+});
+
+eventSource.addEventListener('error', (e) => {
+  if (e.readyState === EventSource.CLOSED) {
+    // Reconnect with exponential backoff
+  }
+});
+```
+
+### Cache Keys Reference
+
+| Key | Purpose | Timeout | Usage |
+|-----|---------|---------|-------|
+| `notification_{convId}` | Current notification | 30s | SSE streaming |
+| `global_notification` | All conversation queue | 60s | Global SSE |
+| `unread_{convId}` | Unread message count | 604800s | Badge display |
+| `user_viewing_{convId}` | User is viewing chat | 3600s | Suppress notifications |
+| `conversation_info_{convId}` | Last message metadata | 604800s | Chat state |
+| `pending_escalation_{convId}` | Escalation request | 300s | Ticket mapping |
+| `category_{convId}` | Category selection | 3600s | Ticket category |
+| `ticket_status_{ticketId}` | Ticket active state | 86400s | Agent session tracking |
+| `conversation_{convId}` | Conv->Ticket mapping | 604800s | Bidirectional lookup |
+| `ticket_{ticketId}` | Ticket->Conv mapping | 604800s | Bidirectional lookup |
+| `csat_clicked_{convId}` | CSAT button state | 604800s | Button disable on refresh |
+
+---
+
+## ⚙️ Environment Configuration {#environment-configuration}
+
+### Required Environment Variables
+
+```bash
+# Zendesk Sunshine Configuration
+SUNSHINE_APP_ID=your_sunshine_app_id
+SUNSHINE_API_KEY_ID=your_api_key_id
+SUNSHINE_API_KEY_SECRET=your_api_key_secret
+SUNSHINE_API_BASE_URL=https://api.smooch.io  # or EU: https://api-eu.smooch.io
+SUNSHINE_WEBHOOK_SIGNING_SECRET=your_webhook_secret  # For signature verification
+
+# Zendesk Support Configuration
+ZENDESK_SUBDOMAIN=your_subdomain  # E.g., "mycompany"
+ZENDESK_EMAIL=your_email@company.com
+ZENDESK_API_TOKEN=your_api_token
+
+# Zendesk Custom Fields
+ZENDESK_CHAT_CONVERSATION_FIELD_ID=12345  # Field ID for storing conversation_id
+APP_RELATED_SUB_CATEGORY=67890              # Field ID for category/tag
+
+# Redis Configuration
+REDIS_URL=redis://localhost:6379  # Format: redis://host:port
+
+# Django Settings
+DEBUG=False  # Set to False in production
+SECRET_KEY=your_django_secret_key
+ALLOWED_HOSTS=yourdomain.com,www.yourdomain.com
+```
+
+### Environment Variable Details
+
+#### SUNSHINE_APP_ID
+- **Source**: Zendesk Sunshine Conversations dashboard
+- **Format**: UUID string (e.g., `550e8400-e29b-41d4-a716-446655440000`)
+- **Used in**: All Sunshine API calls as `{appId}` parameter
+
+#### SUNSHINE_API_KEY_ID & SUNSHINE_API_KEY_SECRET
+- **Source**: Sunshine API credentials
+- **Format**: Long alphanumeric strings
+- **Used in**: HTTP Basic Auth: `Authorization: Basic base64(id:secret)`
+- **Scopes**: Must have access to apps, users, conversations, messages, attachments
+
+#### SUNSHINE_WEBHOOK_SIGNING_SECRET
+- **Source**: Sunshine webhook settings
+- **Format**: Long alphanumeric string
+- **Used in**: HMAC SHA256 signature verification
+- **Verification**:
+  ```python
+  hmac.new(SECRET.encode(), payload, hashlib.sha256).hexdigest()
+  ```
+
+#### ZENDESK_SUBDOMAIN
+- **Example**: If your Zendesk URL is `mycompany.zendesk.com`, value is `mycompany`
+- **Used in**: Building API URLs: `https://{SUBDOMAIN}.zendesk.com/api/v2/...`
+
+#### ZENDESK_EMAIL & ZENDESK_API_TOKEN
+- **Source**: Zendesk admin panel
+- **Email**: Admin user email
+- **Token**: Personally generated (Settings → Apps & integrations → API)
+- **Used in**: HTTP Basic Auth: `Authorization: Basic base64(email/token:token)`
+
+#### ZENDESK_CHAT_CONVERSATION_FIELD_ID
+- **Type**: Zendesk custom field ID (integer)
+- **Purpose**: Store Sunshine conversation_id in Zendesk tickets
+- **Configuration**:
+  1. Go to Zendesk admin → Tickets → Custom fields
+  2. Create field named "Sunshine Conversation ID"
+  3. Copy the field ID (shown in URL)
+  4. Set value in environment
+
+#### APP_RELATED_SUB_CATEGORY
+- **Type**: Zendesk custom field ID (integer)
+- **Purpose**: Store escalation category (Location, Login, Responding, etc.)
+- **Values**: `location_not_found_or_inaccurate`, `unable_to_login`, `my_app_is_not_responding`, `others`
+
+#### REDIS_URL
+- **Format**: `redis://[:password@]host:port[/database]`
+- **Examples**:
+  - Local: `redis://localhost:6379`
+  - With password: `redis://:mypassword@localhost:6379`
+  - Different database: `redis://localhost:6379/1`
+  - Render.com: `redis://default:password@host:port`
+
+### Configuration in settings.py
+
+```python
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Sunshine Configuration
+SUNSHINE_APP_ID = os.getenv("SUNSHINE_APP_ID", "").strip()
+SUNSHINE_API_KEY_ID = os.getenv("SUNSHINE_API_KEY_ID", "").strip()
+SUNSHINE_API_KEY_SECRET = os.getenv("SUNSHINE_API_KEY_SECRET", "").strip()
+SUNSHINE_API_BASE_URL = os.getenv("SUNSHINE_API_BASE_URL", "https://api.smooch.io").strip().rstrip('/')
+
+# Zendesk Configuration
+ZENDESK_SUBDOMAIN = os.getenv("ZENDESK_SUBDOMAIN")
+ZENDESK_EMAIL = os.getenv("ZENDESK_EMAIL")
+ZENDESK_API_TOKEN = os.getenv("ZENDESK_API_TOKEN")
+ZENDESK_CHAT_CONVERSATION_FIELD_ID = os.getenv("ZENDESK_CHAT_CONVERSATION_FIELD_ID")
+APP_RELATED_SUB_CATEGORY = os.getenv("APP_RELATED_SUB_CATEGORY")
+
+# Redis & Cache
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            "hosts": [REDIS_URL],
+        },
+    },
+}
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'LOCATION': REDIS_URL + '/0',
+    }
+}
+```
+
+### Local Development .env File
+
+Create `.env` in project root:
+
+```
+# Sunshine
+SUNSHINE_APP_ID=550e8400-e29b-41d4-a716-446655440000
+SUNSHINE_API_KEY_ID=abc123def456
+SUNSHINE_API_KEY_SECRET=secret789xyz
+SUNSHINE_API_BASE_URL=https://api.smooch.io
+SUNSHINE_WEBHOOK_SIGNING_SECRET=webhook_secret_123
+
+# Zendesk
+ZENDESK_SUBDOMAIN=mycompany
+ZENDESK_EMAIL=admin@mycompany.com
+ZENDESK_API_TOKEN=your_api_token_here
+ZENDESK_CHAT_CONVERSATION_FIELD_ID=20123456
+APP_RELATED_SUB_CATEGORY=20123457
+
+# Redis
+REDIS_URL=redis://localhost:6379
+
+# Django
+DEBUG=True
+SECRET_KEY=django-insecure-...
+ALLOWED_HOSTS=localhost,127.0.0.1
+```
+
+---
+
+## 🚀 Deployment Guide {#deployment-guide}
+
+### Local Development
+
+#### 1. Setup Virtual Environment
+```bash
+python -m venv botenv
+source botenv/Scripts/activate  # Windows: botenv\Scripts\activate
+```
+
+#### 2. Install Dependencies
+```bash
+pip install -r requirements.txt
+```
+
+#### 3. Create .env File
+```bash
+cp .env.example .env
+# Edit .env with your credentials
+```
+
+#### 4. Run Redis
+```bash
+# Using Docker
+docker run -d -p 6379:6379 redis:latest
+
+# Or using Windows Subsystem for Linux
+redis-server
+```
+
+#### 5. Start Django Development Server
+```bash
+# Terminal 1: Run ASGI server (for WebSockets)
+uvicorn Bot.asgi:application --host 0.0.0.0 --port 8000
+
+# Terminal 2: Run Ngrok for webhooks (tunnel localhost to public URL)
+ngrok http 8000
+```
+
+#### 6. Configure Webhooks
+In Zendesk:
+- **Sunshine**: Set webhook URL to `https://your-ngrok-url/hooks/sunshine/message`
+- **Zendesk**: Set webhook URL to `https://your-ngrok-url/zendesk/webhook`
+
+### Production Deployment (Render.com)
+
+#### 1. Push to GitHub
+```bash
+git add .
+git commit -m "Deployment ready"
+git push origin main
+```
+
+#### 2. Create New Service on Render
+- Connect GitHub repository
+- Service name: `zendesk-sunshine-bot`
+- Environment: `Python 3.11`
+- Build command: `pip install -r requirements.txt && python manage.py collectstatic --noinput`
+- Start command: `uvicorn Bot.asgi:application --host 0.0.0.0 --port $PORT`
+
+#### 3. Set Environment Variables
+```
+SUNSHINE_APP_ID=...
+SUNSHINE_API_KEY_ID=...
+SUNSHINE_API_KEY_SECRET=...
+SUNSHINE_WEBHOOK_SIGNING_SECRET=...
+ZENDESK_SUBDOMAIN=...
+ZENDESK_EMAIL=...
+ZENDESK_API_TOKEN=...
+ZENDESK_CHAT_CONVERSATION_FIELD_ID=...
+APP_RELATED_SUB_CATEGORY=...
+REDIS_URL=redis://your-redis-url
+DEBUG=False
+```
+
+#### 4. Setup Redis
+- Create Redis instance on Render
+- Copy the internal Redis URL
+- Set `REDIS_URL` in environment variables
+
+#### 5. Configure Webhooks
+In Zendesk:
+- **Sunshine**: `https://your-render-url/hooks/sunshine/message`
+- **Zendesk**: `https://your-render-url/zendesk/webhook`
+
+### Database Migrations
+```bash
+python manage.py migrate
+python manage.py collectstatic --noinput
+```
+
+### Health Check
+```bash
+curl https://your-domain/api/chat/init -X POST -H "Content-Type: application/json" -d '{}'
+```
+
+---
+
+## 📝 API Quick Reference
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/chat/init` | POST | Create/fetch user and conversation |
+| `/api/chat/send` | POST | Send message from user |
+| `/api/chat/messages` | GET | Get conversation messages |
+| `/api/chat/full-history` | GET | Get complete history (Sunshine + Zendesk) |
+| `/api/chat/escalate` | POST | Escalate to agent |
+| `/api/send-to-zendesk` | POST | Upload file/attachment |
+| `/api/chat/viewing-status` | POST | Track user viewing state |
+| `/api/chat/clear-badge` | POST | Clear unread badge |
+| `/api/image-proxy` | GET | Proxy Zendesk images |
+| `/hooks/sunshine/message` | POST | Sunshine webhook (agent messages) |
+| `/zendesk/webhook` | POST | Zendesk webhook (ticket comments) |
+| `/api/notifications/stream/global` | GET | SSE: Global notifications |
+| `/api/notifications/stream/{convId}` | GET | SSE: Per-conversation notifications |
+| `/ws/chat/{convId}/` | WebSocket | Real-time messaging |
+
+---
+
+## 🔐 Security Considerations
+
+### CSRF Protection
+- All endpoints use `@csrf_exempt` (webhooks require signature verification instead)
+- Production: Consider CSRF tokens for browser requests
+
+### Signature Verification
+```python
+# Sunshine webhook
+hmac.new(SECRET.encode(), payload, hashlib.sha256).hexdigest()
+
+# Zendesk: no verification (relies on Zendesk IP whitelist)
+```
+
+### Authentication
+- HTTP Basic Auth for API calls
+- No session-based auth (stateless)
+- API credentials stored in environment variables only
+
+### Rate Limiting
+- None implemented (add in production)
+- Consider: Zendesk rate limits (100 requests/minute)
+- Consider: Sunshine rate limits (check documentation)
+
+### Data Privacy
+- Cache doesn't store sensitive data (only IDs and metadata)
+- Messages passed through webhook must be HTTPS
+- File URLs proxied for secure download
+
+---
+
+## 🐛 Troubleshooting
+
+### Common Issues
+
+#### 1. WebSocket Connection Fails
+**Problem**: `WebSocket connection failed`
+
+**Causes**:
+- Redis not running
+- Channel layer misconfigured
+- ASGI server not running
+
+**Solution**:
+```bash
+# Check Redis
+redis-cli ping  # Should return PONG
+
+# Check ASGI server
+ps aux | grep uvicorn
+
+# Restart
+uvicorn Bot.asgi:application --host 0.0.0.0 --port 8000
+```
+
+#### 2. Signature Verification Failed
+**Problem**: `Invalid signature` on Sunshine webhook
+
+**Causes**:
+- Wrong webhook secret
+- Webhook modified by proxy
+- Base64 encoding issue
+
+**Solution**:
+```python
+# Test signature
+import hmac, hashlib
+
+payload = request.body
+secret = os.getenv("SUNSHINE_WEBHOOK_SIGNING_SECRET")
+expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+received = request.headers.get("X-Hub-Signature").split("=")[1]
+print(f"Expected: {expected}")
+print(f"Received: {received}")
+```
+
+#### 3. Messages Not Appearing in Chat
+**Problem**: Agent messages not showing in conversation
+
+**Causes**:
+- Webhook not configured
+- Conversation ID mismatch
+- Cache issue
+
+**Solution**:
+1. Check Sunshine webhook is set and receiving requests
+2. Verify conversation_id in logs
+3. Clear cache: `redis-cli FLUSHALL`
+4. Check WebSocket group: `f'chat_{conversation_id}'`
+
+#### 4. Zendesk Ticket Not Creating
+**Problem**: Escalation doesn't create ticket
+
+**Causes**:
+- Agent workspace not configured
+- Custom field IDs wrong
+- passControl metadata malformed
+
+**Solution**:
+1. Test in Zendesk Agent Workspace
+2. Verify custom field IDs in Zendesk admin
+3. Check logs for passControl response
+4. Ensure agent workspace integration active
+
+---
+
+## 📚 Additional Resources
+
+- [Zendesk Sunshine API Docs](https://developer.zendesk.com/api-reference/conversations-api/)
+- [Django Channels Documentation](https://channels.readthedocs.io/)
+- [Redis Documentation](https://redis.io/docs/)
+- [WebSocket Protocol RFC 6455](https://tools.ietf.org/html/rfc6455)
+- [Server-Sent Events MDN](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)
+
+---
+
+**Last Updated**: January 22, 2026
+**Version**: 1.0
+**Author**: Bot Development Team
