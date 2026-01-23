@@ -2,18 +2,18 @@
 
 ## 📋 Table of Contents
 
-1. [Project Introduction](#project-introduction)
-2. [System Overview](#system-overview)
-3. [Technology Stack](#technology-stack)
-4. [Architecture Diagram](#architecture-diagram)
-5. [Zendesk Sunshine Conversations](#zendesk-sunshine-conversations)
-6. [API Documentation](#api-documentation)
-7. [WebSocket Implementation](#websocket-implementation)
-8. [CSAT & Attachments](#csat--attachments)
-9. [Message History](#message-history)
-10. [Notifications System](#notifications-system)
-11. [Environment Configuration](#environment-configuration)
-12. [Deployment Guide](#deployment-guide)
+1. [Project Introduction](#-project-introduction)
+2. [System Overview](#-system-overview)
+3. [Technology Stack](#-technology-stack)
+4. [Architecture Diagram](#-architecture-diagram)
+5. [Zendesk Sunshine Conversations](#-zendesk-sunshine-conversations)
+6. [API Documentation](#-api-documentation)
+7. [WebSocket Implementation](#-websocket-implementation)
+8. [CSAT & Attachments](#-csat--attachments)
+9. [Message History](#-message-history)
+10. [Notifications System](#-notifications-system)
+11. [Environment Configuration](#-environment-configuration)
+12. [Deployment Guide](#-deployment-guide)
 
 ---
 
