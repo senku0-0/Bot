@@ -177,20 +177,19 @@
 
 /* Scrollbar Styling */
 .chat-messages::-webkit-scrollbar {
-    width: 6px;
+    width: 0;
 }
 
 .chat-messages::-webkit-scrollbar-track {
-    background: #f1f1f1;
+    background: transparent;
 }
 
 .chat-messages::-webkit-scrollbar-thumb {
-    background: #c1c1c1;
-    border-radius: 3px;
+    background: transparent;
 }
 
 .chat-messages::-webkit-scrollbar-thumb:hover {
-    background: #a8a8a8;
+    background: transparent;
 }
 
 /* Message Bubbles */
@@ -390,30 +389,38 @@
 .choices-container.emoji-layout {
     flex-direction: row;
     justify-content: center;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     background-color: transparent;
     padding: 12px;
     width: 100%;
+    gap: 12px;
+    overflow-x: auto;
+}
+
+.choices-container.emoji-layout::-webkit-scrollbar {
+    height: 0;
 }
 
 .choices-container.emoji-layout .choice-btn.emoji-choice {
-    border-color: #ddd;
-    background-color: #f8f9fa;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+    border: none;
+    background-color: transparent;
+    box-shadow: none;
 }
 
 .choices-container.emoji-layout .choice-btn.emoji-choice:hover:not(:disabled) {
-    background-color: #fff;
-    border-color: #007bff;
-    transform: scale(1.12) translateY(-3px);
-    box-shadow: 0 8px 20px rgba(0, 123, 255, 0.35);
+    background-color: transparent;
+    border: none;
+    transform: scale(1.15);
+    box-shadow: none;
+    filter: drop-shadow(0 4px 12px rgba(0, 123, 255, 0.4));
 }
 
 .choices-container.emoji-layout .choice-btn.emoji-choice.selected {
-    background-color: #e7f3ff;
-    border-color: #007bff;
-    transform: scale(1.12) translateY(-3px);
-    box-shadow: 0 8px 20px rgba(0, 123, 255, 0.35);
+    background-color: transparent;
+    border: none;
+    transform: scale(1.15);
+    box-shadow: none;
+    filter: drop-shadow(0 4px 12px rgba(255, 193, 7, 0.6));
 }
 
 /* ⭐ NEW: Webview survey buttons (for external survey links) */
