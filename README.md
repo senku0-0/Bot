@@ -17,7 +17,7 @@
 
 ---
 
-## 📌 Project Introduction {#project-introduction}
+## 📌 Project Introduction
 
 This is a **Django-based Conversational Bot** that integrates with **Zendesk Sunshine Conversations** (formerly Smooch) to provide real-time chat support. The system enables:
 
@@ -35,7 +35,7 @@ The bot acts as a **middleware** that bridges customer conversations in Zendesk 
 
 ---
 
-## 🎯 System Overview {#system-overview}
+## 🎯 System Overview
 
 ### Core Components
 
@@ -74,7 +74,7 @@ The bot acts as a **middleware** that bridges customer conversations in Zendesk 
 
 ---
 
-## 🛠 Technology Stack {#technology-stack}
+## 🛠 Technology Stack
 
 ### Backend
 - **Framework**: Django 6.0
@@ -96,7 +96,7 @@ The bot acts as a **middleware** that bridges customer conversations in Zendesk 
 
 ---
 
-## 🏗 Architecture Diagram {#architecture-diagram}
+## 🏗 Architecture Diagram
 
 ### Request-Response Flow
 
@@ -148,7 +148,7 @@ Comment          Reply          (Notification)         ──► Map ticket to c
 
 ---
 
-## 🌟 Zendesk Sunshine Conversations {#zendesk-sunshine-conversations}
+## 🌟 Zendesk Sunshine Conversations
 
 ### What is Sunshine Conversations?
 
@@ -193,7 +193,7 @@ Zendesk Sunshine Conversations is a **unified messaging platform** that:
 
 ---
 
-## 📡 API Documentation {#api-documentation}
+## 📡 API Documentation
 
 ### Authentication
 
@@ -684,7 +684,7 @@ message: optional text message
 
 ---
 
-## 🔌 WebSocket Implementation {#websocket-implementation}
+## 🔌 WebSocket Implementation
 
 ### Purpose
 Real-time bidirectional messaging between browser and server
@@ -882,7 +882,7 @@ CHANNEL_LAYERS = {
 
 ---
 
-## 📧 CSAT & Attachments {#csat--attachments}
+## 📧 CSAT & Attachments
 
 ### CSAT (Customer Satisfaction)
 
@@ -980,7 +980,7 @@ parsed_attachments.append({
 
 ---
 
-## 📜 Message History {#message-history}
+## 📜 Message History
 
 ### History Sources
 
@@ -1088,7 +1088,7 @@ is_image = (
 
 ---
 
-## 🔔 Notifications System {#notifications-system}
+## 🔔 Notifications System
 
 ### Architecture
 
@@ -1279,7 +1279,7 @@ eventSource.addEventListener('error', (e) => {
 
 ---
 
-## ⚙️ Environment Configuration {#environment-configuration}
+## ⚙️ Environment Configuration
 
 ### Required Environment Variables
 
@@ -1434,7 +1434,7 @@ ALLOWED_HOSTS=localhost,127.0.0.1
 
 ---
 
-## 🚀 Deployment Guide {#deployment-guide}
+## 🚀 Deployment Guide
 
 ### Local Development
 
