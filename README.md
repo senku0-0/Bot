@@ -1721,7 +1721,7 @@ print(f"Received: {received}")
 
 ## 📚 Additional Resources
 
-- [Zendesk Sunshine API Docs](https://developer.zendesk.com/api-reference/conversations-api/)
+- [Zendesk Sunshine API Docs](https://developer.zendesk.com/documentation/)
 - [Django Channels Documentation](https://channels.readthedocs.io/)
 - [Redis Documentation](https://redis.io/docs/)
 - [WebSocket Protocol RFC 6455](https://tools.ietf.org/html/rfc6455)
