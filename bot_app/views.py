@@ -20,6 +20,19 @@ logger.addHandler(handler)
 load_dotenv()
 
 def strip_html_tags(text: str) -> str:
+    """
+    Remove HTML tags from text and normalize whitespace.
+    
+    Args:
+        text (str): Text containing HTML tags
+    
+    Returns:
+        str: Cleaned text with tags removed and whitespace normalized
+    
+    Examples:
+        >>> strip_html_tags('<p>Hello <b>world</b></p>')
+        'Hello world'
+    """
     if not text:
         return ""
     clean = re.sub(r'<[^>]+>', '', text)
@@ -27,6 +40,24 @@ def strip_html_tags(text: str) -> str:
     return clean.strip()
 
 def is_conversation_log_entry(text: str) -> bool:
+    """
+    Detect if text is a conversation log entry (metadata, not actual message).
+    
+    Filters out system messages like timestamps, file uploads, escalation reasons,
+    and other conversation metadata that shouldn't be displayed as regular messages.
+    
+    Args:
+        text (str): Message text to check
+    
+    Returns:
+        bool: True if text is a conversation log entry, False otherwise
+    
+    Patterns detected:
+        - Timestamp patterns like (10:30:00)
+        - File upload indicators
+        - Escalation metadata
+        - Sunshine conversation markers
+    """
     if not text:
         return False
     patterns = [
@@ -45,6 +76,22 @@ def is_conversation_log_entry(text: str) -> bool:
     return False
 
 def get_proxied_image_url(original_url: str) -> str:
+    """
+    Convert Zendesk image URLs to proxy endpoints for authentication & CORS.
+    
+    Detects if URL is from Zendesk/Smooch domains and returns a proxied URL
+    that goes through the bot's proxy endpoint for authenticated access.
+    
+    Args:
+        original_url (str): Original image URL from Zendesk/Sunshine
+    
+    Returns:
+        str: Proxied URL if from Zendesk domain, otherwise original URL
+    
+    Examples:
+        >>> get_proxied_image_url('https://zdassets.com/image.jpg')
+        '/api/image-proxy?url=https%3A%2F%2Fzdassets.com%2Fimage.jpg'
+    """
     if not original_url:
         return ""
     proxy_domains = ["zendesk.com", "zdassets.com", "smooch.io", "zendesk-eu.com"]
@@ -68,6 +115,25 @@ SUNSHINE_API_KEY_SECRET = os.getenv("SUNSHINE_API_KEY_SECRET", "").strip()
 SUNSHINE_API_BASE_URL = os.getenv("SUNSHINE_API_BASE_URL", "https://api.smooch.io").strip().rstrip('/')
 
 def forward_agent_message_to_websocket(conversation_id: str, message_text: str, agent_name: str = "Agent", choices: list = None, actions: list = None) -> bool:
+    """
+    Send agent message to WebSocket clients via Django Channels group.
+    
+    Creates a WebSocket message with agent content and broadcasts it to all
+    clients subscribed to the conversation's channel group.
+    
+    Args:
+        conversation_id (str): Conversation ID to send message to
+        message_text (str): Message content from agent
+        agent_name (str): Display name of the agent (default: "Agent")
+        choices (list, optional): CSAT/survey choice options if applicable
+        actions (list, optional): Interactive actions/buttons if applicable
+    
+    Returns:
+        bool: True if message sent successfully, False otherwise
+    
+    Raises:
+        Silently logs exceptions and returns False
+    """
     try:
         if is_conversation_log_entry(message_text):
             return False
@@ -102,6 +168,19 @@ def forward_agent_message_to_websocket(conversation_id: str, message_text: str, 
         return False
 
 def store_conversation_ticket_mapping(conversation_id: str, ticket_id: str) -> bool:
+    """
+    Store bidirectional mapping between conversation and support ticket.
+    
+    Creates cached entries linking Sunshine conversation ID to Zendesk ticket ID
+    and vice versa for quick lookup without database queries.
+    
+    Args:
+        conversation_id (str): Zendesk Sunshine conversation ID
+        ticket_id (str): Zendesk support ticket ID
+    
+    Returns:
+        bool: True if mapping stored successfully, False on error
+    """
     try:
         cache.set(f'conversation_{conversation_id}', ticket_id, timeout=604800)
         cache.set(f'ticket_{ticket_id}', conversation_id, timeout=604800)
@@ -111,6 +190,19 @@ def store_conversation_ticket_mapping(conversation_id: str, ticket_id: str) -> b
         return False
 
 def update_user_viewing_status(conversation_id: str, is_viewing: bool) -> bool:
+    """
+    Track whether user is currently viewing the conversation.
+    
+    Stores or clears the viewing status flag in cache to indicate if user
+    is actively reading the chat. Used to prevent unnecessary notifications.
+    
+    Args:
+        conversation_id (str): Conversation ID to track
+        is_viewing (bool): True if user is viewing, False to clear status
+    
+    Returns:
+        bool: True if status updated successfully, False on error
+    """
     try:
         if is_viewing:
             cache.set(f'user_viewing_{conversation_id}', True, timeout=3600)
@@ -122,6 +214,20 @@ def update_user_viewing_status(conversation_id: str, is_viewing: bool) -> bool:
         return False
 
 def save_conversation_to_cache(conversation_id: str, message_text: str, user_id: str) -> None:
+    """
+    Cache conversation metadata for quick retrieval.
+    
+    Stores conversation information including last message, timestamp, and user ID
+    in Redis cache with 7-day expiration for efficient conversation lookup.
+    
+    Args:
+        conversation_id (str): Conversation ID to cache
+        message_text (str): Latest message in conversation (first 100 chars stored)
+        user_id (str): ID of user in conversation
+    
+    Returns:
+        None
+    """
     try:
         conv_cache_key = f'conversation_info_{conversation_id}'
         conv_data = cache.get(conv_cache_key, {})
@@ -137,11 +243,40 @@ def save_conversation_to_cache(conversation_id: str, message_text: str, user_id:
 
 @csrf_exempt
 def index(request: HttpRequest) -> HttpResponse:
+    """
+    Render main chat widget HTML template.
+    
+    Serves the index.html template with Sunshine App ID and debug settings
+    injected as context variables for client-side initialization.
+    
+    Args:
+        request (HttpRequest): Django HTTP request object
+    
+    Returns:
+        HttpResponse: Rendered HTML template with chat widget
+    """
     from django.conf import settings
     context = {'SUNSHINE_APP_ID': SUNSHINE_APP_ID, 'debug': settings.DEBUG}
     return render(request, 'index.html', context)
 
 def verify_signature(payload: bytes, signature: str) -> bool:
+    """
+    Verify webhook authenticity using HMAC SHA256 signature.
+    
+    Compares the provided webhook signature with a calculated signature based on
+    the payload and the Sunshine webhook signing secret. Uses constant-time
+    comparison to prevent timing attacks.
+    
+    Args:
+        payload (bytes): Raw webhook payload as bytes
+        signature (str): Signature from webhook header (may include 'sha256=' prefix)
+    
+    Returns:
+        bool: True if signature is valid, False otherwise
+    
+    Note:
+        Requires SUNSHINE_WEBHOOK_SIGNING_SECRET environment variable
+    """
     if not signature:
         return False
     if signature.startswith("sha256="):
@@ -153,6 +288,28 @@ def verify_signature(payload: bytes, signature: str) -> bool:
     return hmac.compare_digest(calc, signature)
 
 def create_zendesk_ticket(subject: str, description: str, conversation_id: Optional[str] = None, app_related_sub_category: Optional[Union[str,int]] = None) -> Dict[str, Any]:
+    """
+    Create a support ticket in Zendesk and link to conversation.
+    
+    Creates a new support ticket with optional custom field mappings to track
+    the associated Sunshine conversation and app subcategory. Stores the mapping
+    in cache for quick lookup.
+    
+    Args:
+        subject (str): Ticket subject line
+        description (str): Detailed ticket description/body
+        conversation_id (str, optional): Sunshine conversation ID to link
+        app_related_sub_category (str or int, optional): Category value for custom field
+    
+    Returns:
+        Dict[str, Any]: API response containing created ticket data
+    
+    Raises:
+        Logs all exceptions but doesn't raise; returns response dict with error info
+    
+    Note:
+        Requires ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, ZENDESK_API_TOKEN environment variables
+    """
     url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets.json"
     ticket = {"subject": subject, "comment": {"body": description}}
     custom_fields: List[Dict[str, Union[int,str]]] = []
@@ -194,6 +351,18 @@ def create_zendesk_ticket(subject: str, description: str, conversation_id: Optio
     return resp_json
 
 def get_sunshine_jwt() -> Optional[str]:
+    """
+    Obtain JWT access token from Zendesk Sunshine API using OAuth2 client credentials.
+    
+    Authenticates with Sunshine API to get a bearer token for subsequent API calls.
+    Token is returned fresh each time (no caching) to ensure validity.
+    
+    Returns:
+        Optional[str]: Access token string if successful, None if authentication fails
+    
+    Note:
+        Requires SUNSHINE_API_KEY_ID and SUNSHINE_API_KEY_SECRET environment variables
+    """
     if not SUNSHINE_API_KEY_ID or not SUNSHINE_API_KEY_SECRET:
         logger.error("Sunshine credentials not set")
         return None
@@ -211,6 +380,28 @@ def get_sunshine_jwt() -> Optional[str]:
 
 @csrf_exempt
 def init_conversation(request: HttpRequest) -> JsonResponse:
+    """
+    Initialize a new conversation or retrieve existing one.
+    
+    Creates a Sunshine user and associated conversation, or fetches an existing one.
+    Supports forcing creation of a new conversation even if one exists.
+    
+    Request body (POST):
+        - userId (str, optional): External user ID. Generated as UUID if not provided
+        - forceNew (bool, optional): Force creation of new conversation (default: False)
+    
+    Returns:
+        JsonResponse: {
+            "appUserId": str,          # Sunshine app user ID
+            "conversationId": str,     # Sunshine conversation ID
+            "externalId": str          # External user ID used
+        }
+    
+    Status codes:
+        - 200: Success
+        - 405: Method not allowed (non-POST)
+        - 500: Missing SUNSHINE_APP_ID or internal errors
+    """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
     
@@ -289,6 +480,26 @@ def init_conversation(request: HttpRequest) -> JsonResponse:
 
 @csrf_exempt
 def get_conversation_messages(request: HttpRequest) -> JsonResponse:
+    """
+    Retrieve all messages in a Sunshine conversation.
+    
+    Fetches message history from Sunshine API including conversation metadata.
+    
+    Query parameters:
+        - conversationId (str, required): Sunshine conversation ID
+    
+    Returns:
+        JsonResponse: {
+            "messages": [...],      # Array of message objects
+            "conversation": {...}   # Conversation metadata
+        }
+    
+    Status codes:
+        - 200: Success
+        - 400: Missing conversationId
+        - 405: Method not allowed (non-GET)
+        - 500: API errors
+    """
     if request.method != "GET":
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
@@ -318,6 +529,26 @@ def get_conversation_messages(request: HttpRequest) -> JsonResponse:
 
 @csrf_exempt
 def send_message_to_sunshine(request: HttpRequest) -> JsonResponse:
+    """
+    Send a user message to a Sunshine conversation.
+    
+    Posts a new message from the user to the conversation thread.
+    Updates conversation cache on successful send.
+    
+    Request body (POST):
+        - appUserId (str, required): Sunshine user ID
+        - conversationId (str, required): Sunshine conversation ID
+        - text (str, required): Message text to send
+    
+    Returns:
+        JsonResponse: {"status": "sent", "data": {...}} on success
+    
+    Status codes:
+        - 200: Message sent successfully
+        - 400: Missing required fields or invalid JSON
+        - 405: Method not allowed (non-POST)
+        - 500: API or internal errors
+    """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
@@ -348,6 +579,35 @@ def send_message_to_sunshine(request: HttpRequest) -> JsonResponse:
 
 @csrf_exempt
 def escalate_to_agent(request: HttpRequest) -> JsonResponse:
+    """
+    Hand off conversation to a human agent and create Zendesk ticket.
+    
+    Escalates a conversation from the bot to an available agent. Sends an escalation
+    message to the conversation, stores metadata in cache, and uses Sunshine's
+    switchboard to pass control to the next available agent. Also creates a 
+    corresponding Zendesk support ticket for tracking.
+    
+    Request body (POST):
+        - conversationId (str, required): Sunshine conversation ID
+        - appUserId (str, optional): Sunshine user ID
+        - reason (str, optional): Escalation reason (default: "User requested agent support")
+        - appRelatedCategory (str, optional): Category like "Location Not Found", "Unable to Login", etc.
+    
+    Returns:
+        JsonResponse: {"status": "escalated", "conversation_id": str, "category": str}
+    
+    Status codes:
+        - 200: Escalation successful
+        - 400: Missing conversationId
+        - 405: Method not allowed (non-POST)
+        - 500: Escalation failed
+    
+    Categories supported:
+        - Location Not Found or Inaccurate
+        - Unable to Login
+        - My App is Not Responding
+        - Others
+    """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
@@ -423,6 +683,32 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
 
 @csrf_exempt
 def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseForbidden]:
+    """
+    Main webhook endpoint for Zendesk Sunshine Conversations events.
+    
+    Routes incoming webhook events to appropriate handler functions based on event
+    trigger type. Validates webhook signature for security. Supports both single
+    event and batch (events array) payloads.
+    
+    Supported triggers:
+        - conversation:message: New message in conversation
+        - switchboard:passControl: Agent taking over conversation
+        - switchboard:releaseControl: Agent ending conversation
+        - switchboard:acceptControl: Agent accepting control
+        - participant:join: Participant joining conversation
+        - participant:leave: Participant leaving conversation
+        - conversation:read: Conversation marked as read
+        - user:typing: Typing indicator from agent
+    
+    Query headers:
+        - X-Hub-Signature or x-hub-signature: HMAC SHA256 signature
+        - X-Api-Key: Optional API key to bypass signature in debug mode
+    
+    Returns:
+        Union[JsonResponse, HttpResponseForbidden]:
+            - JsonResponse: {"status": "received"} if valid
+            - HttpResponseForbidden: If signature invalid or JSON parse error
+    """
     sig = request.headers.get("X-Hub-Signature") or request.headers.get("x-hub-signature")
     if not sig:
         api_key_header = request.headers.get("X-Api-Key")
@@ -467,6 +753,24 @@ def webhook_message(request: HttpRequest) -> Union[JsonResponse, HttpResponseFor
     return JsonResponse({"status": "received"})
 
 def handle_agent_take_control(event_data: Dict[str, Any]) -> None:
+    """
+    Handle agent taking control of conversation via switchboard passControl event.
+    
+    Extracts ticket ID from webhook metadata, stores conversation-ticket mapping,
+    updates custom fields if category is available, and marks ticket as active
+    in cache for tracking.
+    
+    Args:
+        event_data (Dict[str, Any]): Switchboard:passControl webhook event payload
+    
+    Returns:
+        None
+    
+    Side effects:
+        - Stores/updates conversation-ticket mapping in cache
+        - Updates Zendesk ticket custom field with app category
+        - Sets ticket status to 'active' in cache
+    """
     conversation = event_data.get("payload", {}).get("conversation", {})
     conversation_id = conversation.get("id")
     if not conversation_id:
@@ -498,6 +802,28 @@ def handle_agent_take_control(event_data: Dict[str, Any]) -> None:
             cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
 
 def update_ticket_custom_field(ticket_id: str, category: str) -> bool:
+    """
+    Update Zendesk ticket custom field with application category.
+    
+    Maps user-friendly category names to internal category codes and updates
+    the corresponding Zendesk custom field via API.
+    
+    Args:
+        ticket_id (str): Zendesk ticket ID to update
+        category (str): Category name to set
+    
+    Returns:
+        bool: True if update successful (HTTP 200), False otherwise
+    
+    Category mappings:
+        - Location Not Found or Inaccurate -> location_not_found_or_inaccurate
+        - Unable to Login -> unable_to_login
+        - My App is Not Responding -> my_app_is_not_responding
+        - Others -> others
+    
+    Note:
+        Requires APP_RELATED_SUB_CATEGORY environment variable with custom field ID
+    """
     try:
         category_mapping = {
             "Location Not Found or Inaccurate": "location_not_found_or_inaccurate",
@@ -519,6 +845,21 @@ def update_ticket_custom_field(ticket_id: str, category: str) -> bool:
         return False
 
 def handle_user_typing(event_data: Dict[str, Any]) -> None:
+    """
+    Forward agent typing indicator to WebSocket clients.
+    
+    Detects when an agent is typing and broadcasts a typing indicator event
+    to all connected WebSocket clients in the conversation.
+    
+    Args:
+        event_data (Dict[str, Any]): user:typing webhook event payload
+    
+    Returns:
+        None
+    
+    Side effects:
+        - Broadcasts agent_typing message to conversation WebSocket group
+    """
     conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
     if not conversation_id:
         return
@@ -540,6 +881,21 @@ def handle_user_typing(event_data: Dict[str, Any]) -> None:
             logger.error(f"Typing indicator error: {e}")
 
 def handle_agent_accepted_control(event_data: Dict[str, Any]) -> None:
+    """
+    Send confirmation message when agent accepts conversation.
+    
+    Posts a system message confirming that an agent has accepted the escalation
+    and will be responding shortly.
+    
+    Args:
+        event_data (Dict[str, Any]): switchboard:acceptControl webhook event payload
+    
+    Returns:
+        None
+    
+    Side effects:
+        - Posts system message to Sunshine conversation
+    """
     conversation_id = event_data.get("payload", {}).get("conversation", {}).get("id")
     if not conversation_id:
         return
@@ -552,6 +908,21 @@ def handle_agent_accepted_control(event_data: Dict[str, Any]) -> None:
         logger.error(f"Agent accepted error: {e}")
 
 def handle_conversation_read(event_data: Dict[str, Any]) -> None:
+    """
+    Notify user when agent reads messages.
+    
+    Detects when an agent reads/views the conversation and sends a system message
+    confirming the agent connection.
+    
+    Args:
+        event_data (Dict[str, Any]): conversation:read webhook event payload
+    
+    Returns:
+        None
+    
+    Side effects:
+        - Posts "An agent connected" system message to conversation
+    """
     conversation_id = event_data.get("conversation", {}).get("_id") or event_data.get("conversation", {}).get("id")
     if not conversation_id:
         return
@@ -570,6 +941,21 @@ def handle_conversation_read(event_data: Dict[str, Any]) -> None:
                 logger.error(f"Read notification error: {e}")
 
 def handle_participant_join(event_data: Dict[str, Any]) -> None:
+    """
+    Notify user when agent joins conversation.
+    
+    Detects when an agent participant joins the conversation and sends a system
+    message with the agent's name to inform the user.
+    
+    Args:
+        event_data (Dict[str, Any]): participant:join webhook event payload
+    
+    Returns:
+        None
+    
+    Side effects:
+        - Posts "[Agent Name] has joined the conversation" system message
+    """
     conversation_id = event_data.get("payload", {}).get("conversation", {}).get("id")
     if not conversation_id:
         return
@@ -589,6 +975,21 @@ def handle_participant_join(event_data: Dict[str, Any]) -> None:
                 logger.error(f"Join notification error: {e}")
 
 def handle_participant_leave(event_data: Dict[str, Any]) -> None:
+    """
+    Notify user when agent leaves conversation.
+    
+    Detects when an agent participant leaves the conversation and sends a system
+    message with the agent's name to inform the user of disconnection.
+    
+    Args:
+        event_data (Dict[str, Any]): participant:leave webhook event payload
+    
+    Returns:
+        None
+    
+    Side effects:
+        - Posts "[Agent Name] has left the conversation" system message
+    """
     conversation_id = event_data.get("payload", {}).get("conversation", {}).get("id")
     if not conversation_id:
         return
@@ -608,6 +1009,29 @@ def handle_participant_leave(event_data: Dict[str, Any]) -> None:
                 logger.error(f"Leave notification error: {e}")
 
 def process_message_event(event_data: Dict[str, Any]) -> None:
+    """
+    Process and route incoming messages from Sunshine conversations.
+    
+    Determines message source (agent, user, or bot) and handles accordingly:
+    - Agent messages: Forward to WebSocket, send notifications, trigger CSAT if needed
+    - Bot messages: Extract category and auto-create Zendesk tickets
+    - System/Log entries: Ignore
+    
+    Handles unread badge tracking and notification delivery for agent messages
+    when user is not actively viewing the conversation.
+    
+    Args:
+        event_data (Dict[str, Any]): conversation:message webhook event payload
+    
+    Returns:
+        None
+    
+    Side effects:
+        - Forwards agent messages to WebSocket clients
+        - Updates unread message counter in cache
+        - Sends notifications via SSE
+        - Creates Zendesk tickets for bot responses with category extraction
+    """
     try:
         payload = event_data.get("payload", {})
         conversation = payload.get("conversation", {})
@@ -718,6 +1142,25 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
 
 @csrf_exempt
 def update_viewing_status(request: HttpRequest) -> JsonResponse:
+    """
+    Update whether user is actively viewing conversation.
+    
+    Sets or clears the user viewing flag to control notification delivery.
+    When user is viewing, unread badges and notifications are not sent.
+    
+    Request body (POST):
+        - conversationId (str, required): Conversation ID
+        - isViewing (bool, required): True if user is viewing, False otherwise
+    
+    Returns:
+        JsonResponse: {"status": "updated", "conversationId": str}
+    
+    Status codes:
+        - 200: Success
+        - 400: Missing conversationId
+        - 405: Method not allowed (non-POST)
+        - 500: Internal errors
+    """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
     try:
@@ -734,6 +1177,23 @@ def update_viewing_status(request: HttpRequest) -> JsonResponse:
 
 @csrf_exempt
 def clear_unread_badge(request: HttpRequest) -> JsonResponse:
+    """
+    Clear unread message counter for conversation.
+    
+    Resets the unread badge count to zero when user views messages.
+    
+    Request body (POST):
+        - conversationId (str, required): Conversation ID
+    
+    Returns:
+        JsonResponse: {"status": "cleared", "conversationId": str}
+    
+    Status codes:
+        - 200: Success
+        - 400: Missing conversationId
+        - 405: Method not allowed (non-POST)
+        - 500: Internal errors
+    """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
     try:
@@ -749,6 +1209,33 @@ def clear_unread_badge(request: HttpRequest) -> JsonResponse:
 
 @csrf_exempt
 def send_to_zendesk(request: HttpRequest) -> JsonResponse:
+    """
+    Upload file attachment and optional text message to conversation.
+    
+    Handles multipart file uploads by posting to Sunshine attachments endpoint,
+    then adds file message and optional text message to conversation.
+    Includes retry logic for transient failures.
+    
+    Request (multipart POST):
+        - file (File, required): File to upload
+        - conversationId (str, required): Sunshine conversation ID
+        - appUserId (str, required): Sunshine user ID
+        - message (str, optional): Additional text message to send
+    
+    Returns:
+        JsonResponse: {"status": "ok"} on success
+    
+    Status codes:
+        - 200: File and messages sent successfully
+        - 400: Missing required fields
+        - 405: Method not allowed (non-POST)
+        - 500: File upload or messaging errors
+    
+    Side effects:
+        - Uploads file to Sunshine storage
+        - Posts file message to conversation
+        - Posts text message if provided
+    """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed", "status": "fail"}, status=405)
 
@@ -795,6 +1282,23 @@ def send_to_zendesk(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "Internal Server Error", "status": "fail", "details": str(e)}, status=500)
 
 def handle_agent_end_session(event_data: Dict[str, Any], show_to_user: bool = False) -> None:
+    """
+    Handle agent ending conversation session.
+    
+    Detects when agent ends session and optionally sends goodbye message.
+    Checks ticket status to determine if session was marked as resolved.
+    
+    Args:
+        event_data (Dict[str, Any]): switchboard:releaseControl webhook event payload
+        show_to_user (bool): Whether to send message to user (default: False)
+    
+    Returns:
+        None
+    
+    Side effects:
+        - Posts goodbye message if ticket is marked as 'solved'
+        - Logs any errors without raising
+    """
     conversation_id = event_data.get("payload", {}).get("conversation", {}).get("id")
     if not conversation_id:
         return
@@ -821,6 +1325,28 @@ def handle_agent_end_session(event_data: Dict[str, Any], show_to_user: bool = Fa
 
 @csrf_exempt
 def zendesk_webhook(request: HttpRequest) -> JsonResponse:
+    """
+    Main webhook endpoint for Zendesk Support events.
+    
+    Routes incoming Zendesk webhooks to appropriate handlers based on payload format:
+    - Notification format (event field): handle_notification_webhook()
+    - Ticket comment format (ticket + comment): handle_ticket_comment_webhook()
+    - Events format (events array): handle_event_webhook()
+    
+    Detects ticket ID from various payload formats for routing.
+    
+    Request body (POST):
+        JSON webhook payload from Zendesk
+    
+    Returns:
+        JsonResponse: Status of webhook processing
+    
+    Status codes:
+        - 200: Webhook processed or ignored safely
+        - 400: Invalid JSON format
+        - 405: Method not allowed (non-POST)
+        - 500: Processing errors
+    """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
     
@@ -847,6 +1373,31 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": str(e)}, status=500)
 
 def handle_ticket_comment_webhook(data: Dict[str, Any]) -> JsonResponse:
+    """
+    Process ticket comment webhook in standard format.
+    
+    Extracts agent/admin comments from Zendesk tickets and forwards to linked
+    Sunshine conversation via WebSocket and API. Filters out conversation log
+    entries and non-agent comments.
+    
+    Args:
+        data (Dict[str, Any]): Zendesk ticket comment webhook payload with 'ticket' and 'comment' fields
+    
+    Returns:
+        JsonResponse with status indicating processing result:
+            - "forwarded": Comment successfully sent to conversation
+            - "no_ticket_id": Ticket ID not found in payload
+            - "ignored_non_agent": Comment from non-agent/admin user
+            - "ignored_empty": Comment has no body text
+            - "ignored_conversation_log": Detected as log entry, not user message
+            - "no_conversation_mapping": No Sunshine conversation found for ticket
+            - "forward_failed": API error sending to Sunshine
+    
+    Status codes:
+        - 200: Processed (any outcome)
+        - 400: Missing ticket ID
+        - 500: Forward failed
+    """
     try:
         ticket = data.get('ticket', {})
         ticket_id = ticket.get('id')
@@ -892,6 +1443,23 @@ def handle_ticket_comment_webhook(data: Dict[str, Any]) -> JsonResponse:
         return JsonResponse({"error": str(e)}, status=500)
 
 def handle_event_webhook(data: Dict[str, Any]) -> JsonResponse:
+    """
+    Process Zendesk webhook in events array format.
+    
+    Iterates through events array looking for 'Comment' type events.
+    Extracts comment text and forwards to linked Sunshine conversation.
+    Filters conversation log entries.
+    
+    Args:
+        data (Dict[str, Any]): Zendesk events format webhook with 'events' array
+    
+    Returns:
+        JsonResponse: {"status": "processed_events"}
+    
+    Status codes:
+        - 200: Events processed (even if no matching events found)
+        - 500: Error during processing
+    """
     try:
         events = data.get('events', [])
         for event in events:
@@ -917,6 +1485,36 @@ def handle_event_webhook(data: Dict[str, Any]) -> JsonResponse:
         return JsonResponse({"error": str(e)}, status=500)
     
 def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
+    """
+    Process Zendesk webhook notification event (ticket.comment_added or ticket.solved).
+    
+    Handles two scenarios:
+    1. ticket.comment_added: Extracts agent comment, finds linked Sunshine conversation,
+       and forwards message to conversation chat
+    2. ticket.solved: Sends session end message to user
+    
+    Searches for conversation ID in multiple locations:
+    - Custom field value (ZENDESK_CHAT_CONVERSATION_FIELD_ID)
+    - Ticket description and webhook payload text patterns
+    - Pending escalation cache with timestamp matching
+    
+    Args:
+        data (Dict[str, Any]): Zendesk notification webhook payload
+    
+    Returns:
+        JsonResponse with detailed status:
+            - "mapping_stored": Conversation mapped and tracked
+            - "ticket_updated": Custom field updated with category
+            - "no_conversation_found": Ticket created but no conversation found
+            - "ignored_user_comment": Non-staff comment, ignored
+            - "ignored_conversation_log": Log entry, not user comment
+            - "ticket_solved_processed": Ticket solved event processed
+            - "processed_notification": Event processed
+    
+    Status codes:
+        - 200: Processed (any outcome)
+        - 500: Error during processing
+    """
     try:
         event_type = data.get('type', '')
         event_data = data.get('event', {})
@@ -1068,6 +1666,22 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
         return JsonResponse({"error": str(e)}, status=500)
 
 def extract_ticket_id_from_data(data: Dict[str, Any]) -> Optional[str]:
+    """
+    Extract ticket ID from various Zendesk webhook payload formats.
+    
+    Attempts extraction in order of preference:
+    1. Direct ticket object id
+    2. ticket_id in event data
+    3. detail.id
+    4. events[].ticket_id
+    5. JSON string regex pattern matching
+    
+    Args:
+        data (Dict[str, Any]): Zendesk webhook payload
+    
+    Returns:
+        Optional[str]: Extracted ticket ID as string, or None if not found
+    """
     ticket_id = None
     if 'ticket' in data:
         ticket_obj = data['ticket']
@@ -1101,6 +1715,24 @@ def extract_ticket_id_from_data(data: Dict[str, Any]) -> Optional[str]:
     return ticket_id
 
 def resolve_conversation_id_for_ticket(ticket_id: str) -> Optional[str]:
+    """
+    Look up Sunshine conversation ID for a Zendesk ticket.
+    
+    Searches in order:
+    1. Cache lookup (fast path)
+    2. Zendesk API custom field (ZENDESK_CHAT_CONVERSATION_FIELD_ID)
+    
+    Stores successful lookup in cache for future queries.
+    
+    Args:
+        ticket_id (str): Zendesk ticket ID
+    
+    Returns:
+        Optional[str]: Sunshine conversation ID if found, None otherwise
+    
+    Note:
+        Requires Zendesk API credentials and custom field configuration
+    """
     try:
         conv = cache.get(f'ticket_{ticket_id}')
         if conv:
@@ -1135,6 +1767,35 @@ def resolve_conversation_id_for_ticket(ticket_id: str) -> Optional[str]:
 
 @csrf_exempt
 def get_full_chat_history(request: HttpRequest) -> JsonResponse:
+    """
+    Retrieve combined message history from Sunshine and Zendesk.
+    
+    Fetches messages from two sources and deduplicates using message fingerprints
+    (author type, timestamp, text content):
+    1. Sunshine API: Direct conversation messages
+    2. Zendesk: Conversation log via associated ticket
+    
+    Deduplicates messages to prevent showing duplicates from both sources.
+    Sorts by timestamp and includes attachments with proxy URLs for images.
+    Falls back to Sunshine-only if Zendesk fetch fails.
+    
+    Query parameters:
+        - conversationId (str, required): Sunshine conversation ID
+    
+    Returns:
+        JsonResponse: {
+            "messages": [...],              # Deduplicated, sorted message array
+            "source": "combined" | "error",
+            "ticket_id": str,               # Associated Zendesk ticket if found
+            "conversation_id": str,
+            "appUserId": str                # Participant user ID if found
+        }
+    
+    Status codes:
+        - 200: History retrieved successfully
+        - 400: Missing conversationId
+        - 405: Method not allowed (non-GET)
+    """
     if request.method != "GET":
         return JsonResponse({"error": "Method not allowed"}, status=405)
     
@@ -1217,6 +1878,38 @@ def get_full_chat_history(request: HttpRequest) -> JsonResponse:
         return get_sunshine_messages_fallback(conversation_id)
 
 def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Parse Zendesk conversation log event into standardized message format.
+    
+    Converts Zendesk event format to Sunshine-compatible message structure.
+    Handles text, images, files, choices, and actions. Filters out system messages
+    and conversation metadata. Supports multiple author type formats.
+    
+    Args:
+        event (Dict[str, Any]): Zendesk conversation log event
+    
+    Returns:
+        Optional[Dict[str, Any]]: Standardized message dict or None if filtered
+    
+    Message format:
+        {
+            "id": str,
+            "text": str,
+            "author": {"type": str, "displayName": str},
+            "received": str,  # ISO timestamp
+            "messageClass": str,  # "user" | "agent" | "bot"
+            "source": "conversation_log",
+            "attachments": [...],  # Optional
+            "choices": [...],      # Optional
+            "actions": [...]       # Optional
+        }
+    
+    Filtered messages:
+        - Non-text/image/file events
+        - System-authored messages
+        - "Connecting to agent" messages
+        - Conversation metadata patterns
+    """
     try:
         event_type = event.get("type", "")
         if event_type not in ["Messaging::ConversationMessage", "Comment"]:
@@ -1294,6 +1987,21 @@ def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, An
         return None
 
 def get_sunshine_messages_list(conversation_id: str) -> List[Dict[str, Any]]:
+    """
+    Fetch messages from Sunshine Conversations API.
+    
+    Retrieves message history for a conversation and converts to standardized format.
+    Detects message sources (user vs agent vs bot) and filters conversation log entries.
+    Handles inline images and file attachments with proxy URLs.
+    
+    Args:
+        conversation_id (str): Sunshine conversation ID
+    
+    Returns:
+        List[Dict[str, Any]]: Array of message objects in standard format
+    
+    Returns empty list on error (logged but not raised).
+    """
     messages = []
     try:
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
@@ -1361,6 +2069,26 @@ def get_sunshine_messages_list(conversation_id: str) -> List[Dict[str, Any]]:
     return messages
 
 def get_sunshine_messages_fallback(conversation_id: str) -> JsonResponse:
+    """
+    Fallback message retrieval from Sunshine when full history fails.
+    
+    Returns Sunshine messages without Zendesk conversation log integration.
+    Used when get_full_chat_history encounters errors.
+    
+    Args:
+        conversation_id (str): Sunshine conversation ID
+    
+    Returns:
+        JsonResponse: {
+            "messages": [...],
+            "source": "sunshine_fallback" | "error",
+            "conversation_id": str,
+            "error": str  # Only if error occurred
+        }
+    
+    Status codes:
+        - 200: Success or graceful error handling
+    """
     try:
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
         url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
@@ -1415,6 +2143,34 @@ def get_sunshine_messages_fallback(conversation_id: str) -> JsonResponse:
 
 @csrf_exempt
 def proxy_zendesk_image(request: HttpRequest) -> HttpResponse:
+    """
+    Proxy Zendesk/Sunshine images with authentication.
+    
+    Fetches images from Zendesk domains and returns with proper CORS headers.
+    Attempts multiple authentication methods for different Zendesk image sources:
+    1. Sunshine API auth (for sc/attachments URLs)
+    2. Sunshine JWT token
+    3. No auth (public images)
+    4. Zendesk API auth
+    
+    Query parameters:
+        - url (str, required): Image URL from Zendesk domain
+    
+    Returns:
+        HttpResponse: Image data with appropriate Content-Type
+    
+    Status codes:
+        - 200: Image retrieved successfully
+        - 400: Missing URL parameter
+        - 403: Non-Zendesk URL provided (security)
+        - 500: Image fetch failed
+    
+    Allowed domains:
+        - zendesk.com
+        - smooch.io
+        - zdassets.com
+        - zendesk-eu.com
+    """
     image_url = request.GET.get("url", "")
     if not image_url:
         return HttpResponse("Missing URL parameter", status=400)
@@ -1447,6 +2203,23 @@ def proxy_zendesk_image(request: HttpRequest) -> HttpResponse:
 _global_notification_last_index = 0
 
 async def global_notification_stream_generator():
+    """
+    Async generator for global server-sent events stream.
+    
+    Streams notifications about new messages from any conversation to all connected
+    clients. Maintains 5-minute timeout with 30-second keepalive pings.
+    Yields only notifications from conversations with unread messages.
+    
+    Yields:
+        str: SSE formatted event lines
+        - "event: connected": Stream established
+        - "event: new_message": New message notification with unread count
+        - ": keepalive": Periodic heartbeat
+    
+    Example event format:
+        event: new_message
+        data: {"type": "new_message", "conversationId": "...", "agentName": "..."}
+    """
     global _global_notification_last_index
     yield f"event: connected\ndata: {json.dumps({'type': 'connected', 'scope': 'global'})}\n\n"
     start_time = asyncio.get_event_loop().time()
@@ -1483,6 +2256,40 @@ async def global_notification_stream_generator():
 
 @csrf_exempt
 async def global_notification_stream(request: HttpRequest) -> HttpResponse:
+    """
+    HTTP endpoint for global server-sent events (SSE) stream.
+    
+    Establishes a persistent streaming connection that broadcasts new message
+    notifications to all connected clients. Used for real-time updates across
+    the entire conversation list. Sets appropriate headers for SSE compatibility
+    and disables buffering.
+    
+    Args:
+        request (HttpRequest): Incoming HTTP request
+    
+    Returns:
+        HttpResponse: StreamingHttpResponse with SSE headers and generator stream
+        - Status 200: Connection established successfully
+        - Status 500: Error initializing stream
+    
+    Response Headers:
+        - Cache-Control: no-cache
+        - Connection: keep-alive
+        - X-Accel-Buffering: no (disables nginx buffering)
+        - Content-Type: text/event-stream
+    
+    Yields (via generator):
+        - "event: connected" on stream start
+        - "event: new_message" when new messages arrive with unread count > 0
+        - ": keepalive" pings every 30 seconds
+    
+    Example JavaScript client:
+        const eventSource = new EventSource('/notification_stream/');
+        eventSource.addEventListener('new_message', (event) => {
+            const data = JSON.parse(event.data);
+            console.log('New message:', data);
+        });
+    """
     try:
         response = StreamingHttpResponse(global_notification_stream_generator(), content_type='text/event-stream', status=200)
         response['Cache-Control'] = 'no-cache'
@@ -1494,6 +2301,33 @@ async def global_notification_stream(request: HttpRequest) -> HttpResponse:
         return HttpResponse(f"Error: {str(e)}", status=500, content_type='text/event-stream')
 
 async def notification_stream_generator(conversation_id: str):
+    """
+    Async generator for per-conversation server-sent events stream.
+    
+    Streams notifications specific to a single conversation. Monitors Redis cache
+    for notifications targeting this conversation and yields them as SSE events.
+    Automatically clears processed notifications from cache. Maintains 5-minute
+    timeout with 30-second keepalive pings.
+    
+    Args:
+        conversation_id (str): Sunshine Conversations conversation ID to monitor
+    
+    Yields:
+        str: SSE formatted event lines
+        - "event: connected": Stream established with conversation ID
+        - "event: new_message": New message available for this conversation
+        - ": keepalive": Periodic heartbeat every 30 seconds
+        - "event: error": Error during streaming
+    
+    Cache interaction:
+        - Polls: notification_{conversation_id} every 100ms
+        - Deletes: Notification after yielding (prevents duplicates)
+        - Timeout: Individual notifications expire after 30 seconds
+    
+    Example event format:
+        event: new_message
+        data: {"type": "message", "conversationId": "...", "text": "..."}
+    """
     yield f"event: connected\ndata: {json.dumps({'type': 'connected', 'conversationId': conversation_id})}\n\n"
     start_time = asyncio.get_event_loop().time()
     timeout = 300
@@ -1523,6 +2357,50 @@ async def notification_stream_generator(conversation_id: str):
 
 @csrf_exempt
 async def notification_stream(request: HttpRequest, conversation_id: str) -> HttpResponse:
+    """
+    HTTP endpoint for per-conversation server-sent events (SSE) stream.
+    
+    Establishes a persistent streaming connection for notifications specific to
+    a single conversation. Clients subscribe to this endpoint using their
+    conversation ID to receive real-time updates. Sets appropriate headers for
+    SSE compatibility and disables buffering.
+    
+    Args:
+        request (HttpRequest): Incoming HTTP request
+        conversation_id (str): Sunshine Conversations conversation ID to monitor
+    
+    Returns:
+        HttpResponse: StreamingHttpResponse with SSE headers and generator stream
+        - Status 200: Connection established successfully
+        - Status 500: Error initializing stream
+    
+    Response Headers:
+        - Cache-Control: no-cache
+        - Connection: keep-alive
+        - X-Accel-Buffering: no (disables nginx buffering)
+        - Content-Type: text/event-stream
+    
+    URL Pattern:
+        GET /notification_stream/{conversation_id}/
+    
+    Decorators:
+        @csrf_exempt: Allows streaming without CSRF token (SSE best practice)
+    
+    Yields (via generator):
+        - "event: connected" on stream start with conversation ID
+        - "event: new_message" when new messages arrive
+        - ": keepalive" pings every 30 seconds
+        - "event: error" on stream exceptions
+    
+    Example JavaScript client:
+        const eventSource = new EventSource(
+            `/notification_stream/{conversationId}/`
+        );
+        eventSource.addEventListener('new_message', (event) => {
+            const data = JSON.parse(event.data);
+            console.log('Message:', data.text);
+        });
+    """
     try:
         response = StreamingHttpResponse(notification_stream_generator(conversation_id), content_type='text/event-stream', status=200)
         response['Cache-Control'] = 'no-cache'
@@ -1534,6 +2412,51 @@ async def notification_stream(request: HttpRequest, conversation_id: str) -> Htt
         return HttpResponse(f"Error: {str(e)}", status=500, content_type='text/event-stream')
 
 def send_notification_to_client(conversation_id: str, message_data: Dict[str, Any]) -> None:
+    """
+    Cache-based notification delivery to connected SSE clients.
+    
+    Stores notification data in Redis cache for immediate delivery to
+    conversation-specific SSE streams. Also maintains a global notification
+    queue (limited to 100 most recent) for global stream distribution.
+    Notifications auto-expire after 30 seconds.
+    
+    Args:
+        conversation_id (str): Sunshine Conversations conversation ID
+        message_data (Dict[str, Any]): Notification payload
+            - type (str): Event type ("message", "typing", "join", etc.)
+            - text (str): Message content
+            - author (dict): Message author info
+            - timestamp (str): ISO format timestamp
+            - conversationId (str): Conversation ID
+            - unreadCount (int, optional): Unread message count
+    
+    Side Effects:
+        - Sets key: notification_{conversation_id} with 30-second TTL
+        - Updates: global_notification queue (kept to 100 items)
+        - Sets key: global_notification with 60-second TTL
+        - Logs errors but does not raise exceptions
+    
+    Cache TTL Strategy:
+        - Per-conversation notification: 30 seconds (allows SSE polling)
+        - Global queue: 60 seconds (longer retention for global stream)
+        - Max global queue size: 100 notifications (prevents memory bloat)
+    
+    Usage:
+        Called by webhook handlers after processing Sunshine events
+        before message reaches clients via SSE streams.
+    
+    Example:
+        send_notification_to_client(
+            'conv-id-123',
+            {
+                'type': 'message',
+                'text': 'Hello',
+                'author': {'type': 'agent', 'displayName': 'John'},
+                'conversationId': 'conv-id-123',
+                'unreadCount': 5
+            }
+        )
+    """
     try:
         notification_key = f'notification_{conversation_id}'
         cache.set(notification_key, message_data, timeout=30)
