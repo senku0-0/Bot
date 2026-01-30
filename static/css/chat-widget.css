@@ -216,21 +216,14 @@
     overflow-wrap: break-word;
 }
 
-/* Message timestamp styling */
-.message-timestamp {
-    font-size: 0.7rem;
-    opacity: 0.7;
-    margin-top: 4px;
-    align-self: flex-end;
-    white-space: nowrap;
-}
-
-.bot-message .message-timestamp {
-    color: #999;
-}
-
-.user-message .message-timestamp {
-    color: rgba(255, 255, 255, 0.8);
+/* Day separator styling */
+.day-separator {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin: 15px 0 !important;
+    padding: 10px 0 !important;
+    background: transparent !important;
 }
 
 @keyframes messageSlide {

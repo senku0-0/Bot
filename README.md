@@ -974,6 +974,51 @@ While not explicitly coded in views, the system supports CSAT through:
    - Triggered by user interaction
    - Can be mapped to feedback submission
 
+#### CSAT Webview Link Integration:
+The system supports **Zendesk CSAT surveys** delivered as webview iframes:
+
+1. **Webview Message Structure**
+   - Messages can include `choices` with `type: "webview"`
+   - Each choice contains a `uri` pointing to the survey
+   - Example:
+     ```json
+     {
+       "type": "text",
+       "text": "Please rate your experience",
+       "choices": [
+         {
+           "type": "webview",
+           "label": "Take Survey",
+           "uri": "https://zendesk.com/apps/csat/survey?id=abc123&token=xyz"
+         }
+       ]
+     }
+     ```
+
+2. **Webview Rendering**
+   - Survey displays in an embedded **iframe** (600px height)
+   - Loads with full permissions: `geolocation, microphone, camera, payment, usb, magnetometer, gyroscope, accelerometer`
+   - Renders in chat bubble below message choices
+   - HTTPS required for Zendesk survey URLs
+
+3. **Typical CSAT Survey URI Format**
+   ```
+   https://zendesk.com/apps/csat/survey?conversationId={id}&contactId={contact_id}&token={auth_token}
+   ```
+
+4. **Frontend Implementation**
+   - Chat widget automatically detects webview choices
+   - When webview link clicked, `appendWebviewSurvey()` embeds iframe
+   - Survey runs in isolated iframe context (security boundary)
+   - User responses submitted directly to Zendesk CSAT backend
+   - No bot-side response handling required
+
+5. **Configuration in Zendesk**
+   - CSAT survey URI generated in **Zendesk Admin Panel**
+   - Settings > Routing > Message Routing
+   - Assign survey to conversation via Sunshine API
+   - URI includes authentication token for security
+
 #### CSAT Button State Persistence:
 The code includes CSAT button state tracking via cache:
 ```python

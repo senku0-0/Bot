@@ -34,6 +34,7 @@ document.addEventListener('DOMContentLoaded', function () {
     let unreadCounts = new Map(); // conversationId -> count
     let totalUnread = 0;
     let surveyMessageShown = false; // Track if survey has been displayed
+    let lastMessageDate = null; // Track last message date for daily separator
     function initNotificationSystem() {
         loadUnreadCounts();
         calculateTotalUnread();
@@ -284,6 +285,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
         displayedMessageIds.clear();
         displayedImageFileNames.clear();
+        lastMessageDate = null; // Reset daily separator for new conversation
         const convState = localStorage.getItem(`chat_conv_state_${convId}`);
         let restoredAgentName = 'Agent';
         if (convState) {
@@ -361,6 +363,7 @@ document.addEventListener('DOMContentLoaded', function () {
         displayedMessageIds.clear();
         displayedImageFileNames.clear();
         surveyMessageShown = false; // Reset survey flag
+        lastMessageDate = null; // Reset daily separator tracking
         isAgentConnected = false;
         agentJoinAnnounced = false;
         sessionEnded = false;
@@ -1048,6 +1051,74 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
+    // Check if day changed for new timestamp separator
+    function shouldAddDaySeparator(messageDate) {
+        if (!lastMessageDate) return true; // Always show first separator
+        const lastDay = lastMessageDate.toDateString();
+        const currentDay = messageDate.toDateString();
+        return lastDay !== currentDay; // Show separator only if day changed
+    }
+    
+    // Add daily timestamp separator to messages
+    function appendDaySeparator(date) {
+        const separatorDiv = document.createElement('div');
+        separatorDiv.classList.add('message', 'day-separator');
+        separatorDiv.style.textAlign = 'center';
+        separatorDiv.style.margin = '15px 0';
+        separatorDiv.style.padding = '10px 0';
+        
+        const separatorText = document.createElement('span');
+        const options = { month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true };
+        const formattedDate = date.toLocaleString('en-US', options);
+        
+        separatorText.textContent = formattedDate;
+        separatorText.style.backgroundColor = 'rgba(100, 100, 100, 0.1)';
+        separatorText.style.padding = '4px 12px';
+        separatorText.style.borderRadius = '12px';
+        separatorText.style.fontSize = '0.85rem';
+        separatorText.style.color = 'rgba(0, 0, 0, 0.5)';
+        separatorText.style.fontWeight = '500';
+        separatorText.style.display = 'inline-block';
+        
+        separatorDiv.appendChild(separatorText);
+        messagesContainer.appendChild(separatorDiv);
+    }
+    
+    // Check if time gap warrants a new timestamp separator
+    function shouldAddTimestampSeparator(messageDate) {
+        if (!lastMessageTimestamp) return true; // Always show first timestamp
+        const timeDiff = messageDate.getTime() - lastMessageTimestamp.getTime();
+        return timeDiff >= TIME_GAP_THRESHOLD; // Show separator if 30+ min gap
+    }
+    
+    // Add timestamp separator to messages (styled like agent announcements)
+    function appendTimestampSeparator(date) {
+        const separatorDiv = document.createElement('div');
+        separatorDiv.classList.add('message', 'timestamp-separator');
+        separatorDiv.style.textAlign = 'center';
+        separatorDiv.style.margin = '15px 0';
+        separatorDiv.style.padding = '10px 0';
+        
+        const timestampText = document.createElement('span');
+        const now = new Date();
+        const isToday = date.toDateString() === now.toDateString();
+        const timeOptions = { hour: 'numeric', minute: '2-digit', hour12: true };
+        const timeStr = date.toLocaleString('en-US', timeOptions);
+        const dateStr = isToday ? 'Today' : date.toLocaleDateString();
+        
+        timestampText.textContent = `${dateStr} ${timeStr}`;
+        timestampText.style.backgroundColor = 'rgba(100, 100, 100, 0.1)';
+        timestampText.style.padding = '4px 12px';
+        timestampText.style.borderRadius = '12px';
+        timestampText.style.fontSize = '0.85rem';
+        timestampText.style.color = 'rgba(0, 0, 0, 0.5)';
+        timestampText.style.fontWeight = '500';
+        timestampText.style.display = 'inline-block';
+        
+        separatorDiv.appendChild(timestampText);
+        messagesContainer.appendChild(separatorDiv);
+    }
+
     // Helper function to format timestamp
     function formatTimestamp(date) {
         const now = new Date();
@@ -1075,37 +1146,44 @@ document.addEventListener('DOMContentLoaded', function () {
         d.classList.add('message',c);
         d.style.whiteSpace="pre-wrap";
         
+        // Parse the message timestamp from Zendesk/Sunshine
+        let messageDate = new Date();
+        if (timestamp) {
+            try {
+                messageDate = new Date(timestamp);
+            } catch (e) {
+                messageDate = new Date();
+            }
+        }
+        
+        // Check if we need to add daily separator
+        if (shouldAddDaySeparator(messageDate)) {
+            appendDaySeparator(messageDate);
+        }
+        lastMessageDate = messageDate;
+        
         // Create message content wrapper
         const contentDiv = document.createElement('div');
         contentDiv.classList.add('message-content');
         contentDiv.textContent = t;
         d.appendChild(contentDiv);
         
-        // Add timestamp
-        const timestampDiv = document.createElement('div');
-        timestampDiv.classList.add('message-timestamp');
-        
-        if (timestamp) {
-            // If timestamp is provided from backend, parse and format it
-            try {
-                const date = new Date(timestamp);
-                timestampDiv.textContent = formatTimestamp(date);
-            } catch (e) {
-                timestampDiv.textContent = formatTimestamp(new Date());
-            }
-        } else {
-            // Use current time
-            timestampDiv.textContent = formatTimestamp(new Date());
-        }
-        
-        d.appendChild(timestampDiv);
         messagesContainer.appendChild(d);
         ensureScrollToBottom();
     };
 
-    function appendImageMessage(imageUrl, caption, className) {
+    function appendImageMessage(imageUrl, caption, className, messageDate = null) {
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', className, 'image-bubble');
+
+        // Parse message date from Zendesk timestamp
+        let parsedDate = messageDate ? new Date(messageDate) : new Date();
+        
+        // Check if we need daily separator
+        if (shouldAddDaySeparator(parsedDate)) {
+            appendDaySeparator(parsedDate);
+        }
+        lastMessageDate = parsedDate;
 
         const img = document.createElement('img');
         img.src = imageUrl;
@@ -1123,19 +1201,22 @@ document.addEventListener('DOMContentLoaded', function () {
             messageDiv.appendChild(captionDiv);
         }
 
-        // Add timestamp
-        const timestampDiv = document.createElement('div');
-        timestampDiv.classList.add('message-timestamp');
-        timestampDiv.textContent = formatTimestamp(new Date());
-        messageDiv.appendChild(timestampDiv);
-
         messagesContainer.appendChild(messageDiv);
         ensureScrollToBottom();
     }
 
-    function appendFileMessage(fileName, fileSize, className, caption = '') {
+    function appendFileMessage(fileName, fileSize, className, caption = '', messageDate = null) {
         const bubble = document.createElement('div');
         bubble.classList.add('message', className, 'file-bubble');
+
+        // Parse message date from Zendesk timestamp
+        let parsedDate = messageDate ? new Date(messageDate) : new Date();
+        
+        // Check if we need daily separator
+        if (shouldAddDaySeparator(parsedDate)) {
+            appendDaySeparator(parsedDate);
+        }
+        lastMessageDate = parsedDate;
 
         const fileContainer = document.createElement('div');
         fileContainer.classList.add('file-bubble-container');
@@ -1169,12 +1250,6 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         bubble.appendChild(fileContainer);
-
-        // Add timestamp
-        const timestampDiv = document.createElement('div');
-        timestampDiv.classList.add('message-timestamp');
-        timestampDiv.textContent = formatTimestamp(new Date());
-        bubble.appendChild(timestampDiv);
 
         messagesContainer.appendChild(bubble);
         ensureScrollToBottom();
