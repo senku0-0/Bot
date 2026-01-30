@@ -216,14 +216,21 @@
     overflow-wrap: break-word;
 }
 
-/* Day separator styling */
+/* Day separator styling - same as agent announcement */
 .day-separator {
+    align-self: center;
+    background-color: transparent;
+    color: #888;
+    font-size: 0.85rem;
+    padding: 5px 10px;
+    border: none;
+    box-shadow: none;
+    text-align: center;
+    margin: 10px 0;
+    font-style: italic;
     display: flex;
     justify-content: center;
     align-items: center;
-    margin: 15px 0 !important;
-    padding: 10px 0 !important;
-    background: transparent !important;
 }
 
 @keyframes messageSlide {
