@@ -576,6 +576,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const messageId = message.id || `agent_${Date.now()}`;
             const agentName = message.author?.displayName || 'Agent';
             const msgConversationId = message.conversationId || this.conversationId;
+            const timestamp = message.timestamp || message.received || new Date().toISOString();
             const choices = message.choices || [];
             const actions = message.actions || [];
             
@@ -613,7 +614,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 ensureScrollToBottom();
             }
             displayedMessageIds.add(messageId);
-            appendMessage(text, 'bot-message');
+            appendMessage(text, 'bot-message', timestamp);
             if (choices.length > 0) {
                 chatInputArea.style.display = 'none';
                 appendMessage('Messaging session ended', 'agent-announcement');
@@ -1047,7 +1048,60 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    const appendMessage=(t,c)=>{const d=document.createElement('div');d.classList.add('message',c);d.style.whiteSpace="pre-wrap";d.textContent=t;messagesContainer.appendChild(d);ensureScrollToBottom();};
+    // Helper function to format timestamp
+    function formatTimestamp(date) {
+        const now = new Date();
+        const isToday = date.toDateString() === now.toDateString();
+        const isThisYear = date.getFullYear() === now.getFullYear();
+        
+        const timeOptions = { hour: 'numeric', minute: '2-digit', hour12: true };
+        const timeStr = date.toLocaleString('en-US', timeOptions);
+        
+        if (isToday) {
+            return timeStr; // e.g., "3:24 PM"
+        } else if (isThisYear) {
+            const dateOptions = { month: 'short', day: 'numeric' };
+            const dateStr = date.toLocaleString('en-US', dateOptions);
+            return `${dateStr} at ${timeStr}`; // e.g., "January 29 at 3:24 PM"
+        } else {
+            const dateOptions = { month: 'short', day: 'numeric', year: 'numeric' };
+            const dateStr = date.toLocaleString('en-US', dateOptions);
+            return `${dateStr} at ${timeStr}`; // e.g., "Jan 29, 2024 at 3:24 PM"
+        }
+    }
+
+    const appendMessage=(t,c,timestamp)=>{
+        const d=document.createElement('div');
+        d.classList.add('message',c);
+        d.style.whiteSpace="pre-wrap";
+        
+        // Create message content wrapper
+        const contentDiv = document.createElement('div');
+        contentDiv.classList.add('message-content');
+        contentDiv.textContent = t;
+        d.appendChild(contentDiv);
+        
+        // Add timestamp
+        const timestampDiv = document.createElement('div');
+        timestampDiv.classList.add('message-timestamp');
+        
+        if (timestamp) {
+            // If timestamp is provided from backend, parse and format it
+            try {
+                const date = new Date(timestamp);
+                timestampDiv.textContent = formatTimestamp(date);
+            } catch (e) {
+                timestampDiv.textContent = formatTimestamp(new Date());
+            }
+        } else {
+            // Use current time
+            timestampDiv.textContent = formatTimestamp(new Date());
+        }
+        
+        d.appendChild(timestampDiv);
+        messagesContainer.appendChild(d);
+        ensureScrollToBottom();
+    };
 
     function appendImageMessage(imageUrl, caption, className) {
         const messageDiv = document.createElement('div');
@@ -1068,6 +1122,12 @@ document.addEventListener('DOMContentLoaded', function () {
             captionDiv.textContent = caption;
             messageDiv.appendChild(captionDiv);
         }
+
+        // Add timestamp
+        const timestampDiv = document.createElement('div');
+        timestampDiv.classList.add('message-timestamp');
+        timestampDiv.textContent = formatTimestamp(new Date());
+        messageDiv.appendChild(timestampDiv);
 
         messagesContainer.appendChild(messageDiv);
         ensureScrollToBottom();
@@ -1109,6 +1169,13 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         bubble.appendChild(fileContainer);
+
+        // Add timestamp
+        const timestampDiv = document.createElement('div');
+        timestampDiv.classList.add('message-timestamp');
+        timestampDiv.textContent = formatTimestamp(new Date());
+        bubble.appendChild(timestampDiv);
+
         messagesContainer.appendChild(bubble);
         ensureScrollToBottom();
     }

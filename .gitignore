@@ -1,3 +1,7 @@
 .env
-
+/staticfiles/
 botenv/
+/bot_app/__pycache__
+/bot_app/migrations
+/Bot/__pycache__
+db.sqlite3

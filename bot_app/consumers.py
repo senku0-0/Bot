@@ -3,6 +3,7 @@ import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 import asyncio
 from asgiref.sync import sync_to_async
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -216,9 +217,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     'payload': message
                 }
             
-            # Add conversation ID if not present
+            # Add conversation ID and timestamp if not present
             if 'payload' in message and 'conversationId' not in message['payload']:
                 message['payload']['conversationId'] = self.conversation_id
+            
+            # Add timestamp to payload if not already present
+            if 'payload' in message and 'timestamp' not in message['payload']:
+                message['payload']['timestamp'] = datetime.now().isoformat()
             
             logger.info(f"📤 [WEBSOCKET-HANDLER] Sending to WebSocket client: conversation={self.conversation_id}, message_type={message.get('type')}")
             logger.info(f"📤 [WEBSOCKET-HANDLER] Message preview: {str(json.dumps(message))[:200]}...")
