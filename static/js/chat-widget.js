@@ -1070,8 +1070,6 @@ document.addEventListener('DOMContentLoaded', function () {
         const separatorDiv = document.createElement('div');
         separatorDiv.classList.add('message', 'day-separator');
         separatorDiv.style.textAlign = 'center';
-        separatorDiv.style.margin = '15px 0';
-        separatorDiv.style.padding = '10px 0';
         
         const separatorText = document.createElement('span');
         const options = { month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true };
@@ -1089,39 +1087,6 @@ document.addEventListener('DOMContentLoaded', function () {
         messagesContainer.appendChild(separatorDiv);
     }
     
-    // Check if time gap warrants a new timestamp separator
-    function shouldAddTimestampSeparator(messageDate) {
-        if (!lastMessageTimestamp) return true; // Always show first timestamp
-        const timeDiff = messageDate.getTime() - lastMessageTimestamp.getTime();
-        return timeDiff >= TIME_GAP_THRESHOLD; // Show separator if 30+ min gap
-    }
-    
-    // Add timestamp separator to messages (styled like agent announcements)
-    function appendTimestampSeparator(date) {
-        const separatorDiv = document.createElement('div');
-        separatorDiv.classList.add('message', 'timestamp-separator');
-        separatorDiv.style.textAlign = 'center';
-        
-        const timestampText = document.createElement('span');
-        const now = new Date();
-        const isToday = date.toDateString() === now.toDateString();
-        const timeOptions = { hour: 'numeric', minute: '2-digit', hour12: true };
-        const timeStr = date.toLocaleString('en-US', timeOptions);
-        const dateStr = isToday ? 'Today' : date.toLocaleDateString();
-        
-        timestampText.textContent = `${dateStr} ${timeStr}`;
-        timestampText.style.backgroundColor = 'rgba(100, 100, 100, 0.1)';
-        timestampText.style.padding = '4px 12px';
-        timestampText.style.borderRadius = '12px';
-        timestampText.style.fontSize = '0.85rem';
-        timestampText.style.color = 'rgba(0, 0, 0, 0.5)';
-        timestampText.style.fontWeight = '500';
-        timestampText.style.display = 'inline-block';
-        
-        separatorDiv.appendChild(timestampText);
-        messagesContainer.appendChild(separatorDiv);
-    }
-
     // Helper function to format timestamp
     function formatTimestamp(date) {
         const now = new Date();
