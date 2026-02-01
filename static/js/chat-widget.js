@@ -579,7 +579,9 @@ document.addEventListener('DOMContentLoaded', function () {
             const messageId = message.id || `agent_${Date.now()}`;
             const agentName = message.author?.displayName || 'Agent';
             const msgConversationId = message.conversationId || this.conversationId;
-            const timestamp = message.timestamp || message.received || new Date().toISOString();
+            // Use only Zendesk timestamps - primary: message.timestamp, secondary: message.received
+            // NO FALLBACK - messages without Zendesk timestamps won't be displayed
+            const timestamp = message.timestamp || message.received;
             const choices = message.choices || [];
             const actions = message.actions || [];
             

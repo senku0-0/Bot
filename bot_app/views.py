@@ -149,7 +149,7 @@ def forward_agent_message_to_websocket(conversation_id: str, message_text: str, 
                 'id': f"agent_msg_{uuid.uuid4().hex[:10]}",
                 'author': {'type': 'business', 'displayName': agent_name, 'role': 'agent'},
                 'content': {'type': 'text', 'text': message_text},
-                'received': datetime.now().isoformat(),
+                # Timestamp will come from Zendesk API response, not generated locally
                 'source': 'zendesk',
                 'conversationId': conversation_id
             }
@@ -628,8 +628,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             'conversation_id': conversation_id,
             'app_user_id': app_user_id,
             'reason': reason,
-            'app_related_category': app_related_category,
-            'timestamp': datetime.now().isoformat()
+            'app_related_category': app_related_category
         }
         cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=300)
 
@@ -1088,7 +1087,6 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
                     'agentName': agent_name,
                     'messagePreview': text[:100],
                     'unreadCount': unread_count,
-                    'timestamp': datetime.now().isoformat(),
                     'choices': choices if choices else None,
                     'actions': actions if actions else None,
                     'isInteractive': bool(choices or actions)
