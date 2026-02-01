@@ -744,14 +744,17 @@ document.addEventListener('DOMContentLoaded', function () {
                                 const fileName = att.url.split('/').pop() || 'image';
                                 if (!displayedImageFileNames.has(fileName)) {
                                     displayedImageFileNames.add(fileName);
-                                    appendImageMessage(att.url, msg.text || '', cssClass);
+                                    // Pass message received timestamp for correct date separator
+                                    appendImageMessage(att.url, msg.text || '', cssClass, msg.received);
                                 }
                             } else if (att.type === 'file' && att.url) {
+                                // Pass message received timestamp for correct date separator
                                 appendFileMessage(
                                     att.fileName || 'file',
                                     formatFileSize(att.size || 0),
                                     cssClass,
-                                    msg.text || ''
+                                    msg.text || '',
+                                    msg.received
                                 );
                             }
                         });
@@ -768,7 +771,8 @@ document.addEventListener('DOMContentLoaded', function () {
                                                 msg.actions?.some(a => a.type === 'webview' && a.uri);
                         if (hasWebviewChoice) {
                         } else {
-                            appendMessage(msg.text, cssClass);
+                            // Pass the message's received timestamp for proper daily separator
+                            appendMessage(msg.text, cssClass, msg.received);
                         }
                     }
                     if (msg.choices && msg.choices.length > 0) {
@@ -1149,20 +1153,26 @@ document.addEventListener('DOMContentLoaded', function () {
         d.style.whiteSpace="pre-wrap";
         
         // Parse the message timestamp from Zendesk/Sunshine
-        let messageDate = new Date();
+        let messageDate = null;
         if (timestamp) {
             try {
                 messageDate = new Date(timestamp);
+                // Validate the date is valid
+                if (isNaN(messageDate.getTime())) {
+                    messageDate = null;
+                }
             } catch (e) {
-                messageDate = new Date();
+                messageDate = null;
             }
         }
         
-        // Check if we need to add daily separator
-        if (shouldAddDaySeparator(messageDate)) {
+        // Only show daily separator if we have a valid Zendesk timestamp
+        if (messageDate && shouldAddDaySeparator(messageDate)) {
             appendDaySeparator(messageDate);
         }
-        lastMessageDate = messageDate;
+        if (messageDate) {
+            lastMessageDate = messageDate;
+        }
         
         // Create message content wrapper
         const contentDiv = document.createElement('div');
@@ -1178,14 +1188,26 @@ document.addEventListener('DOMContentLoaded', function () {
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', className, 'image-bubble');
 
-        // Parse message date from Zendesk timestamp
-        let parsedDate = messageDate ? new Date(messageDate) : new Date();
+        // Parse message date from Zendesk timestamp - validate it's a valid date
+        let parsedDate = null;
+        if (messageDate) {
+            try {
+                parsedDate = new Date(messageDate);
+                if (isNaN(parsedDate.getTime())) {
+                    parsedDate = null;
+                }
+            } catch (e) {
+                parsedDate = null;
+            }
+        }
         
-        // Check if we need daily separator
-        if (shouldAddDaySeparator(parsedDate)) {
+        // Only show daily separator if we have a valid Zendesk timestamp
+        if (parsedDate && shouldAddDaySeparator(parsedDate)) {
             appendDaySeparator(parsedDate);
         }
-        lastMessageDate = parsedDate;
+        if (parsedDate) {
+            lastMessageDate = parsedDate;
+        }
 
         const img = document.createElement('img');
         img.src = imageUrl;
@@ -1211,14 +1233,26 @@ document.addEventListener('DOMContentLoaded', function () {
         const bubble = document.createElement('div');
         bubble.classList.add('message', className, 'file-bubble');
 
-        // Parse message date from Zendesk timestamp
-        let parsedDate = messageDate ? new Date(messageDate) : new Date();
+        // Parse message date from Zendesk timestamp - validate it's a valid date
+        let parsedDate = null;
+        if (messageDate) {
+            try {
+                parsedDate = new Date(messageDate);
+                if (isNaN(parsedDate.getTime())) {
+                    parsedDate = null;
+                }
+            } catch (e) {
+                parsedDate = null;
+            }
+        }
         
-        // Check if we need daily separator
-        if (shouldAddDaySeparator(parsedDate)) {
+        // Only show daily separator if we have a valid Zendesk timestamp
+        if (parsedDate && shouldAddDaySeparator(parsedDate)) {
             appendDaySeparator(parsedDate);
         }
-        lastMessageDate = parsedDate;
+        if (parsedDate) {
+            lastMessageDate = parsedDate;
+        }
 
         const fileContainer = document.createElement('div');
         fileContainer.classList.add('file-bubble-container');
