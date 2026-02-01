@@ -1078,7 +1078,6 @@ document.addEventListener('DOMContentLoaded', function () {
         const formattedDate = date.toLocaleString('en-US', options);
         
         separatorText.textContent = formattedDate;
-        separatorText.style.backgroundColor = 'rgba(100, 100, 100, 0.1)';
         separatorText.style.padding = '4px 12px';
         separatorText.style.borderRadius = '12px';
         separatorText.style.fontSize = '0.85rem';
@@ -1102,8 +1101,6 @@ document.addEventListener('DOMContentLoaded', function () {
         const separatorDiv = document.createElement('div');
         separatorDiv.classList.add('message', 'timestamp-separator');
         separatorDiv.style.textAlign = 'center';
-        separatorDiv.style.margin = '15px 0';
-        separatorDiv.style.padding = '10px 0';
         
         const timestampText = document.createElement('span');
         const now = new Date();
