@@ -662,7 +662,6 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             escalation_message = f"Escalation Reason: {reason}"
             if app_related_category:
                 escalation_message += f"\nCategory: {app_related_category}"
-            escalation_message += f"\n[Sunshine Conversation: {conversation_id}]"
             
             msg_payload = {"author": {"type": "user", "userId": app_user_id}, "content": {"type": "text", "text": escalation_message}}
             msg_response = requests.post(msg_url, json=msg_payload, auth=auth)

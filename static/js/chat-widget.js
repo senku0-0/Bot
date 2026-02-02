@@ -1037,21 +1037,81 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         if (messageText === "") return;
-        if (!appUserId || !conversationId) {
-            if (conversationId && !appUserId) {
-                const storedUserId = localStorage.getItem(`chat_appUserId_${conversationId}`) 
-                                  || localStorage.getItem('chat_user_id');
-                if (storedUserId) {
-                    appUserId = storedUserId;
-                } else {
-                    appendMessage("Error: Chat not initialized. Please refresh and try again.", 'system-message');
-                    return;
-                }
+        
+        // If no conversation yet, initialize one before sending
+        if (!conversationId) {
+            showLoadingIndicator();
+            const storedUserId = localStorage.getItem('chat_user_id');
+            const payload = {
+                userId: storedUserId || null,
+                forceNew: false
+            };
+
+            fetch('/api/chat/init', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+                .then(response => {
+                    if (!response.ok) {
+                        return response.text().then(text => {
+                            throw new Error(`HTTP ${response.status}: ${text}`);
+                        });
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.appUserId && data.conversationId) {
+                        appUserId = data.appUserId;
+                        conversationId = data.conversationId;
+
+                        if (data.externalId) {
+                            localStorage.setItem('chat_user_id', data.externalId);
+                        }
+                        localStorage.setItem(`chat_appUserId_${conversationId}`, appUserId);
+                        localStorage.setItem('chat_current_conversation', conversationId);
+                        
+                        // Save conversation and setup WebSocket
+                        saveConversation(conversationId, lastContext || 'Support Request', '', new Date().toISOString());
+                        sunshineSocket = new SunshineWebSocketManager(conversationId);
+                        sunshineSocket.connect();
+                        
+                        removeLoadingIndicator();
+                        // Now send the message
+                        appendMessage(messageText, 'user-message');
+                        saveConversation(conversationId, null, messageText, new Date().toISOString());
+                        sendToSunshine(messageText);
+                        chatInput.value = '';
+
+                        if (!isAgentConnected) {
+                            chatInputArea.style.display = 'none';
+                            setTimeout(() => {
+                                appendMessage("Your issue has been forwarded to our support team. An agent will review it shortly.", 'bot-message');
+                            }, 1500);
+                        }
+                    } else {
+                        removeLoadingIndicator();
+                        appendMessage("Failed to initialize chat. Please try again.", 'system-message');
+                    }
+                })
+                .catch(error => {
+                    removeLoadingIndicator();
+                    appendMessage("Connection error. Please try again.", 'system-message');
+                });
+            return;
+        }
+        
+        if (!appUserId) {
+            const storedUserId = localStorage.getItem(`chat_appUserId_${conversationId}`) 
+                              || localStorage.getItem('chat_user_id');
+            if (storedUserId) {
+                appUserId = storedUserId;
             } else {
                 appendMessage("Error: Chat not initialized. Please refresh and try again.", 'system-message');
                 return;
             }
         }
+        
         appendMessage(messageText, 'user-message');
         
         saveConversation(conversationId, null, messageText, new Date().toISOString());
