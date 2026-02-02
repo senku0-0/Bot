@@ -619,16 +619,15 @@ document.addEventListener('DOMContentLoaded', function () {
                 ensureScrollToBottom();
             }
             displayedMessageIds.add(messageId);
-            // Use the Zendesk-provided 'received' timestamp directly
-            appendMessage(text, 'bot-message', timestamp);
-            if (choices.length > 0) {
+            // Don't display text message if it has choices/actions - let appendChoicesMessage handle the full message with question + buttons
+            if (choices.length > 0 || actions.length > 0) {
                 chatInputArea.style.display = 'none';
                 appendMessage('Messaging session ended', 'agent-announcement');
-                appendChoicesMessage(choices, 'bot-message', { choices });
-            } else if (actions.length > 0) {
-                chatInputArea.style.display = 'none';
-                appendMessage('Messaging session ended', 'agent-announcement');
-                appendChoicesMessage(actions, 'bot-message', { actions });
+                // Pass the message object with text to appendChoicesMessage
+                appendChoicesMessage(choices.length > 0 ? choices : actions, 'bot-message', { text: text, choices: choices.length > 0 ? choices : actions });
+            } else {
+                // Use the Zendesk-provided 'received' timestamp directly
+                appendMessage(text, 'bot-message', timestamp);
             }
             ensureScrollToBottom();
             showMessageReceivedIndicator();
@@ -768,23 +767,24 @@ document.addEventListener('DOMContentLoaded', function () {
                             msg.text.includes('Escalation Reason:')) {
                             return;
                         }
-                        const hasWebviewChoice = msg.choices?.some(c => c.type === 'webview' && c.uri) ||
-                                                msg.actions?.some(a => a.type === 'webview' && a.uri);
-                        if (hasWebviewChoice) {
-                        } else {
-                            // Pass the message's received timestamp for proper daily separator
-                            appendMessage(msg.text, cssClass, msg.received);
+                        // Skip displaying text message if it has choices/actions - they will be shown with the message
+                        if (!msg.choices?.length && !msg.actions?.length) {
+                            const hasWebviewChoice = msg.choices?.some(c => c.type === 'webview' && c.uri) ||
+                                                    msg.actions?.some(a => a.type === 'webview' && a.uri);
+                            if (!hasWebviewChoice) {
+                                // Pass the message's received timestamp for proper daily separator
+                                appendMessage(msg.text, cssClass, msg.received);
+                            }
                         }
                     }
                     if (msg.choices && msg.choices.length > 0) {
-                        // Skip re-rendering if survey with choices has already been shown
+                        // Show session ended first, then CSAT bubble with question + buttons
                         chatInputArea.style.display = 'none';
-                        // Show session ended first, then CSAT bubble
                         appendMessage('Messaging session ended', 'agent-announcement');
                         appendChoicesMessage(msg.choices, cssClass, msg);
                     } else if (msg.actions && msg.actions.length > 0) {
+                        // Show session ended first, then actions bubble with question + buttons
                         chatInputArea.style.display = 'none';
-                        // Show session ended first, then CSAT bubble
                         appendMessage('Messaging session ended', 'agent-announcement');
                         appendChoicesMessage(msg.actions, cssClass, msg);
                     }
