@@ -64,16 +64,20 @@
     - [Production Deployment (Render.com)](#production-deployment-rendercom)
     - [Database Migrations](#database-migrations)
     - [Health Check](#health-check)
-13. [API Quick Reference](#-api-quick-reference)
-14. [Security Considerations](#-security-considerations)
+13. [Chat Workflows](#-chat-workflows)
+    - [Others Option (Direct Escalation)](#others-option-direct-escalation)
+    - [Standard Troubleshooting Flow](#standard-troubleshooting-flow)
+    - [Feedback to Agent Connection](#feedback-to-agent-connection)
+14. [API Quick Reference](#-api-quick-reference)
+15. [Security Considerations](#-security-considerations)
     - [CSRF Protection](#csrf-protection)
     - [Signature Verification](#signature-verification)
     - [Authentication](#authentication)
     - [Rate Limiting](#rate-limiting)
     - [Data Privacy](#data-privacy)
-15. [Troubleshooting](#-troubleshooting)
+16. [Troubleshooting](#-troubleshooting)
     - [Common Issues](#common-issues)
-16. [Additional Resources](#-additional-resources)
+17. [Additional Resources](#-additional-resources)
 
 ---
 
@@ -124,6 +128,49 @@ The bot acts as a **middleware** that bridges customer conversations in Zendesk 
          └──────────► Zendesk Support API
                       (Create tickets, update fields, webhooks)
 ```
+
+
+---
+
+## � Chat Workflows
+
+### Others Option (Direct Escalation)
+
+The "Others" category in App Related Issues provides direct agent escalation without intermediate troubleshooting steps.
+
+**User Journey**:
+```
+User clicks "App Related Issues" 
+    ↓
+User clicks "Others"
+    ↓
+Message "Others" appended to chat
+    ↓
+Loading indicator "Please hang on..." displays
+    ↓
+Conversation initialized (if new)
+    ↓
+Escalation initiated with category = "Others"
+    ↓
+"Others" → "others" mapped for Zendesk custom field
+    ↓
+Escalation message: "Escalation Reason: Others"
+                    "Category: App related issue"
+    ↓
+Agent joins the conversation
+```
+
+**Code Flow**:
+1. `handleAppRelatedOptionClick("Others")` - Appends message, shows loading indicator
+2. `createConversationAndEscalate(reason, category)` - Creates new conversation
+3. `performEscalation(reason, category)` - Sends to `/api/chat/escalate` endpoint
+4. Backend maps category and creates Zendesk ticket with custom field
+
+**Key Features**:
+- No text input required from user
+- Direct connection to agent
+- Custom field automatically set to "other" in Zendesk
+- Loading indicator shows "Please hang on" with animated dots
 
 ### Data Flow
 
@@ -1906,5 +1953,5 @@ print(f"Received: {received}")
 
 ---
 **Last Updated**: February 2, 2026
-**Version**: 1.1
+**Version**: 1.2
 **Author**: Ashad Shaikh
