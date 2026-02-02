@@ -217,13 +217,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     'payload': message
                 }
             
-            # Add conversation ID and timestamp if not present
+            # Add conversation ID if not present
             if 'payload' in message and 'conversationId' not in message['payload']:
                 message['payload']['conversationId'] = self.conversation_id
             
-            # Add timestamp to payload if not already present
-            if 'payload' in message and 'timestamp' not in message['payload']:
-                message['payload']['timestamp'] = datetime.now().isoformat()
+            # Don't add fallback timestamp - use only Zendesk-provided 'received' timestamp
+            # If message doesn't have 'received' from Zendesk, it will be null on frontend
             
             logger.info(f"📤 [WEBSOCKET-HANDLER] Sending to WebSocket client: conversation={self.conversation_id}, message_type={message.get('type')}")
             logger.info(f"📤 [WEBSOCKET-HANDLER] Message preview: {str(json.dumps(message))[:200]}...")

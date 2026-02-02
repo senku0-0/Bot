@@ -114,7 +114,7 @@ SUNSHINE_API_KEY_ID = os.getenv("SUNSHINE_API_KEY_ID", "").strip()
 SUNSHINE_API_KEY_SECRET = os.getenv("SUNSHINE_API_KEY_SECRET", "").strip()
 SUNSHINE_API_BASE_URL = os.getenv("SUNSHINE_API_BASE_URL", "https://api.smooch.io").strip().rstrip('/')
 
-def forward_agent_message_to_websocket(conversation_id: str, message_text: str, agent_name: str = "Agent", choices: list = None, actions: list = None) -> bool:
+def forward_agent_message_to_websocket(conversation_id: str, message_text: str, agent_name: str = "Agent", choices: list = None, actions: list = None, received_timestamp: str = None) -> bool:
     """
     Send agent message to WebSocket clients via Django Channels group.
     
@@ -127,6 +127,7 @@ def forward_agent_message_to_websocket(conversation_id: str, message_text: str, 
         agent_name (str): Display name of the agent (default: "Agent")
         choices (list, optional): CSAT/survey choice options if applicable
         actions (list, optional): Interactive actions/buttons if applicable
+        received_timestamp (str, optional): ISO timestamp from Zendesk API when message was received
     
     Returns:
         bool: True if message sent successfully, False otherwise
@@ -149,7 +150,8 @@ def forward_agent_message_to_websocket(conversation_id: str, message_text: str, 
                 'id': f"agent_msg_{uuid.uuid4().hex[:10]}",
                 'author': {'type': 'business', 'displayName': agent_name, 'role': 'agent'},
                 'content': {'type': 'text', 'text': message_text},
-                # Timestamp will come from Zendesk API response, not generated locally
+                # Use Zendesk's received timestamp if available
+                'received': received_timestamp,
                 'source': 'zendesk',
                 'conversationId': conversation_id
             }
@@ -1094,7 +1096,9 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
             
             if is_conversation_log_entry(text):
                 return
-            forward_agent_message_to_websocket(conversation_id, text, agent_name, choices=choices, actions=actions)
+            # Pass the Zendesk received timestamp from the message
+            received_ts = message.get('received')
+            forward_agent_message_to_websocket(conversation_id, text, agent_name, choices=choices, actions=actions, received_timestamp=received_ts)
             return
         
         if author_type == "user":

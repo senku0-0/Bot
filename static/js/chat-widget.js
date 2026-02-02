@@ -619,13 +619,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 ensureScrollToBottom();
             }
             displayedMessageIds.add(messageId);
-            // Ensure timestamp is a valid ISO string for proper timezone handling
-            let validTimestamp = timestamp;
-            if (validTimestamp && !validTimestamp.includes('T')) {
-                // If timestamp is missing ISO format, convert it
-                validTimestamp = new Date(validTimestamp).toISOString();
-            }
-            appendMessage(text, 'bot-message', validTimestamp);
+            // Use the Zendesk-provided 'received' timestamp directly
+            appendMessage(text, 'bot-message', timestamp);
             if (choices.length > 0) {
                 chatInputArea.style.display = 'none';
                 appendMessage('Messaging session ended', 'agent-announcement');
@@ -1007,9 +1002,10 @@ document.addEventListener('DOMContentLoaded', function () {
         const loaderDiv = document.createElement('div');
         loaderDiv.id = 'agent-loading-indicator';
         loaderDiv.classList.add('message', 'system-message');
-        loaderDiv.style.display = 'flex';
+        loaderDiv.style.flexDirection = 'row';
         loaderDiv.style.alignItems = 'center';
-        loaderDiv.style.gap = '4px';
+        loaderDiv.style.justifyContent = 'center';
+        loaderDiv.style.gap = '6px';
 
         const textSpan = document.createElement('span');
         textSpan.textContent = 'Please hang on';
