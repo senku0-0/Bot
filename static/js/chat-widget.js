@@ -619,7 +619,13 @@ document.addEventListener('DOMContentLoaded', function () {
                 ensureScrollToBottom();
             }
             displayedMessageIds.add(messageId);
-            appendMessage(text, 'bot-message', timestamp);
+            // Ensure timestamp is a valid ISO string for proper timezone handling
+            let validTimestamp = timestamp;
+            if (validTimestamp && !validTimestamp.includes('T')) {
+                // If timestamp is missing ISO format, convert it
+                validTimestamp = new Date(validTimestamp).toISOString();
+            }
+            appendMessage(text, 'bot-message', validTimestamp);
             if (choices.length > 0) {
                 chatInputArea.style.display = 'none';
                 appendMessage('Messaging session ended', 'agent-announcement');
@@ -1001,15 +1007,22 @@ document.addEventListener('DOMContentLoaded', function () {
         const loaderDiv = document.createElement('div');
         loaderDiv.id = 'agent-loading-indicator';
         loaderDiv.classList.add('message', 'system-message');
+        loaderDiv.style.display = 'flex';
+        loaderDiv.style.alignItems = 'center';
+        loaderDiv.style.gap = '4px';
 
-        loaderDiv.innerHTML = `
-            Please hang on
-            <div class="typing-indicator-inline">
-                <div class="typing-dot-small"></div>
-                <div class="typing-dot-small"></div>
-                <div class="typing-dot-small"></div>
-            </div>
+        const textSpan = document.createElement('span');
+        textSpan.textContent = 'Please hang on';
+        loaderDiv.appendChild(textSpan);
+
+        const dotsDiv = document.createElement('div');
+        dotsDiv.className = 'typing-indicator-inline';
+        dotsDiv.innerHTML = `
+            <div class="typing-dot-small"></div>
+            <div class="typing-dot-small"></div>
+            <div class="typing-dot-small"></div>
         `;
+        loaderDiv.appendChild(dotsDiv);
         messagesContainer.appendChild(loaderDiv);
         ensureScrollToBottom();
     }
@@ -1085,28 +1098,6 @@ document.addEventListener('DOMContentLoaded', function () {
         
         separatorDiv.appendChild(separatorText);
         messagesContainer.appendChild(separatorDiv);
-    }
-    
-    // Helper function to format timestamp
-    function formatTimestamp(date) {
-        const now = new Date();
-        const isToday = date.toDateString() === now.toDateString();
-        const isThisYear = date.getFullYear() === now.getFullYear();
-        
-        const timeOptions = { hour: 'numeric', minute: '2-digit', hour12: true };
-        const timeStr = date.toLocaleString('en-US', timeOptions);
-        
-        if (isToday) {
-            return timeStr; // e.g., "3:24 PM"
-        } else if (isThisYear) {
-            const dateOptions = { month: 'short', day: 'numeric' };
-            const dateStr = date.toLocaleString('en-US', dateOptions);
-            return `${dateStr} at ${timeStr}`; // e.g., "January 29 at 3:24 PM"
-        } else {
-            const dateOptions = { month: 'short', day: 'numeric', year: 'numeric' };
-            const dateStr = date.toLocaleString('en-US', dateOptions);
-            return `${dateStr} at ${timeStr}`; // e.g., "Jan 29, 2024 at 3:24 PM"
-        }
     }
 
     const appendMessage=(t,c,timestamp)=>{
