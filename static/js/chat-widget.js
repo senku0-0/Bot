@@ -33,7 +33,6 @@ document.addEventListener('DOMContentLoaded', function () {
     let deleteAccountReasons = [];
     let unreadCounts = new Map(); // conversationId -> count
     let totalUnread = 0;
-    let isOthersFlow = false;  // Track if user selected "Others" option
     function initNotificationSystem() {
         loadUnreadCounts();
         calculateTotalUnread();
@@ -953,13 +952,13 @@ document.addEventListener('DOMContentLoaded', function () {
     function handleAppRelatedOptionClick(option) {
         appendMessage(option, 'user-message');
         lastContext = option;
-        window.lastAppRelatedCategory = option;  // NEW: Store category
+        window.lastAppRelatedCategory = option;
 
         if (option === "Others") {
-            isOthersFlow = true;  // Mark that we're in Others flow
-            appendMessage("Please describe your issue below.", 'bot-message');
-            chatInputArea.style.display = 'flex';
-            chatInput.focus();
+            // Auto-escalate to agent directly for "Others"
+            setTimeout(() => {
+                handleAgentConnect(option);
+            }, 500);
         } else if (troubleshootingSteps[option]) {
             setTimeout(() => {
                 appendMessage(troubleshootingSteps[option], 'bot-message');
@@ -1084,16 +1083,8 @@ document.addEventListener('DOMContentLoaded', function () {
                         chatInput.value = '';
                         chatInputArea.style.display = 'none';
 
-                        // If this was from "Others" flow, show feedback after a delay
-                        if (isOthersFlow) {
-                            setTimeout(() => {
-                                appendMessage("Your issue has been forwarded to our support team. An agent will review it shortly.", 'bot-message');
-                                setTimeout(() => {
-                                    askForFeedback();
-                                }, 1500);
-                            }, 500);
-                            isOthersFlow = false;  // Reset flag
-                        } else if (!isAgentConnected) {
+                        // Show escalation message
+                        if (!isAgentConnected) {
                             setTimeout(() => {
                                 appendMessage("Your issue has been forwarded to our support team. An agent will review it shortly.", 'bot-message');
                             }, 1500);
