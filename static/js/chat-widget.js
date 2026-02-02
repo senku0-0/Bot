@@ -429,6 +429,9 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     
     function performEscalation(reason, category) {
+        removeLoadingIndicator();
+        showLoadingIndicator();
+        
         fetch('/api/chat/escalate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -450,11 +453,9 @@ document.addEventListener('DOMContentLoaded', function () {
                 agentJoinAnnounced = false;
                 localStorage.setItem('chat_isAgentConnected', 'true');
                 localStorage.setItem('chat_agentJoinAnnounced', 'false');
-                showLoadingIndicator();
-                chatInputArea.style.display = 'flex';
-                chatInput.focus();
             })
             .catch(error => {
+                removeLoadingIndicator();
                 appendMessage("Error connecting to agent. Please try again.", 'system-message');
             });
     }
@@ -827,7 +828,6 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function handleAgentConnect(option) {
-        appendMessage(option, 'user-message');
         if (!conversationId) {
             createConversationAndEscalate(lastContext, window.lastAppRelatedCategory);
         } else {
@@ -955,9 +955,16 @@ document.addEventListener('DOMContentLoaded', function () {
         window.lastAppRelatedCategory = option;
 
         if (option === "Others") {
-            // Auto-escalate to agent directly for "Others"
             setTimeout(() => {
-                handleAgentConnect(option);
+                showLoadingIndicator();
+                chatInputArea.style.display = 'flex';
+                chatInput.focus();
+                
+                if (!conversationId) {
+                    createConversationAndEscalate(lastContext, window.lastAppRelatedCategory);
+                } else {
+                    performEscalation(lastContext, window.lastAppRelatedCategory);
+                }
             }, 500);
         } else if (troubleshootingSteps[option]) {
             setTimeout(() => {
