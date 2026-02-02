@@ -33,8 +33,7 @@ document.addEventListener('DOMContentLoaded', function () {
     let deleteAccountReasons = [];
     let unreadCounts = new Map(); // conversationId -> count
     let totalUnread = 0;
-    let surveyMessageShown = false; // Track if survey has been displayed
-    let lastMessageDate = null; // Track last message date for daily separator
+    let isOthersFlow = false;  // Track if user selected "Others" option
     function initNotificationSystem() {
         loadUnreadCounts();
         calculateTotalUnread();
@@ -957,6 +956,7 @@ document.addEventListener('DOMContentLoaded', function () {
         window.lastAppRelatedCategory = option;  // NEW: Store category
 
         if (option === "Others") {
+            isOthersFlow = true;  // Mark that we're in Others flow
             appendMessage("Please describe your issue below.", 'bot-message');
             chatInputArea.style.display = 'flex';
             chatInput.focus();
@@ -1082,9 +1082,18 @@ document.addEventListener('DOMContentLoaded', function () {
                         saveConversation(conversationId, null, messageText, new Date().toISOString());
                         sendToSunshine(messageText);
                         chatInput.value = '';
+                        chatInputArea.style.display = 'none';
 
-                        if (!isAgentConnected) {
-                            chatInputArea.style.display = 'none';
+                        // If this was from "Others" flow, show feedback after a delay
+                        if (isOthersFlow) {
+                            setTimeout(() => {
+                                appendMessage("Your issue has been forwarded to our support team. An agent will review it shortly.", 'bot-message');
+                                setTimeout(() => {
+                                    askForFeedback();
+                                }, 1500);
+                            }, 500);
+                            isOthersFlow = false;  // Reset flag
+                        } else if (!isAgentConnected) {
                             setTimeout(() => {
                                 appendMessage("Your issue has been forwarded to our support team. An agent will review it shortly.", 'bot-message');
                             }, 1500);

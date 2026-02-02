@@ -660,8 +660,14 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         if app_user_id:
             msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/messages"
             escalation_message = f"Escalation Reason: {reason}"
+            
+            # Format category with proper display name
             if app_related_category:
-                escalation_message += f"\nCategory: {app_related_category}"
+                category_display_name = app_related_category
+                if app_related_category.lower() == "others":
+                    category_display_name = "Other"
+                escalation_message += f"\nCategory: App related issue"
+                escalation_message += f"\nIssue Type: {category_display_name}"
             
             msg_payload = {"author": {"type": "user", "userId": app_user_id}, "content": {"type": "text", "text": escalation_message}}
             msg_response = requests.post(msg_url, json=msg_payload, auth=auth)
