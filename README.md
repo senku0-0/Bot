@@ -1905,34 +1905,6 @@ print(f"Received: {received}")
 - [Server-Sent Events MDN](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)
 
 ---
-
----
-
-## 📝 Recent Updates (February 2026)
-
-### WebSocket Agent Message Timestamps
-- Agent messages now include Zendesk's `received` timestamp in WebSocket payload
-- Timestamp passed from webhook to WebSocket to frontend
-- Ensures message displays with correct time even when chat is open
-
-### CSAT Display Order Fixed
-- "Messaging session ended" announcement now appears BEFORE CSAT question
-- Consistent display whether chat is open or reopened
-- Text message not duplicated (handled by `appendChoicesMessage()`)
-
-### Daily Timestamp Separators Implemented
-- One separator per calendar day instead of time-based gaps
-- Clean UI with no individual message timestamps
-- Validates timestamps before display
-- Consistent across WebSocket and history API
-
-### Loading Indicator Alignment Fixed
-- "Please hang on" text and animation dots now on same line
-- Uses flex layout with row direction
-- Proper centering and spacing
-
----
-
 **Last Updated**: February 2, 2026
 **Version**: 1.1
-**Author**: Bot Development Team
+**Author**: Ashad Shaikh
