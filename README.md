@@ -1746,21 +1746,22 @@ docker run -d -p 6379:6379 redis:latest
 
 # Or using Windows Subsystem for Linux
 redis-server
+
+OR 
+
+use Render redis server
 ```
 
 #### 5. Start Django Development Server
 ```bash
-# Terminal 1: Run ASGI server (for WebSockets)
+# Terminal 1: Run ASGI server (for WebSockets) on Render
 uvicorn Bot.asgi:application --host 0.0.0.0 --port 8000
-
-# Terminal 2: Run Ngrok for webhooks (tunnel localhost to public URL)
-ngrok http 8000
 ```
 
 #### 6. Configure Webhooks
 In Zendesk:
-- **Sunshine**: Set webhook URL to `https://your-ngrok-url/hooks/sunshine/message`
-- **Zendesk**: Set webhook URL to `https://your-ngrok-url/zendesk/webhook`
+- **Sunshine**: Set webhook URL to `/hooks/sunshine/message`
+- **Zendesk**: Set webhook URL to `/zendesk/webhook`
 
 ### Production Deployment (Render.com)
 
