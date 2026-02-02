@@ -831,6 +831,14 @@ Sent when Sunshine webhook receives agent message:
 }
 ```
 
+**Timestamp Details**:
+- `received` field contains **ISO 8601 timestamp** from Zendesk Sunshine API
+- This is the actual message received time from Zendesk, NOT server-generated
+- Frontend uses this timestamp to create daily message separators (one per calendar day)
+- If `received` is null/missing, no timestamp separator is shown
+- **No fallback to server time**: Ensures consistency across all clients and page refreshes
+- Used for both real-time messages (WebSocket) and historical messages (when reopening chat)
+
 #### 4. **agent_typing** (Typing Indicator)
 When agent starts typing:
 ```json
@@ -946,7 +954,7 @@ CHANNEL_LAYERS = {
 
 ### CSAT (Customer Satisfaction)
 
-While not explicitly coded in views, the system supports CSAT through:
+The system supports CSAT through Zendesk-controlled surveys delivered as interactive messages:
 
 #### Integration Points:
 1. **Zendesk Ticket Custom Fields**
@@ -973,6 +981,20 @@ While not explicitly coded in views, the system supports CSAT through:
    - Messages can include `actions` array
    - Triggered by user interaction
    - Can be mapped to feedback submission
+
+#### Display Order (Fixed)
+When agent sends CSAT survey with choices/actions, the display order is:
+1. **"Messaging session ended"** announcement (gray, centered)
+2. **CSAT Question + Rating Buttons** in single bubble (question text + interactive choices)
+
+This order is consistent whether:
+- Chat is open (WebSocket, real-time)
+- Chat is closed/reopened (message history)
+
+**Implementation**:
+- Text message is NOT displayed separately if it has choices/actions
+- `appendChoicesMessage()` handles displaying question + buttons together
+- Prevents duplicate question text and maintains clean UI
 
 #### CSAT Webview Link Integration:
 The system supports **Zendesk CSAT surveys** delivered as webview iframes:
@@ -1132,7 +1154,7 @@ author_type:timestamp[:19]:text[:100].lower()
 
 **Logic**:
 1. Extract author type (normalized to: user, agent, bot)
-2. Take timestamp up to second precision
+2. Take timestamp up to second precision (from Zendesk API)
 3. Take first 100 characters of message text (lowercased)
 4. If same fingerprint exists, skip duplicate
 
@@ -1143,6 +1165,31 @@ Message 2 (Zendesk): "Hello" from Agent at 10:30:00
 Fingerprint: "agent:2024-01-22T10:30:00:hello"
 Result: Only one message shown
 ```
+
+### Daily Timestamp Separators
+
+**Implementation**:
+- One timestamp separator per calendar day (not per time gap)
+- Format: "February 2, 2026 at 10:58 AM"
+- Separators only shown when calendar day changes
+
+**How It Works**:
+1. Each message includes `received` timestamp from Zendesk API
+2. Frontend compares current message date with `lastMessageDate`
+3. If different calendar day: insert separator
+4. Separator styled with light gray background, rounded edges, centered text
+5. No individual timestamps under messages (clean UI)
+
+**Timestamp Validation**:
+- Validates timestamp is valid ISO 8601 date before using
+- Checks: `isNaN(messageDate.getTime())` to ensure parseable
+- If invalid: No separator shown, message still displayed
+- Applied to all message types: text, images, files, choices
+
+**Consistency Across Scenarios**:
+- **Real-time messages** (WebSocket): Uses `received` from Zendesk webhook
+- **Message history** (reopening chat): Uses `received` from Zendesk API
+- **Result**: Same timestamps shown whether message arrives live or loaded from history
 
 ### Zendesk Conversation Log Parsing
 
@@ -1539,6 +1586,91 @@ ALLOWED_HOSTS=localhost,127.0.0.1
 
 ---
 
+---
+
+## ⏰ Timestamp System Architecture
+
+### Zendesk-Only Timestamp Sourcing
+
+The system uses **only timestamps provided by Zendesk APIs**. No server-generated fallbacks.
+
+#### Timestamp Sources (Priority Order):
+
+1. **Primary**: `message.received` from Zendesk Sunshine API
+   - Available on all Sunshine messages
+   - ISO 8601 format: `"2024-01-22T10:30:00Z"`
+   - Timezone: UTC
+
+2. **Secondary**: `message.timestamp` from Zendesk Support API
+   - Available in Zendesk ticket conversation logs
+   - Format: `"2024-01-22T10:30:00Z"`
+   - Timezone: UTC
+
+3. **No Fallback**: `datetime.now()` removed
+   - Previous: Server would generate timestamp if Zendesk data missing
+   - Now: If timestamp unavailable, message shows without separator
+   - Prevents timezone mismatches and stale data issues
+
+#### Why Zendesk-Only?
+
+| Issue | With Server Fallback | With Zendesk-Only |
+|-------|----------------------|-------------------|
+| **Timezone Mismatch** | Different times on different clients | Consistent across all clients |
+| **Page Refresh** | Old conversation shows current date | Shows actual date/time |
+| **Multi-Server** | Each server shows different time | Same time regardless of server |
+| **Historical Accuracy** | Stale when reopened | Always shows actual message time |
+
+#### Implementation Across Components:
+
+**Backend (views.py)**:
+```python
+def forward_agent_message_to_websocket(..., received_timestamp=None):
+    # Pass Zendesk's received timestamp to WebSocket
+    websocket_message['payload']['received'] = received_timestamp
+    # Only include timestamp if from Zendesk - no server-generated times
+```
+
+**Backend (consumers.py)**:
+```python
+# Don't add fallback timestamp
+# Use only Zendesk-provided 'received' timestamp
+# If message doesn't have 'received' from Zendesk, it will be null on frontend
+```
+
+**Frontend (chat-widget.js)**:
+```javascript
+// Validate timestamp is valid date before using
+if (timestamp) {
+    try {
+        messageDate = new Date(timestamp);
+        // Check if valid date object
+        if (isNaN(messageDate.getTime())) {
+            messageDate = null;  // Invalid - no separator
+        }
+    } catch (e) {
+        messageDate = null;  // Parse error - no separator
+    }
+}
+// Only show separator if we have valid Zendesk timestamp
+if (messageDate && shouldAddDaySeparator(messageDate)) {
+    appendDaySeparator(messageDate);
+}
+```
+
+#### Cache Implications:
+
+Cache stores Zendesk-provided timestamps:
+```python
+# When storing conversation info
+cache.set(
+    f'conversation_info_{convId}',
+    {'timestamp': message.get('received')},  # From Zendesk
+    timeout=604800  # 7 days
+)
+```
+
+---
+
 ## 🚀 Deployment Guide
 
 ### Local Development
@@ -1774,6 +1906,33 @@ print(f"Received: {received}")
 
 ---
 
-**Last Updated**: January 22, 2026
-**Version**: 1.0
+---
+
+## 📝 Recent Updates (February 2026)
+
+### WebSocket Agent Message Timestamps
+- Agent messages now include Zendesk's `received` timestamp in WebSocket payload
+- Timestamp passed from webhook to WebSocket to frontend
+- Ensures message displays with correct time even when chat is open
+
+### CSAT Display Order Fixed
+- "Messaging session ended" announcement now appears BEFORE CSAT question
+- Consistent display whether chat is open or reopened
+- Text message not duplicated (handled by `appendChoicesMessage()`)
+
+### Daily Timestamp Separators Implemented
+- One separator per calendar day instead of time-based gaps
+- Clean UI with no individual message timestamps
+- Validates timestamps before display
+- Consistent across WebSocket and history API
+
+### Loading Indicator Alignment Fixed
+- "Please hang on" text and animation dots now on same line
+- Uses flex layout with row direction
+- Proper centering and spacing
+
+---
+
+**Last Updated**: February 2, 2026
+**Version**: 1.1
 **Author**: Bot Development Team
