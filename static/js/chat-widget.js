@@ -828,11 +828,19 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function handleAgentConnect(option) {
-        if (!conversationId) {
-            createConversationAndEscalate(lastContext, window.lastAppRelatedCategory);
-        } else {
-            performEscalation(lastContext, window.lastAppRelatedCategory);
-        }
+        appendMessage(option, 'user-message');
+        
+        setTimeout(() => {
+            showLoadingIndicator();
+            chatInputArea.style.display = 'flex';
+            chatInput.focus();
+            
+            if (!conversationId) {
+                createConversationAndEscalate(lastContext, window.lastAppRelatedCategory);
+            } else {
+                performEscalation(lastContext, window.lastAppRelatedCategory);
+            }
+        }, 500);
     }
 
     function showMessageReceivedIndicator() {
