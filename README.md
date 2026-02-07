@@ -801,6 +801,406 @@ Real-time bidirectional messaging between browser and server
 
 **Handler**: Django Channels `ChatConsumer` (async WebSocket consumer)
 
+### Zendesk WebSocket Connection Flow
+
+The complete flow from Zendesk webhook to WebSocket connection includes signature verification and secure handshake:
+
+#### Step 1: Zendesk Sends Webhook with Signature
+```
+Zendesk Sunshine Server
+    ↓
+POST /hooks/sunshine/message
+Headers:
+  - X-Hub-Signature: sha256=abcd1234...
+  - Content-Type: application/json
+Body: {"trigger": "conversation:message", "data": {...}}
+```
+
+#### Step 2: Backend Verifies Signature
+```python
+# In views.py - webhook_handler()
+
+import hmac
+import hashlib
+import base64
+
+def verify_webhook_signature(request):
+    """
+    Verify Zendesk Sunshine webhook signature using HMAC-SHA256
+    
+    Security: Ensures webhook is from Zendesk, not spoofed
+    """
+    # 1. Get signature from header
+    signature_header = request.headers.get('X-Hub-Signature', '')
+    if not signature_header:
+        return False
+    
+    # 2. Extract algorithm and signature value
+    try:
+        algo, signature = signature_header.split('=')
+        if algo != 'sha256':
+            return False
+    except ValueError:
+        return False
+    
+    # 3. Get webhook secret from environment
+    webhook_secret = os.getenv('SUNSHINE_WEBHOOK_SIGNING_SECRET')
+    if not webhook_secret:
+        logger.error("SUNSHINE_WEBHOOK_SIGNING_SECRET not configured")
+        return False
+    
+    # 4. Compute expected signature
+    payload = request.body  # Raw bytes
+    expected_signature = hmac.new(
+        webhook_secret.encode(),
+        payload,
+        hashlib.sha256
+    ).hexdigest()
+    
+    # 5. Compare signatures (constant-time comparison to prevent timing attacks)
+    if not hmac.compare_digest(signature, expected_signature):
+        logger.error(f"Invalid signature: {signature} != {expected_signature}")
+        return False
+    
+    logger.info("✅ Webhook signature verified")
+    return True
+
+@csrf_exempt
+def sunshine_webhook_handler(request):
+    """Handle Zendesk Sunshine webhooks"""
+    
+    # STEP 1: Verify signature
+    if not verify_webhook_signature(request):
+        logger.error("❌ Signature verification failed")
+        return JsonResponse({"error": "Invalid signature"}, status=401)
+    
+    # STEP 2: Parse webhook body
+    try:
+        data = json.loads(request.body)
+        trigger_type = data.get('trigger')
+        conversation_id = data.get('data', {}).get('conversationId')
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    
+    # STEP 3: Process event
+    if trigger_type == 'conversation:message':
+        logger.info(f"📨 New message in conversation: {conversation_id}")
+        process_message_event(data)
+    
+    # STEP 4: Return success to Zendesk
+    return JsonResponse({"status": "received", "conversationId": conversation_id})
+```
+
+**Signature Verification Algorithm**:
+```
+1. Get X-Hub-Signature header: "sha256=abc123..."
+2. Extract signature: abc123...
+3. Compute HMAC-SHA256(webhook_secret, request_body)
+4. Compare: constant_time_compare(signature, computed_hash)
+5. If equal → Webhook is from Zendesk ✅
+6. If different → Webhook is spoofed ❌
+```
+
+#### Step 3: Extract Conversation ID
+```python
+# From verified webhook payload
+def process_webhook_event(data):
+    trigger = data.get('trigger')
+    conversation_id = data.get('data', {}).get('conversationId')
+    app_user_id = data.get('data', {}).get('author', {}).get('userId')
+    message_text = data.get('data', {}).get('content', {}).get('text', '')
+    
+    logger.info(f"Processing event: {trigger}")
+    logger.info(f"  Conversation: {conversation_id}")
+    logger.info(f"  User: {app_user_id}")
+    logger.info(f"  Message: {message_text[:50]}...")
+    
+    return {
+        'conversation_id': conversation_id,
+        'user_id': app_user_id,
+        'trigger': trigger
+    }
+```
+
+#### Step 4: Establish WebSocket Connection
+```javascript
+// client-side (chat-widget.js)
+
+function connectToWebSocket(conversationId) {
+    // 1. Build WebSocket URL from conversation ID
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const host = window.location.host;
+    const wsUrl = `${protocol}://${host}/ws/chat/${conversationId}/`;
+    
+    logger.info(`🔌 Connecting to WebSocket: ${wsUrl}`);
+    
+    // 2. Create WebSocket connection
+    try {
+        sunshineSocket = new WebSocket(wsUrl);
+        
+        sunshineSocket.onopen = function(event) {
+            logger.info(`✅ WebSocket connected: ${conversationId}`);
+            isWebSocketConnected = true;
+            
+            // 3. Send initial ping to verify connection
+            sunshineSocket.send(JSON.stringify({
+                type: 'ping',
+                timestamp: Date.now(),
+                conversationId: conversationId
+            }));
+        };
+        
+        sunshineSocket.onmessage = function(event) {
+            const message = JSON.parse(event.data);
+            handleWebSocketMessage(message);
+        };
+        
+        sunshineSocket.onerror = function(error) {
+            logger.error(`❌ WebSocket error: ${error.message}`);
+            isWebSocketConnected = false;
+        };
+        
+        sunshineSocket.onclose = function(event) {
+            logger.info(`🔌 WebSocket closed: code=${event.code}, reason=${event.reason}`);
+            isWebSocketConnected = false;
+            // Attempt reconnection with exponential backoff
+        };
+        
+    } catch (error) {
+        logger.error(`WebSocket creation error: ${error.message}`);
+    }
+}
+```
+
+#### Step 5: Server Accepts Connection
+```python
+# bot_app/consumers.py
+
+class ChatConsumer(AsyncWebsocketConsumer):
+    """WebSocket consumer for real-time chat messaging."""
+    
+    async def connect(self):
+        """
+        Handle WebSocket connection from client.
+        
+        Steps:
+        1. Extract conversation_id from URL
+        2. Accept connection
+        3. Join channel group
+        4. Send welcome message
+        5. Start keepalive heartbeat
+        """
+        try:
+            # STEP 1: Extract conversation ID from URL route
+            # URL pattern: /ws/chat/{conversation_id}/
+            self.conversation_id = self.scope['url_route']['kwargs']['conversation_id']
+            self.room_group_name = f'chat_{self.conversation_id}'
+            self.connected = True
+            
+            logger.info(f"🔗 WebSocket connecting: conversation_id={self.conversation_id}")
+            
+            # STEP 2: Accept WebSocket connection
+            await self.accept()
+            logger.info(f"✅ WebSocket ACCEPTED: {self.conversation_id}")
+            
+            # STEP 3: Join channel layer group
+            # (enables broadcasting to all clients in this conversation)
+            await self.channel_layer.group_add(
+                self.room_group_name,
+                self.channel_name
+            )
+            logger.info(f"✅ Joined group: {self.room_group_name}")
+            
+            # STEP 4: Send welcome message to client
+            await self.send(text_data=json.dumps({
+                'type': 'connection_established',
+                'message': f'Connected to conversation {self.conversation_id}',
+                'conversation_id': self.conversation_id,
+                'group_name': self.room_group_name
+            }))
+            logger.info(f"✅ Sent welcome message")
+            
+            # STEP 5: Start keepalive heartbeat task
+            self.keepalive_task = asyncio.create_task(self.send_keepalive())
+            logger.info(f"✅ Started keepalive task")
+            
+        except Exception as e:
+            logger.error(f"Connection error: {e}", exc_info=True)
+            try:
+                await self.accept()
+                await self.send(text_data=json.dumps({
+                    'type': 'error',
+                    'message': str(e)
+                }))
+            except Exception:
+                pass
+```
+
+#### Step 6: Send and Receive Messages
+```python
+# When Zendesk webhook arrives with agent message
+
+def forward_agent_message_to_websocket(conversation_id, message_data):
+    """
+    Forward agent message from Zendesk to all WebSocket clients.
+    
+    Flow:
+    1. Webhook received (already signature-verified)
+    2. Extract message data
+    3. Format for WebSocket
+    4. Broadcast to all clients in conversation group
+    """
+    from channels.layers import get_channel_layer
+    from asgiref.sync import async_to_sync
+    
+    channel_layer = get_channel_layer()
+    group_name = f'chat_{conversation_id}'
+    
+    # Format message for WebSocket
+    websocket_message = {
+        'type': 'agent_message',  # Matches handler method name
+        'payload': {
+            'id': message_data.get('id'),
+            'author': {
+                'type': 'business',
+                'displayName': message_data.get('author', {}).get('displayName'),
+                'role': 'agent'
+            },
+            'content': {
+                'type': 'text',
+                'text': message_data.get('text')
+            },
+            'received': message_data.get('received'),  # Zendesk timestamp
+            'conversationId': conversation_id
+        }
+    }
+    
+    # Send to channel group
+    # This calls send_webhook_message() on all consumers in the group
+    async_to_sync(channel_layer.group_send)(
+        group_name,
+        {
+            'type': 'send_webhook_message',  # Calls send_webhook_message handler
+            'message': websocket_message
+        }
+    )
+    
+    logger.info(f"📤 Sent agent message to {group_name}")
+```
+
+#### Step 7: Client Receives Real-Time Message
+```javascript
+// Continued from connectToWebSocket()
+
+function handleWebSocketMessage(message) {
+    const messageType = message.type;
+    
+    logger.info(`📥 WebSocket message received: ${messageType}`);
+    
+    switch(messageType) {
+        case 'connection_established':
+            logger.info(`✅ ${message.message}`);
+            isWebSocketConnected = true;
+            break;
+        
+        case 'agent_message':
+            // Agent sent a message - display it immediately
+            logger.info(`Agent message: ${message.payload.content.text}`);
+            displayMessage(message.payload);
+            removeLoadingIndicator();
+            break;
+        
+        case 'pong':
+            // Server acknowledged our ping
+            logger.debug(`Server pong received`);
+            break;
+        
+        case 'keepalive':
+            // Server heartbeat - connection still alive
+            logger.debug(`Server keepalive received`);
+            break;
+        
+        case 'error':
+            logger.error(`Server error: ${message.message}`);
+            appendMessage(message.message, 'system-message');
+            break;
+        
+        default:
+            logger.warning(`Unknown message type: ${messageType}`);
+    }
+}
+```
+
+#### Complete Connection Diagram
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    ZENDESK SUNSHINE SERVER                   │
+│                    (Agent sends message)                      │
+└──────────────────────┬───────────────────────────────────────┘
+                       │
+                       │ POST /hooks/sunshine/message
+                       │ Headers: X-Hub-Signature: sha256=...
+                       │ Body: {trigger, data, ...}
+                       ▼
+┌──────────────────────────────────────────────────────────────┐
+│              DJANGO BACKEND WEBHOOK HANDLER                  │
+│                                                              │
+│  1. Verify signature (HMAC-SHA256)                          │
+│  2. Extract conversation_id from payload                    │
+│  3. Parse message data                                      │
+│  4. Call forward_agent_message_to_websocket()              │
+└──────────────────────┬───────────────────────────────────────┘
+                       │
+                       │ channel_layer.group_send()
+                       │ Group: chat_{conversation_id}
+                       ▼
+┌──────────────────────────────────────────────────────────────┐
+│         DJANGO CHANNELS - CHAT CONSUMER                      │
+│                                                              │
+│  send_webhook_message() handler triggered                  │
+│  {type: 'agent_message', payload: {...}}                   │
+└──────────────────────┬───────────────────────────────────────┘
+                       │
+                       │ WebSocket frame
+                       │ (real-time, instant delivery)
+                       ▼
+┌──────────────────────────────────────────────────────────────┐
+│              BROWSER - CHAT WIDGET                           │
+│                                                              │
+│  WebSocket.onmessage() triggered                           │
+│  Display agent message in chat bubble                       │
+│  Remove loading indicator                                   │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Security Checklist
+
+✅ **Signature Verification**
+- All Zendesk webhooks must be signature-verified
+- Use HMAC-SHA256 with webhook secret
+- Compare signatures using constant-time comparison (`hmac.compare_digest`)
+- Reject unsigned or invalid webhooks (return 401)
+
+✅ **WebSocket Security**
+- Use WSS (WebSocket Secure) in production (wss://, not ws://)
+- Verify conversation_id is valid (prevent arbitrary conversation access)
+- Validate all client messages before processing
+- Implement message size limits
+- Add rate limiting per conversation
+
+✅ **Authentication**
+- Conversation must be created via authenticated `/api/chat/init` first
+- WebSocket URL includes conversation_id (acts as weak authentication)
+- Consider adding JWT token for stronger security
+
+✅ **Data Protection**
+- All messages transmitted over WSS (encrypted in transit)
+- Cache stores message metadata only (no sensitive data)
+- Timestamp from Zendesk prevents tampering
+
+---
+
 ### Connection Flow
 
 ```
