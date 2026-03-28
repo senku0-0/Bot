@@ -30,9 +30,30 @@ document.addEventListener('DOMContentLoaded', function () {
     let troubleshootingSteps = {};
     let mainOptions = [];
     let appRelatedOptions = [];
+    let rideRelatedOptions = [];
+    let farePaymentOptions = [];
+    let paymentModes = [];
+    let cancellationChargeOptions = [];
+    let cancellationWaiverOptions = [];
+    let vehicleRelatedOptions = [];
+    let vehicleUnsafeCategories = [];
+    let safetyRelatedOptions = [];
     let deleteAccountReasons = [];
+    let flowCopy = {};
+    let surveyMessageShown = false;
+    let lastMessageDate = null;
+    let flowState = createEmptyFlowState();
     let unreadCounts = new Map(); // conversationId -> count
     let totalUnread = 0;
+
+    function createEmptyFlowState() {
+        return {
+            mainCategory: null,
+            category: null,
+            subcategory: null,
+            detail: null
+        };
+    }
     function initNotificationSystem() {
         loadUnreadCounts();
         calculateTotalUnread();
@@ -51,9 +72,34 @@ document.addEventListener('DOMContentLoaded', function () {
     const isViewingConversation=c=>!!(c&&isChatOpen&&currentView==='chat'&&conversationId===c);
     const setLS=(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}};
     const getLS=k=>{try{return localStorage.getItem(k);}catch(e){}};
+    const CHAT_FLOW_VERSION = 'international-flow-2026-03-28-v1';
     let sseConnection = null;
     let sseReconnectAttempts = 0;
     const sseMaxReconnectAttempts = 10;
+
+    function resetStoredWidgetStateIfNeeded() {
+        try {
+            const savedVersion = localStorage.getItem('chat_flow_version');
+            if (savedVersion === CHAT_FLOW_VERSION) {
+                return;
+            }
+
+            const keysToRemove = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && (key.startsWith('chat_') || key.startsWith('survey_'))) {
+                    keysToRemove.push(key);
+                }
+            }
+
+            keysToRemove.forEach(key => localStorage.removeItem(key));
+            localStorage.setItem('chat_flow_version', CHAT_FLOW_VERSION);
+            isAgentConnected = false;
+            agentJoinAnnounced = false;
+        } catch (e) {}
+    }
+
+    resetStoredWidgetStateIfNeeded();
     
     function playNotificationSound() {
         try {
@@ -366,6 +412,7 @@ document.addEventListener('DOMContentLoaded', function () {
         agentJoinAnnounced = false;
         sessionEnded = false;
         lastContext = "General Inquiry";
+        flowState = createEmptyFlowState();
         window.lastAppRelatedCategory = null;
         localStorage.removeItem('chat_current_conversation');
         localStorage.removeItem('chat_isAgentConnected');
@@ -823,22 +870,138 @@ document.addEventListener('DOMContentLoaded', function () {
 
         chatInputArea.style.display = 'none';
         chatHeaderTitle.textContent = "Yatri Bandhu";
+        flowState = createEmptyFlowState();
+        window.lastAppRelatedCategory = null;
+        lastContext = "General Inquiry";
         appendMessage("What can I help you with?", 'bot-message');
         showMainOptions();
     }
 
+    function getFlowCopy(key, fallback = '') {
+        return flowCopy[key] || fallback;
+    }
+
+    function updateFlowState(updates = {}) {
+        flowState = { ...flowState, ...updates };
+        const currentPath = getCurrentFlowPath();
+        if (currentPath) {
+            lastContext = currentPath;
+        }
+        if (flowState.mainCategory !== "App Related Issues") {
+            window.lastAppRelatedCategory = null;
+        }
+    }
+
+    function getCurrentFlowPath(extraDetail = null) {
+        return [
+            flowState.mainCategory,
+            flowState.category,
+            flowState.subcategory,
+            flowState.detail,
+            extraDetail
+        ].filter(Boolean).join(' > ');
+    }
+
+    function buildIssueSummary(details = {}) {
+        const lines = [];
+        const issuePath = getCurrentFlowPath();
+        if (issuePath) {
+            lines.push(`Issue Path: ${issuePath}`);
+        }
+        if (details.selection) {
+            lines.push(`Selection: ${details.selection}`);
+        }
+        if (details.comments) {
+            lines.push(`Comments: ${details.comments}`);
+        }
+        if (details.files && details.files.length > 0) {
+            lines.push(`Attachments: ${details.files.length} file(s)`);
+        }
+        return lines.join('\n');
+    }
+
+    function ensureConversationInitialized({ forceNew = false, title = 'Support Request' } = {}) {
+        return new Promise((resolve, reject) => {
+            if (!forceNew && conversationId) {
+                if (!appUserId) {
+                    const storedAppUserId = localStorage.getItem(`chat_appUserId_${conversationId}`)
+                        || localStorage.getItem('chat_user_id');
+                    if (storedAppUserId) {
+                        appUserId = storedAppUserId;
+                    }
+                }
+                if (appUserId) {
+                    resolve({ appUserId, conversationId });
+                    return;
+                }
+            }
+
+            const storedUserId = localStorage.getItem('chat_user_id');
+            const payload = {
+                userId: storedUserId || null,
+                forceNew: forceNew
+            };
+
+            fetch('/api/chat/init', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+                .then(response => {
+                    if (!response.ok) {
+                        return response.text().then(text => {
+                            throw new Error(`HTTP ${response.status}: ${text}`);
+                        });
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (!data.appUserId || !data.conversationId) {
+                        throw new Error('Chat initialization failed');
+                    }
+
+                    appUserId = data.appUserId;
+                    conversationId = data.conversationId;
+
+                    if (data.externalId) {
+                        localStorage.setItem('chat_user_id', data.externalId);
+                    }
+
+                    localStorage.setItem(`chat_appUserId_${conversationId}`, appUserId);
+                    localStorage.setItem('chat_current_conversation', conversationId);
+                    saveConversation(conversationId, title || 'Support Request', '', new Date().toISOString());
+
+                    if (sunshineSocket) {
+                        sunshineSocket.disconnect();
+                    }
+                    sunshineSocket = new SunshineWebSocketManager(conversationId);
+                    sunshineSocket.connect();
+
+                    resolve({ appUserId, conversationId });
+                })
+                .catch(reject);
+        });
+    }
+
     function handleAgentConnect(option) {
-        appendMessage(option, 'user-message');
+        if (option) {
+            appendMessage(option, 'user-message');
+        }
         
         setTimeout(() => {
             showLoadingIndicator();
             chatInputArea.style.display = 'flex';
             chatInput.focus();
-            
+
+            const agentReason = getCurrentFlowPath() || lastContext;
+            const appCategory = flowState.mainCategory === "App Related Issues"
+                ? (flowState.category || window.lastAppRelatedCategory)
+                : null;
+
             if (!conversationId) {
-                createConversationAndEscalate(lastContext, window.lastAppRelatedCategory);
+                createConversationAndEscalate(agentReason, appCategory);
             } else {
-                performEscalation(lastContext, window.lastAppRelatedCategory);
+                performEscalation(agentReason, appCategory);
             }
         }, 500);
     }
@@ -930,18 +1093,28 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function handleMainOptionClick(option) {
         appendMessage(option, 'user-message');
-        lastContext = option;
+        updateFlowState({
+            mainCategory: option,
+            category: null,
+            subcategory: null,
+            detail: null
+        });
 
         if (option === "App Related Issues") {
             setTimeout(() => {
-                appendMessage("Please select the specific issue you are facing:", 'bot-message');
+                appendMessage(getFlowCopy('appPrompt', "Choose one from the below options."), 'bot-message');
                 showAppRelatedOptions();
+            }, 500);
+        } else if (option === "Ride Related Issues") {
+            setTimeout(() => {
+                appendMessage(getFlowCopy('rideCategoryPrompt', "Choose your concern."), 'bot-message');
+                showRideRelatedOptions();
             }, 500);
         } else if (option === "Delete Account") {
             showDeleteAccountModal();
         } else {
             setTimeout(() => {
-                appendMessage("This feature is currently being updated. Please check back later.", 'bot-message');
+                appendMessage("I'm sorry, I don't have information on that yet.", 'bot-message');
                 askForFeedback();
             }, 500);
         }
@@ -959,25 +1132,42 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function handleAppRelatedOptionClick(option) {
         appendMessage(option, 'user-message');
-        lastContext = option;
+        updateFlowState({
+            category: option,
+            subcategory: null,
+            detail: null
+        });
         window.lastAppRelatedCategory = option;
 
         if (option === "Others") {
             setTimeout(() => {
-                showLoadingIndicator();
-                chatInputArea.style.display = 'flex';
-                chatInput.focus();
-                
-                if (!conversationId) {
-                    createConversationAndEscalate(lastContext, window.lastAppRelatedCategory);
-                } else {
-                    performEscalation(lastContext, window.lastAppRelatedCategory);
-                }
+                appendMessage(getFlowCopy('appOtherPrompt', "Please describe your issue."), 'bot-message');
+                showSupportFormModal({
+                    title: "Describe your issue",
+                    description: "Share a short description so I can route this correctly.",
+                    placeholder: "Please describe your issue...",
+                    requireText: true,
+                    minLength: 10,
+                    submitLabel: "Submit",
+                    onSubmit: payload => {
+                        const summary = buildIssueSummary({
+                            comments: payload.text
+                        });
+                        submitSupportIssue({
+                            summary: summary,
+                            showUserSummary: true,
+                            successMessage: getFlowCopy('issueLoggedMessage', "Thanks for sharing the details. We have logged your issue."),
+                            afterSubmit: () => {
+                                promptAgentTransfer(getFlowCopy('appAgentTransferPrompt', "I can connect you to a human agent for more help."));
+                            }
+                        });
+                    }
+                });
             }, 500);
         } else if (troubleshootingSteps[option]) {
             setTimeout(() => {
                 appendMessage(troubleshootingSteps[option], 'bot-message');
-                askForFeedback();
+                askTroubleshootingProgress(option);
             }, 500);
         } else {
             setTimeout(() => {
@@ -989,7 +1179,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function askForFeedback() {
         setTimeout(() => {
-            appendMessage("Was this helpful?", 'bot-message');
+            appendMessage(getFlowCopy('feedbackPrompt', "Was this helpful?"), 'bot-message');
             appendOptions(["Yes", "No"], handleFeedbackClick);
         }, 500);
     }
@@ -1008,6 +1198,681 @@ document.addEventListener('DOMContentLoaded', function () {
                 appendOptions(["Connect to Agent"], handleAgentConnect);
             }, 500);
         }
+    }
+
+    function askTroubleshootingProgress(issueLabel) {
+        setTimeout(() => {
+            appendMessage(getFlowCopy('appTroubleshootingPrompt', "Did you perform the troubleshooting steps?"), 'bot-message');
+            appendOptions(["Yes", "No"], option => handleTroubleshootingProgress(issueLabel, option));
+        }, 500);
+    }
+
+    function handleTroubleshootingProgress(issueLabel, option) {
+        appendMessage(option, 'user-message');
+
+        if (option === "Yes") {
+            askAppResolution(issueLabel);
+            return;
+        }
+
+        setTimeout(() => {
+            appendMessage(getFlowCopy('appTryTroubleshooting', "Please try the troubleshooting steps and let me know if the issue is resolved."), 'bot-message');
+            appendOptions(["I tried them", "Connect to Agent"], choice => {
+                appendMessage(choice, 'user-message');
+                if (choice === "Connect to Agent") {
+                    promptAgentTransfer(getFlowCopy('appAgentTransferPrompt', "I can connect you to a human agent for more help."));
+                    return;
+                }
+                askAppResolution(issueLabel);
+            });
+        }, 500);
+    }
+
+    function askAppResolution(issueLabel) {
+        setTimeout(() => {
+            appendMessage(getFlowCopy('appResolutionPrompt', "Was the issue resolved?"), 'bot-message');
+            appendOptions(["Yes", "No"], option => handleAppResolution(issueLabel, option));
+        }, 500);
+    }
+
+    function handleAppResolution(issueLabel, option) {
+        appendMessage(option, 'user-message');
+
+        if (option === "Yes") {
+            setTimeout(() => {
+                appendMessage("Glad to know the issue is resolved.", 'bot-message');
+                askForFeedback();
+            }, 500);
+            return;
+        }
+
+        promptAgentTransfer(getFlowCopy('appAgentTransferPrompt', "I can connect you to a human agent for more help."));
+    }
+
+    function showRideRelatedOptions() {
+        const options = rideRelatedOptions.length > 0 ? rideRelatedOptions : [
+            "Fare and Payment",
+            "Find a lost item",
+            "Vehicle related issue",
+            "Safety related"
+        ];
+        appendOptions(options, handleRideRelatedOptionClick);
+    }
+
+    function handleRideRelatedOptionClick(option) {
+        appendMessage(option, 'user-message');
+        updateFlowState({
+            category: option,
+            subcategory: null,
+            detail: null
+        });
+
+        if (option === "Fare and Payment") {
+            setTimeout(() => {
+                appendMessage(getFlowCopy('farePaymentPrompt', "Choose one from the below options."), 'bot-message');
+                showFarePaymentOptions();
+            }, 500);
+            return;
+        }
+
+        if (option === "Find a lost item") {
+            handleLostItemFlow();
+            return;
+        }
+
+        if (option === "Vehicle related issue") {
+            setTimeout(() => {
+                appendMessage("Choose one from the below options.", 'bot-message');
+                showVehicleRelatedOptions();
+            }, 500);
+            return;
+        }
+
+        if (option === "Safety related") {
+            setTimeout(() => {
+                appendMessage(getFlowCopy('safetyIssuePrompt', "Choose one from the below options."), 'bot-message');
+                showSafetyRelatedOptions();
+            }, 500);
+            return;
+        }
+
+        askForFeedback();
+    }
+
+    function showFarePaymentOptions() {
+        const options = farePaymentOptions.length > 0 ? farePaymentOptions : [
+            "Multiple Debits occurred",
+            "Driver charged extra fare",
+            "Charged higher than estimated fare",
+            "Cancellation Charges"
+        ];
+        appendOptions(options, handleFarePaymentOptionClick);
+    }
+
+    function handleFarePaymentOptionClick(option) {
+        appendMessage(option, 'user-message');
+        updateFlowState({
+            subcategory: option,
+            detail: null
+        });
+
+        if (option === "Multiple Debits occurred") {
+            setTimeout(() => {
+                appendMessage(getFlowCopy('multipleDebitsPrompt', "Please upload screenshot(s) of the payment and add comments."), 'bot-message');
+                showSupportFormModal({
+                    title: "Payment details",
+                    description: "Upload screenshot(s) of the payment and add a short comment.",
+                    placeholder: "Add comments...",
+                    requireText: true,
+                    minLength: 10,
+                    allowFiles: true,
+                    filesRequired: true,
+                    submitLabel: "Submit",
+                    onSubmit: payload => {
+                        const summary = buildIssueSummary({
+                            comments: payload.text,
+                            files: payload.files
+                        });
+                        submitSupportIssue({
+                            summary: summary,
+                            files: payload.files,
+                            showUserSummary: true,
+                            successMessage: getFlowCopy('issueLoggedMessage', "Thanks for sharing the details. We have logged your issue."),
+                            afterSubmit: askVerificationProceed
+                        });
+                    }
+                });
+            }, 500);
+            return;
+        }
+
+        if (option === "Driver charged extra fare") {
+            setTimeout(() => {
+                appendMessage("Select the mode of payment.", 'bot-message');
+                showPaymentModes();
+            }, 500);
+            return;
+        }
+
+        if (option === "Charged higher than estimated fare") {
+            setTimeout(() => {
+                appendMessage(getFlowCopy('chargedHigherPrompt', "Please find the fare breakdown for your ride. If the fare still looks incorrect, you can connect with support for help."), 'bot-message');
+                askForFurtherHelp();
+            }, 500);
+            return;
+        }
+
+        if (option === "Cancellation Charges") {
+            setTimeout(() => {
+                appendMessage("Choose one from the below options.", 'bot-message');
+                showCancellationChargeOptions();
+            }, 500);
+        }
+    }
+
+    function showPaymentModes() {
+        const options = paymentModes.length > 0 ? paymentModes : ["Cash", "UPI"];
+        appendOptions(options, handlePaymentModeClick);
+    }
+
+    function handlePaymentModeClick(option) {
+        appendMessage(option, 'user-message');
+        updateFlowState({ detail: option });
+
+        const isCash = option === "Cash";
+        setTimeout(() => {
+            appendMessage(
+                isCash
+                    ? getFlowCopy('extraFareCashPrompt', "Please upload screenshot(s) of the payment and add comments.")
+                    : getFlowCopy('extraFareUpiPrompt', "Please upload screenshot(s) of the UPI payment and add comments if necessary."),
+                'bot-message'
+            );
+            showSupportFormModal({
+                title: `${option} payment`,
+                description: isCash
+                    ? "Upload screenshot(s) of the payment and add a short comment."
+                    : "Upload screenshot(s) of the UPI payment and add comments if necessary.",
+                placeholder: "Add comments...",
+                requireText: isCash,
+                minLength: isCash ? 10 : 0,
+                allowFiles: true,
+                filesRequired: true,
+                submitLabel: "Submit",
+                onSubmit: payload => {
+                    const summary = buildIssueSummary({
+                        comments: payload.text,
+                        files: payload.files
+                    });
+                    submitSupportIssue({
+                        summary: summary,
+                        files: payload.files,
+                        showUserSummary: true,
+                        successMessage: getFlowCopy('issueLoggedMessage', "Thanks for sharing the details. We have logged your issue."),
+                        afterSubmit: askVerificationProceed
+                    });
+                }
+            });
+        }, 500);
+    }
+
+    function askVerificationProceed() {
+        setTimeout(() => {
+            appendMessage(getFlowCopy('verificationPrompt', "Our executive will verify your claim with the driver. Would you like to proceed?"), 'bot-message');
+            appendOptions(["Yes", "No"], option => {
+                appendMessage(option, 'user-message');
+                if (option === "Yes") {
+                    promptAgentTransfer("I can connect you to our support team for the next step.");
+                    return;
+                }
+                askForFeedback();
+            });
+        }, 500);
+    }
+
+    function showCancellationChargeOptions() {
+        const options = cancellationChargeOptions.length > 0 ? cancellationChargeOptions : [
+            "Cancellation Charge Reason",
+            "Wrongly Charged"
+        ];
+        appendOptions(options, handleCancellationChargeOptionClick);
+    }
+
+    function handleCancellationChargeOptionClick(option) {
+        appendMessage(option, 'user-message');
+        updateFlowState({ detail: option });
+
+        if (option === "Cancellation Charge Reason") {
+            setTimeout(() => {
+                appendMessage(getFlowCopy('cancellationReasonInfo', "Driver had travelled a significant distance towards the pickup location when you cancelled the ride. To compensate for their time and effort, a cancellation fee equal to the pickup fee may be charged."), 'bot-message');
+                askForFurtherHelp({
+                    onYes: () => {
+                        setTimeout(() => {
+                            appendMessage("Choose one from the below options.", 'bot-message');
+                            showCancellationWaiverOptions();
+                        }, 500);
+                    }
+                });
+            }, 500);
+            return;
+        }
+
+        setTimeout(() => {
+            appendMessage(getFlowCopy('wronglyChargedPrompt', "Please tell us why you feel the cancellation charge was wrongly applied."), 'bot-message');
+            showSupportFormModal({
+                title: "Cancellation charge issue",
+                description: "Share a short explanation so the team can review it.",
+                placeholder: "Please tell us why the charge feels incorrect...",
+                requireText: true,
+                minLength: 10,
+                submitLabel: "Submit",
+                onSubmit: payload => {
+                    const summary = buildIssueSummary({
+                        comments: payload.text
+                    });
+                    submitSupportIssue({
+                        summary: summary,
+                        showUserSummary: true,
+                        successMessage: getFlowCopy('cancellationWaiverMessage', "We have captured your waiver request and will review it with the relevant team."),
+                        afterSubmit: () => askForFurtherHelp()
+                    });
+                }
+            });
+        }, 500);
+    }
+
+    function showCancellationWaiverOptions() {
+        const options = cancellationWaiverOptions.length > 0 ? cancellationWaiverOptions : [
+            "Driver Not Moving",
+            "Driver asked to cancel",
+            "Could not connect with Driver",
+            "Driver was Impolite"
+        ];
+        appendOptions(options, handleCancellationWaiverOptionClick);
+    }
+
+    function handleCancellationWaiverOptionClick(option) {
+        appendMessage(option, 'user-message');
+        updateFlowState({ detail: option });
+        submitSupportIssue({
+            summary: buildIssueSummary({ selection: option }),
+            successMessage: getFlowCopy('cancellationWaiverMessage', "We have captured your waiver request and will review it with the relevant team."),
+            afterSubmit: () => askForFeedback()
+        });
+    }
+
+    function handleLostItemFlow() {
+        setTimeout(() => {
+            appendMessage(getFlowCopy('lostItemIntro', "Please find the details of your ride. Please call the driver to enquire about your belongings."), 'bot-message');
+            appendOptions(["Call Driver", "Call Alternate Number", "Need Further Help"], handleLostItemAction);
+        }, 500);
+    }
+
+    function handleLostItemAction(option) {
+        appendMessage(option, 'user-message');
+
+        if (option === "Need Further Help") {
+            promptAgentTransfer("I can connect you to our support team for help with your lost item.");
+            return;
+        }
+
+        setTimeout(() => {
+            appendMessage(
+                option === "Call Driver"
+                    ? getFlowCopy('lostItemCallDriverNote', "Use the ride details screen to call the driver. If an alternate number is available, you can try that as well.")
+                    : "If an alternate number is available for the ride, you can try that as well.",
+                'bot-message'
+            );
+            askForFurtherHelp({
+                prompt: getFlowCopy('lostItemFurtherHelpPrompt', "Do you need further help?")
+            });
+        }, 500);
+    }
+
+    function showVehicleRelatedOptions() {
+        const options = vehicleRelatedOptions.length > 0 ? vehicleRelatedOptions : [
+            "AC not turned on / AC stopped working midway",
+            "Unclean / unhygienic vehicle",
+            "Vehicle unsafe",
+            "Vehicle was different"
+        ];
+        appendOptions(options, handleVehicleRelatedOptionClick);
+    }
+
+    function handleVehicleRelatedOptionClick(option) {
+        appendMessage(option, 'user-message');
+        updateFlowState({
+            subcategory: option,
+            detail: null
+        });
+
+        if (option === "Vehicle unsafe") {
+            setTimeout(() => {
+                appendMessage("Choose one from the below options.", 'bot-message');
+                showVehicleUnsafeOptions();
+            }, 500);
+            return;
+        }
+
+        const responseMap = {
+            "AC not turned on / AC stopped working midway": getFlowCopy('acIssueResponse', "We apologise for the poor experience. This is not something we wish for our customers. We have recorded this AC-related issue and will work towards improving your experience going forward."),
+            "Unclean / unhygienic vehicle": getFlowCopy('uncleanVehicleResponse', "We apologise for the poor experience. This is not something we wish for our customers. We have taken your feedback about the vehicle condition and will work towards improving your experience."),
+            "Vehicle was different": getFlowCopy('vehicleDifferentResponse', "We apologise for the poor experience. This is not something we wish for our customers. It is advisable to cancel this ride and book another ride.")
+        };
+
+        submitSupportIssue({
+            summary: buildIssueSummary(),
+            successMessage: responseMap[option] || getFlowCopy('issueLoggedMessage', "Thanks for sharing the details. We have logged your issue."),
+            afterSubmit: () => askForFurtherHelp()
+        });
+    }
+
+    function showVehicleUnsafeOptions() {
+        const options = vehicleUnsafeCategories.length > 0 ? vehicleUnsafeCategories : [
+            "Ineffective brakes",
+            "Dark tinted glass",
+            "Wheel wobbling",
+            "Door is loose"
+        ];
+        appendOptions(options, handleVehicleUnsafeOptionClick);
+    }
+
+    function handleVehicleUnsafeOptionClick(option) {
+        appendMessage(option, 'user-message');
+        updateFlowState({ detail: option });
+        submitSupportIssue({
+            summary: buildIssueSummary({ selection: option }),
+            successMessage: getFlowCopy('vehicleUnsafeResponse', "We have taken your feedback regarding the vehicle being unsafe and we will take this up with the driver."),
+            afterSubmit: () => askForFurtherHelp()
+        });
+    }
+
+    function showSafetyRelatedOptions() {
+        const options = safetyRelatedOptions.length > 0 ? safetyRelatedOptions : [
+            "Drunk and drive",
+            "Driver was rude or misbehaved",
+            "Other",
+            "Met with an accident",
+            "Sexual Harassment",
+            "Physical Fights",
+            "Extra Person in the vehicle",
+            "Rash Driving",
+            "Vehicle Broke down"
+        ];
+        appendOptions(options, handleSafetyRelatedOptionClick);
+    }
+
+    function handleSafetyRelatedOptionClick(option) {
+        appendMessage(option, 'user-message');
+        updateFlowState({
+            subcategory: option,
+            detail: null
+        });
+
+        if (option === "Other") {
+            setTimeout(() => {
+                appendMessage(getFlowCopy('safetyOtherPrompt', "Please enter your issue."), 'bot-message');
+                showSupportFormModal({
+                    title: "Safety issue",
+                    description: "Tell us what happened so we can route it correctly.",
+                    placeholder: "Please enter your issue...",
+                    requireText: true,
+                    minLength: 10,
+                    submitLabel: "Submit",
+                    onSubmit: payload => {
+                        const summary = buildIssueSummary({
+                            comments: payload.text
+                        });
+                        submitSupportIssue({
+                            summary: summary,
+                            showUserSummary: true,
+                            successMessage: getFlowCopy('safetyThankYou', "Thank you for reporting the issue. We have taken your feedback and we will work towards improving your experience."),
+                            afterSubmit: () => askForFeedback()
+                        });
+                    }
+                });
+            }, 500);
+            return;
+        }
+
+        if (["Met with an accident", "Sexual Harassment", "Physical Fights"].includes(option)) {
+            promptSosFlow();
+            return;
+        }
+
+        const successMessage = option === "Drunk and drive"
+            ? getFlowCopy('safetyImmediateResponse', "We sincerely apologise for your experience. Your safety is our top priority, and we take such incidents very seriously. This has been escalated to the safety team for immediate action against the driver.")
+            : getFlowCopy('safetyFeedbackResponse', "We apologise for the poor experience. This is not something we wish for our customers. We have taken your feedback and we will work towards improving your experience.");
+
+        submitSupportIssue({
+            summary: buildIssueSummary(),
+            successMessage: successMessage,
+            afterSubmit: () => askForFurtherHelp()
+        });
+    }
+
+    function promptSosFlow() {
+        setTimeout(() => {
+            appendMessage(getFlowCopy('sosPrompt', "This will raise an SOS alert. Do you want to proceed?"), 'bot-message');
+            appendOptions(["Yes, proceed", "No"], option => {
+                appendMessage(option, 'user-message');
+                if (option === "Yes, proceed") {
+                    submitSupportIssue({
+                        summary: buildIssueSummary({ selection: "SOS requested" }),
+                        successMessage: "SOS alert raised. Our safety team has been notified and will reach out shortly.",
+                        afterSubmit: () => askForFeedback()
+                    });
+                    return;
+                }
+                setTimeout(() => {
+                    appendMessage(getFlowCopy('safetyThankYou', "Thank you for reporting the issue. We have taken your feedback and we will work towards improving your experience."), 'bot-message');
+                    askForFurtherHelp();
+                }, 500);
+            });
+        }, 500);
+    }
+
+    function showSupportFormModal(config) {
+        const modal = document.createElement('div');
+        modal.classList.add('chat-modal', 'support-form-modal');
+
+        const header = document.createElement('div');
+        header.classList.add('chat-modal-header');
+        header.textContent = config.title || 'Share details';
+
+        const description = document.createElement('p');
+        description.classList.add('support-form-description');
+        description.textContent = config.description || '';
+
+        const form = document.createElement('div');
+        form.classList.add('support-form');
+
+        let selectedFiles = [];
+        let textArea = null;
+
+        if (config.placeholder !== false) {
+            textArea = document.createElement('textarea');
+            textArea.classList.add('support-form-textarea');
+            textArea.placeholder = config.placeholder || 'Type here...';
+            form.appendChild(textArea);
+
+            if (config.minLength) {
+                const note = document.createElement('div');
+                note.classList.add('support-form-note');
+                note.textContent = `Minimum ${config.minLength} characters`;
+                form.appendChild(note);
+            }
+        }
+
+        let filePicker = null;
+        let fileList = null;
+        if (config.allowFiles) {
+            const fileLabel = document.createElement('label');
+            fileLabel.classList.add('support-form-file-label');
+            fileLabel.textContent = config.filesRequired ? 'Attach file(s) *' : 'Attach file(s)';
+
+            filePicker = document.createElement('input');
+            filePicker.type = 'file';
+            filePicker.multiple = config.multiple !== false;
+            filePicker.accept = '.pdf,.doc,.docx,.txt,.png,.jpg,.jpeg,.gif';
+            filePicker.classList.add('support-form-file-input');
+
+            fileList = document.createElement('div');
+            fileList.classList.add('support-form-file-list');
+            fileList.textContent = 'No files selected';
+
+            form.appendChild(fileLabel);
+            form.appendChild(filePicker);
+            form.appendChild(fileList);
+        }
+
+        const buttonsDiv = document.createElement('div');
+        buttonsDiv.classList.add('modal-buttons');
+
+        const submitBtn = document.createElement('button');
+        submitBtn.classList.add('modal-btn', 'btn-submit');
+        submitBtn.textContent = config.submitLabel || 'Submit';
+        submitBtn.disabled = true;
+
+        const backBtn = document.createElement('button');
+        backBtn.classList.add('modal-btn', 'btn-back');
+        backBtn.textContent = 'Go Back';
+
+        buttonsDiv.appendChild(submitBtn);
+        buttonsDiv.appendChild(backBtn);
+
+        modal.appendChild(header);
+        if (description.textContent) {
+            modal.appendChild(description);
+        }
+        modal.appendChild(form);
+        modal.appendChild(buttonsDiv);
+        chatBox.appendChild(modal);
+
+        function renderFiles() {
+            if (!fileList) {
+                return;
+            }
+            if (selectedFiles.length === 0) {
+                fileList.textContent = 'No files selected';
+                return;
+            }
+            fileList.innerHTML = '';
+            selectedFiles.forEach(file => {
+                const chip = document.createElement('div');
+                chip.classList.add('support-form-file-chip');
+                chip.textContent = file.name;
+                fileList.appendChild(chip);
+            });
+        }
+
+        function validate() {
+            const textValue = textArea ? textArea.value.trim() : '';
+            const hasEnoughText = !config.requireText || textValue.length >= (config.minLength || 0);
+            const hasFiles = !config.filesRequired || selectedFiles.length > 0;
+            submitBtn.disabled = !(hasEnoughText && hasFiles);
+        }
+
+        if (textArea) {
+            textArea.addEventListener('input', validate);
+            textArea.focus();
+        }
+
+        if (filePicker) {
+            filePicker.addEventListener('change', function () {
+                selectedFiles = Array.from(filePicker.files || []);
+                renderFiles();
+                validate();
+            });
+        }
+
+        validate();
+
+        backBtn.addEventListener('click', function () {
+            modal.remove();
+        });
+
+        submitBtn.addEventListener('click', function () {
+            const payload = {
+                text: textArea ? textArea.value.trim() : '',
+                files: selectedFiles
+            };
+            modal.remove();
+            config.onSubmit(payload);
+        });
+    }
+
+    function submitSupportIssue({
+        summary = '',
+        files = [],
+        showUserSummary = false,
+        successMessage = '',
+        afterSubmit = null,
+        title = null
+    }) {
+        const supportSummary = summary || buildIssueSummary();
+
+        ensureConversationInitialized({
+            title: title || flowState.category || lastContext || 'Support Request'
+        })
+            .then(() => {
+                if (showUserSummary && supportSummary) {
+                    appendMessage(supportSummary, 'user-message');
+                }
+
+                if (supportSummary) {
+                    saveConversation(conversationId, null, supportSummary, new Date().toISOString());
+                    sendToSunshine(supportSummary);
+                }
+
+                if (files && files.length > 0) {
+                    files.forEach(file => sendDocument(file, ''));
+                }
+
+                setTimeout(() => {
+                    if (successMessage) {
+                        appendMessage(successMessage, 'bot-message');
+                    }
+                    if (typeof afterSubmit === 'function') {
+                        afterSubmit();
+                    }
+                }, 500);
+            })
+            .catch(() => {
+                appendMessage("Connection error. Please try again.", 'system-message');
+            });
+    }
+
+    function askForFurtherHelp({ prompt = null, onYes = null, onNo = null } = {}) {
+        setTimeout(() => {
+            appendMessage(prompt || getFlowCopy('furtherHelpPrompt', "Do you need further help?"), 'bot-message');
+            appendOptions(["Yes", "No"], option => {
+                appendMessage(option, 'user-message');
+                if (option === "Yes") {
+                    if (typeof onYes === 'function') {
+                        onYes();
+                    } else {
+                        promptAgentTransfer();
+                    }
+                    return;
+                }
+
+                if (typeof onNo === 'function') {
+                    onNo();
+                } else {
+                    askForFeedback();
+                }
+            });
+        }, 500);
+    }
+
+    function promptAgentTransfer(message = null) {
+        setTimeout(() => {
+            appendMessage(
+                message || getFlowCopy('appAgentTransferPrompt', "I can connect you to a human agent for more help."),
+                'bot-message'
+            );
+            appendOptions(["Connect to Agent"], handleAgentConnect);
+        }, 500);
     }
 
     function showLoadingIndicator() {
@@ -1978,10 +2843,19 @@ document.addEventListener('DOMContentLoaded', function () {
     fetch(issuesUrl)
         .then(response => response.json())
         .then(data => {
-            troubleshootingSteps = data.troubleshooting;
-            mainOptions = data.mainOptions;
-            appRelatedOptions = data.appRelatedOptions;
-            deleteAccountReasons = data.deleteAccountReasons;
+            troubleshootingSteps = data.troubleshooting || {};
+            mainOptions = data.mainOptions || [];
+            appRelatedOptions = data.appRelatedOptions || [];
+            rideRelatedOptions = data.rideRelatedOptions || [];
+            farePaymentOptions = data.farePaymentOptions || [];
+            paymentModes = data.paymentModes || [];
+            cancellationChargeOptions = data.cancellationChargeOptions || [];
+            cancellationWaiverOptions = data.cancellationWaiverOptions || [];
+            vehicleRelatedOptions = data.vehicleRelatedOptions || [];
+            vehicleUnsafeCategories = data.vehicleUnsafeCategories || [];
+            safetyRelatedOptions = data.safetyRelatedOptions || [];
+            deleteAccountReasons = data.deleteAccountReasons || [];
+            flowCopy = data.copy || {};
         });
     const lastConversationId = localStorage.getItem('chat_current_conversation');
 

@@ -1,8 +1,8 @@
 {
     "troubleshooting": {
-        "Location Not Found or Inaccurate": "There could be multiple reasons why the location is coming inaccurate. Please try the following -\n\nCheck Location Settings: Ensure GPS / Location is turned ON\n\nEnable App Permissions: Go to your device Settings → Apps → Namma Yatri → Permissions → Location Make sure it's set to Allow all the time or While using the app.\n\nTurn Location Off & On: Switch off GPS, wait a few seconds, then turn it back on.\n\nCheck for App & OS Updates: Update the Namma Yatri app and your phone's operating system to the latest version.\n\nRestart Your Device: A restart helps refresh location services",
-        "Unable to Login": "There could be multiple reasons why you are unable to login. Please try the following —\n\nCheck Internet Connection: Ensure you have a stable Wi-Fi or mobile data connection.\n\nClear Cache and Data: Go to your device settings, clear the app's cache and data, and try logging in again.\n\nCheck for App Updates: Make sure you are using the latest version of the app. Update it via the App Store or Google Play Store if needed.",
-        "My App is Not Responding": "There could be multiple reasons why the app isn't responding. Please try the following —\n\nCheck Internet Connection: Ensure that you have a stable internet connection (Wi-Fi or mobile data).\n\nRestart the App: Close the app completely and restart it.\n\nClear Cache: Go to your phone's settings, find the Namma Yatri app, and clear its cache.\n\nUpdate the App: Check the app store for any available updates and install the latest version.\n\nReboot the Device: Restart your device to refresh all system processes."
+        "Location Not Found or Inaccurate": "There could be multiple reasons why the location is inaccurate. Please try the following:\n\nCheck location settings: Ensure GPS / Location is turned ON.\n\nEnable app permissions: Go to Settings -> Apps -> Namma Yatri -> Permissions -> Location and make sure it is set to Allow all the time or While using the app.\n\nTurn location off and on: Switch off GPS, wait a few seconds, then turn it back on.\n\nCheck for app and OS updates: Update the Namma Yatri app and your phone's operating system to the latest version.\n\nRestart your device: A restart helps refresh location services.",
+        "Unable to Login": "There could be multiple reasons why you are unable to log in. Please try the following:\n\nCheck internet connection: Ensure you have a stable Wi-Fi or mobile data connection.\n\nClear cache and data: Go to your device settings, clear the app cache and data, and try logging in again.\n\nCheck for app updates: Make sure you are using the latest version of the app and update it if needed.",
+        "My App is Not Responding": "There could be multiple reasons why the app is not responding. Please try the following:\n\nCheck internet connection: Ensure that you have a stable Wi-Fi or mobile data connection.\n\nRestart the app: Close the app completely and restart it.\n\nClear cache: Go to your phone settings, find the Namma Yatri app, and clear its cache.\n\nUpdate the app: Check the app store for available updates and install the latest version.\n\nReboot the device: Restart your device to refresh all system processes."
     },
     "mainOptions": [
         "App Related Issues",
@@ -15,6 +15,55 @@
         "My App is Not Responding",
         "Others"
     ],
+    "rideRelatedOptions": [
+        "Fare and Payment",
+        "Find a lost item",
+        "Vehicle related issue",
+        "Safety related"
+    ],
+    "farePaymentOptions": [
+        "Multiple Debits occurred",
+        "Driver charged extra fare",
+        "Charged higher than estimated fare",
+        "Cancellation Charges"
+    ],
+    "paymentModes": [
+        "Cash",
+        "UPI"
+    ],
+    "cancellationChargeOptions": [
+        "Cancellation Charge Reason",
+        "Wrongly Charged"
+    ],
+    "cancellationWaiverOptions": [
+        "Driver Not Moving",
+        "Driver asked to cancel",
+        "Could not connect with Driver",
+        "Driver was Impolite"
+    ],
+    "vehicleRelatedOptions": [
+        "AC not turned on / AC stopped working midway",
+        "Unclean / unhygienic vehicle",
+        "Vehicle unsafe",
+        "Vehicle was different"
+    ],
+    "vehicleUnsafeCategories": [
+        "Ineffective brakes",
+        "Dark tinted glass",
+        "Wheel wobbling",
+        "Door is loose"
+    ],
+    "safetyRelatedOptions": [
+        "Drunk and drive",
+        "Driver was rude or misbehaved",
+        "Other",
+        "Met with an accident",
+        "Sexual Harassment",
+        "Physical Fights",
+        "Extra Person in the vehicle",
+        "Rash Driving",
+        "Vehicle Broke down"
+    ],
     "deleteAccountReasons": [
         "Moving out of town",
         "App experience issues",
@@ -22,5 +71,42 @@
         "Not getting rides",
         "Not required as of now",
         "Others"
-    ]
+    ],
+    "copy": {
+        "rideCategoryPrompt": "Choose your concern.",
+        "farePaymentPrompt": "Choose one from the below options.",
+        "appPrompt": "Choose one from the below options.",
+        "appOtherPrompt": "Please describe your issue.",
+        "appTroubleshootingPrompt": "Did you perform the troubleshooting steps?",
+        "appTryTroubleshooting": "Please try the troubleshooting steps and let me know if the issue is resolved.",
+        "appResolutionPrompt": "Was the issue resolved?",
+        "appAgentTransferPrompt": "I can connect you to a human agent for more help.",
+        "multipleDebitsPrompt": "Please upload screenshot(s) of the payment and add comments.",
+        "extraFareCashPrompt": "Please upload screenshot(s) of the payment and add comments.",
+        "extraFareUpiPrompt": "Please upload screenshot(s) of the UPI payment and add comments if necessary.",
+        "verificationPrompt": "Our executive will verify your claim with the driver. Would you like to proceed?",
+        "chargedHigherPrompt": "Please find the fare breakdown for your ride. If the fare still looks incorrect, you can connect with support for help.",
+        "cancellationReasonInfo": "Driver had travelled a significant distance towards the pickup location when you cancelled the ride. To compensate for their time and effort, a cancellation fee equal to the pickup fee may be charged.",
+        "wronglyChargedPrompt": "Please tell us why you feel the cancellation charge was wrongly applied.",
+        "cancellationWaiverMessage": "We have captured your waiver request and will review it with the relevant team.",
+        "lostItemIntro": "Please find the details of your ride. Please call the driver to enquire about your belongings.",
+        "lostItemCallDriverNote": "Use the ride details screen to call the driver. If an alternate number is available, you can try that as well.",
+        "lostItemFurtherHelpPrompt": "Do you need further help?",
+        "acIssueResponse": "We apologise for the poor experience. This is not something we wish for our customers. We have recorded this AC-related issue and will work towards improving your experience going forward.",
+        "uncleanVehicleResponse": "We apologise for the poor experience. This is not something we wish for our customers. We have taken your feedback about the vehicle condition and will work towards improving your experience.",
+        "vehicleUnsafeResponse": "We have taken your feedback regarding the vehicle being unsafe and we will take this up with the driver.",
+        "vehicleDifferentResponse": "We apologise for the poor experience. This is not something we wish for our customers. It is advisable to cancel this ride and book another ride.",
+        "safetyIssuePrompt": "Choose one from the below options.",
+        "safetyOtherPrompt": "Please enter your issue.",
+        "safetyImmediateResponse": "We sincerely apologise for your experience. Your safety is our top priority, and we take such incidents very seriously. This has been escalated to the safety team for immediate action against the driver.",
+        "safetyFeedbackResponse": "We apologise for the poor experience. This is not something we wish for our customers. We have taken your feedback and we will work towards improving your experience.",
+        "safetyThankYou": "Thank you for reporting the issue. We have taken your feedback and we will work towards improving your experience.",
+        "sosPrompt": "This will raise an SOS alert. Do you want to proceed?",
+        "furtherHelpPrompt": "Do you need further help?",
+        "feedbackPrompt": "Was this helpful?",
+        "positiveClosure": "Thank you. Glad I could help. Have a great day!",
+        "genericClosure": "Thank you. We are here if you need anything else.",
+        "issueLoggedMessage": "Thanks for sharing the details. We have logged your issue.",
+        "callDriverUnavailable": "Driver calling is not available in this demo. Please use your ride details screen to contact the driver."
+    }
 }
