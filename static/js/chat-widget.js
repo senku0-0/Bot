@@ -35,6 +35,7 @@ document.addEventListener('DOMContentLoaded', function () {
     let paymentModes = [];
     let cancellationChargeOptions = [];
     let cancellationWaiverOptions = [];
+    let cancellationWaiverApprovedReasons = [];
     let vehicleRelatedOptions = [];
     let vehicleUnsafeCategories = [];
     let safetyRelatedOptions = [];
@@ -1356,8 +1357,17 @@ document.addEventListener('DOMContentLoaded', function () {
 
         if (option === "Charged higher than estimated fare") {
             setTimeout(() => {
-                appendMessage(getFlowCopy('chargedHigherPrompt', "Please find the fare breakdown for your ride. If the fare still looks incorrect, you can connect with support for help."), 'bot-message');
-                askForFurtherHelp();
+                appendMessage(getFlowCopy('fareBreakdownPrompt', "Please find the fare breakdown."), 'bot-message');
+                setTimeout(() => {
+                    appendMessage(
+                        getFlowCopy(
+                            'fareBreakdownExample',
+                            "Fare breakdown example:\nBase fare: Rs. 80\nDistance fare: Rs. 120\nPickup charge: Rs. 20\nPlatform fee: Rs. 10\nTotal fare: Rs. 230"
+                        ),
+                        'bot-message'
+                    );
+                    askForFeedback();
+                }, 500);
             }, 500);
             return;
         }
@@ -1381,20 +1391,29 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const isCash = option === "Cash";
         setTimeout(() => {
-            appendMessage(
-                isCash
-                    ? getFlowCopy('extraFareCashPrompt', "Please upload screenshot(s) of the payment and add comments.")
-                    : getFlowCopy('extraFareUpiPrompt', "Please upload screenshot(s) of the UPI payment and add comments if necessary."),
-                'bot-message'
-            );
+            if (isCash) {
+                appendMessage(getFlowCopy('extraFareCashPrompt', "Our executive will be verifying your claim with the driver. Would you like to proceed?"), 'bot-message');
+                appendOptions(["Yes", "No"], cashOption => {
+                    appendMessage(cashOption, 'user-message');
+                    if (cashOption === "Yes") {
+                        handleAgentConnect();
+                        return;
+                    }
+                    setTimeout(() => {
+                        appendMessage(getFlowCopy('endFlowPrompt', "CSAT"), 'bot-message');
+                        chatInputArea.style.display = 'none';
+                    }, 500);
+                });
+                return;
+            }
+
+            appendMessage(getFlowCopy('extraFareUpiPrompt', "Please upload screenshot(s) of the UPI payment and add comments."), 'bot-message');
             showSupportFormModal({
                 title: `${option} payment`,
-                description: isCash
-                    ? "Upload screenshot(s) of the payment and add a short comment."
-                    : "Upload screenshot(s) of the UPI payment and add comments if necessary.",
+                description: "Upload screenshot(s) of the UPI payment and add comments.",
                 placeholder: "Add comments...",
-                requireText: isCash,
-                minLength: isCash ? 10 : 0,
+                requireText: true,
+                minLength: 10,
                 allowFiles: true,
                 filesRequired: true,
                 submitLabel: "Submit",
@@ -1408,7 +1427,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         files: payload.files,
                         showUserSummary: true,
                         successMessage: getFlowCopy('issueLoggedMessage', "Thanks for sharing the details. We have logged your issue."),
-                        afterSubmit: askVerificationProceed
+                        afterSubmit: () => showEndFlowCsat()
                     });
                 }
             });
@@ -1421,10 +1440,13 @@ document.addEventListener('DOMContentLoaded', function () {
             appendOptions(["Yes", "No"], option => {
                 appendMessage(option, 'user-message');
                 if (option === "Yes") {
-                    promptAgentTransfer("I can connect you to our support team for the next step.");
+                    handleAgentConnect();
                     return;
                 }
-                askForFeedback();
+                setTimeout(() => {
+                    appendMessage(getFlowCopy('verificationDeclinedMessage', "Okay, we will not proceed with this request right now."), 'bot-message');
+                    askForFeedback();
+                }, 500);
             });
         }, 500);
     }
@@ -1444,39 +1466,13 @@ document.addEventListener('DOMContentLoaded', function () {
         if (option === "Cancellation Charge Reason") {
             setTimeout(() => {
                 appendMessage(getFlowCopy('cancellationReasonInfo', "Driver had travelled a significant distance towards the pickup location when you cancelled the ride. To compensate for their time and effort, a cancellation fee equal to the pickup fee may be charged."), 'bot-message');
-                askForFurtherHelp({
-                    onYes: () => {
-                        setTimeout(() => {
-                            appendMessage("Choose one from the below options.", 'bot-message');
-                            showCancellationWaiverOptions();
-                        }, 500);
-                    }
-                });
             }, 500);
             return;
         }
 
         setTimeout(() => {
-            appendMessage(getFlowCopy('wronglyChargedPrompt', "Please tell us why you feel the cancellation charge was wrongly applied."), 'bot-message');
-            showSupportFormModal({
-                title: "Cancellation charge issue",
-                description: "Share a short explanation so the team can review it.",
-                placeholder: "Please tell us why the charge feels incorrect...",
-                requireText: true,
-                minLength: 10,
-                submitLabel: "Submit",
-                onSubmit: payload => {
-                    const summary = buildIssueSummary({
-                        comments: payload.text
-                    });
-                    submitSupportIssue({
-                        summary: summary,
-                        showUserSummary: true,
-                        successMessage: getFlowCopy('cancellationWaiverMessage', "We have captured your waiver request and will review it with the relevant team."),
-                        afterSubmit: () => askForFurtherHelp()
-                    });
-                }
-            });
+            appendMessage(getFlowCopy('wronglyChargedPrompt', "Choose one from the below options."), 'bot-message');
+            showCancellationWaiverOptions();
         }, 500);
     }
 
@@ -1493,27 +1489,79 @@ document.addEventListener('DOMContentLoaded', function () {
     function handleCancellationWaiverOptionClick(option) {
         appendMessage(option, 'user-message');
         updateFlowState({ detail: option });
-        submitSupportIssue({
-            summary: buildIssueSummary({ selection: option }),
-            successMessage: getFlowCopy('cancellationWaiverMessage', "We have captured your waiver request and will review it with the relevant team."),
-            afterSubmit: () => askForFeedback()
-        });
+        showLoadingIndicator();
+
+        ensureConversationInitialized({
+            title: flowState.category || lastContext || 'Support Request'
+        })
+            .then(() => {
+                const summary = buildIssueSummary({ selection: option });
+                if (summary) {
+                    saveConversation(conversationId, null, summary, new Date().toISOString());
+                    sendToSunshine(summary);
+                }
+                return callCancellationChargeWaiveOffApi(option);
+            })
+            .then(isApproved => {
+                removeLoadingIndicator();
+                appendMessage(
+                    isApproved
+                        ? getFlowCopy('cancellationWaivedMessage', "Your cancellation charges for this ride has been waived off.")
+                        : getFlowCopy('cancellationNotWaivedMessage', "Sorry, your cancellation charges cannot be waived off."),
+                    'bot-message'
+                );
+
+                if (isApproved) {
+                    setTimeout(() => {
+                        appendMessage(getFlowCopy('cancellationRefrainMessage', "Kindly refrain from cancelling rides at the last moment."), 'bot-message');
+                        showEndFlowCsat();
+                    }, 500);
+                    return;
+                }
+
+                showEndFlowCsat();
+            })
+            .catch(() => {
+                removeLoadingIndicator();
+                appendMessage("Connection error. Please try again.", 'system-message');
+            });
     }
 
     function handleLostItemFlow() {
+        let lostItemCallOptionsDiv = null;
+
         setTimeout(() => {
             appendMessage(getFlowCopy('lostItemIntro', "Please find the details of your ride. Please call the driver to enquire about your belongings."), 'bot-message');
-            appendOptions(["Call Driver", "Call Alternate Number", "Need Further Help"], handleLostItemAction);
+            setTimeout(() => {
+                lostItemCallOptionsDiv = appendOptions(["Call Driver", "Call Alternate Number"], handleLostItemAction);
+                setTimeout(() => {
+                    appendMessage(getFlowCopy('lostItemFurtherHelpPrompt', "Do you need any further assistance?"), 'bot-message');
+                    appendOptions(["Yes", "No"], lostItemHelpChoice => {
+                        if (lostItemCallOptionsDiv && lostItemCallOptionsDiv.isConnected) {
+                            lostItemCallOptionsDiv.querySelectorAll('.option-btn').forEach(button => {
+                                button.disabled = true;
+                                button.style.opacity = '0.5';
+                            });
+                        }
+
+                        appendMessage(lostItemHelpChoice, 'user-message');
+                        if (lostItemHelpChoice === "Yes") {
+                            handleAgentConnect();
+                            return;
+                        }
+
+                        setTimeout(() => {
+                            appendMessage(getFlowCopy('endFlowPrompt', "CSAT"), 'bot-message');
+                            chatInputArea.style.display = 'none';
+                        }, 500);
+                    }, { layout: 'row' });
+                }, 500);
+            }, 500);
         }, 500);
     }
 
     function handleLostItemAction(option) {
         appendMessage(option, 'user-message');
-
-        if (option === "Need Further Help") {
-            promptAgentTransfer("I can connect you to our support team for help with your lost item.");
-            return;
-        }
 
         setTimeout(() => {
             appendMessage(
@@ -1522,9 +1570,6 @@ document.addEventListener('DOMContentLoaded', function () {
                     : "If an alternate number is available for the ride, you can try that as well.",
                 'bot-message'
             );
-            askForFurtherHelp({
-                prompt: getFlowCopy('lostItemFurtherHelpPrompt', "Do you need further help?")
-            });
         }, 500);
     }
 
@@ -1840,6 +1885,45 @@ document.addEventListener('DOMContentLoaded', function () {
             .catch(() => {
                 appendMessage("Connection error. Please try again.", 'system-message');
             });
+    }
+
+    function showEndFlowCsat(prompt = null) {
+        setTimeout(() => {
+            appendMessage(prompt || getFlowCopy('endFlowPrompt', "Was this helpful?"), 'bot-message');
+            appendOptions(["Yes", "No"], option => {
+                appendMessage(option, 'user-message');
+                setTimeout(() => {
+                    appendMessage(getFlowCopy('endFlowClosure', "Thank you for your feedback."), 'bot-message');
+                    chatInputArea.style.display = 'none';
+                }, 500);
+            });
+        }, 500);
+    }
+
+    function callCancellationChargeWaiveOffApi(reason) {
+        const fallbackResult = cancellationWaiverApprovedReasons.includes(reason);
+
+        if (!conversationId || !appUserId) {
+            return Promise.resolve(fallbackResult);
+        }
+
+        return fetch('/api/chat/cancellation-charges/waive-off', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                conversationId: conversationId,
+                appUserId: appUserId,
+                reason: reason
+            })
+        })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => Boolean(data.waivedOffSuccess))
+            .catch(() => fallbackResult);
     }
 
     function askForFurtherHelp({ prompt = null, onYes = null, onNo = null } = {}) {
@@ -2180,9 +2264,12 @@ document.addEventListener('DOMContentLoaded', function () {
         ensureScrollToBottom();
     }
 
-    function appendOptions(options, callback) {
+    function appendOptions(options, callback, config = {}) {
         const optionsDiv = document.createElement('div');
         optionsDiv.classList.add('options-container');
+        if (config.layout === 'row') {
+            optionsDiv.classList.add('options-row');
+        }
 
         options.forEach(option => {
             const btn = document.createElement('button');
@@ -2197,7 +2284,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
         messagesContainer.appendChild(optionsDiv);
         setTimeout(() => scrollToBottom(), 50);
+        return optionsDiv;
     }
+
     function appendChoicesMessage(choices, className, msg) {
         // Create outer bubble to contain message + choices + survey
         const messageBubble = document.createElement('div');
@@ -2851,6 +2940,7 @@ document.addEventListener('DOMContentLoaded', function () {
             paymentModes = data.paymentModes || [];
             cancellationChargeOptions = data.cancellationChargeOptions || [];
             cancellationWaiverOptions = data.cancellationWaiverOptions || [];
+            cancellationWaiverApprovedReasons = data.cancellationWaiverApprovedReasons || [];
             vehicleRelatedOptions = data.vehicleRelatedOptions || [];
             vehicleUnsafeCategories = data.vehicleUnsafeCategories || [];
             safetyRelatedOptions = data.safetyRelatedOptions || [];
