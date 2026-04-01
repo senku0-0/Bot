@@ -81,6 +81,7 @@
         "farePaymentPrompt": "Choose one from the below options.",
         "appPrompt": "Choose one from the below options.",
         "appOtherPrompt": "Please describe your issue.",
+        "appOtherLoggedMessage": "Thank you for sharing details. We have logged your issue.",
         "appTroubleshootingPrompt": "Did you perform the troubleshooting steps?",
         "appTryTroubleshooting": "Please try the troubleshooting steps and let me know if the issue is resolved.",
         "appResolutionPrompt": "Was the issue resolved?",

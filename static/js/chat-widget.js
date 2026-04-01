@@ -27,7 +27,12 @@ document.addEventListener('DOMContentLoaded', function () {
     let sessionEnded = false;
     let isAgentConnected = localStorage.getItem('chat_isAgentConnected') === 'true';
     let agentJoinAnnounced = localStorage.getItem('chat_agentJoinAnnounced') === 'true';
-    let troubleshootingSteps = {};
+    const DEFAULT_TROUBLESHOOTING_STEPS = {
+        "Location Not Found or Inaccurate": "There could be multiple reasons why the location is inaccurate. Please try the following:\n\nCheck location settings: Ensure GPS / Location is turned ON.\n\nEnable app permissions: Go to Settings -> Apps -> Namma Yatri -> Permissions -> Location and make sure it is set to Allow all the time or While using the app.\n\nTurn location off and on: Switch off GPS, wait a few seconds, then turn it back on.\n\nCheck for app and OS updates: Update the Namma Yatri app and your phone's operating system to the latest version.\n\nRestart your device: A restart helps refresh location services.",
+        "Unable to Login": "There could be multiple reasons why you are unable to log in. Please try the following:\n\nCheck internet connection: Ensure you have a stable Wi-Fi or mobile data connection.\n\nClear cache and data: Go to your device settings, clear the app cache and data, and try logging in again.\n\nCheck for app updates: Make sure you are using the latest version of the app and update it if needed.",
+        "My App is Not Responding": "There could be multiple reasons why the app is not responding. Please try the following:\n\nCheck internet connection: Ensure that you have a stable Wi-Fi or mobile data connection.\n\nRestart the app: Close the app completely and restart it.\n\nClear cache: Go to your phone settings, find the Namma Yatri app, and clear its cache.\n\nUpdate the app: Check the app store for available updates and install the latest version.\n\nReboot the device: Restart your device to refresh all system processes."
+    };
+    let troubleshootingSteps = { ...DEFAULT_TROUBLESHOOTING_STEPS };
     let mainOptions = [];
     let appRelatedOptions = [];
     let rideRelatedOptions = [];
@@ -73,7 +78,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const isViewingConversation=c=>!!(c&&isChatOpen&&currentView==='chat'&&conversationId===c);
     const setLS=(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}};
     const getLS=k=>{try{return localStorage.getItem(k);}catch(e){}};
-    const CHAT_FLOW_VERSION = 'international-flow-2026-03-30-v8';
+    const CHAT_FLOW_VERSION = 'international-flow-2026-04-01-v10';
     let sseConnection = null;
     let sseReconnectAttempts = 0;
     const sseMaxReconnectAttempts = 10;
@@ -101,6 +106,11 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     resetStoredWidgetStateIfNeeded();
+
+    function closeActiveModals() {
+        chatBox.querySelectorAll('.chat-modal').forEach(modal => modal.remove());
+        document.querySelectorAll('.zoom-modal').forEach(modal => modal.remove());
+    }
     
     function playNotificationSound() {
         try {
@@ -260,6 +270,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const getTimeAgo=t=>{if(!t)return'';const d=(new Date()-new Date(t)),m=Math.floor(d/60000),h=Math.floor(d/3600000),dy=Math.floor(d/86400000);return m<1?'Just now':m<60?`${m}m ago`:h<24?`${h}h ago`:dy<7?`${dy}d ago`:new Date(t).toLocaleDateString();};
     
     function showConversationList() {
+        closeActiveModals();
         if (conversationId) notifyBackendViewingStatus(conversationId, false);
         
         currentView = 'list';
@@ -301,6 +312,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     
     function openExistingConversation(convId) {
+        closeActiveModals();
         const previousConvId = localStorage.getItem('chat_current_conversation');
         if (previousConvId && previousConvId !== convId) {
             notifyBackendViewingStatus(previousConvId, false);
@@ -403,6 +415,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     
     function startNewConversation() {
+        closeActiveModals();
         conversationId = null;
         appUserId = null;
         displayedMessageIds.clear();
@@ -463,6 +476,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
                     localStorage.setItem('chat_current_conversation', conversationId);
                     saveConversation(conversationId, category || 'Support Request', '', new Date().toISOString());
+                    if (sunshineSocket) {
+                        sunshineSocket.disconnect();
+                    }
                     sunshineSocket = new SunshineWebSocketManager(conversationId);
                     sunshineSocket.connect();
                     performEscalation(reason, category);
@@ -858,6 +874,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function endSession() {
+        closeActiveModals();
         isAgentConnected = false;
         agentJoinAnnounced = false;
         sessionEnded = true;
@@ -984,12 +1001,13 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    function handleAgentConnect(option) {
-        if (option) {
-            appendMessage(option, 'user-message');
+    function connectToAgentDirect({ optionLabel = null, forceNewConversation = false } = {}) {
+        if (optionLabel) {
+            appendMessage(optionLabel, 'user-message');
         }
-        
+
         setTimeout(() => {
+            removeLoadingIndicator();
             showLoadingIndicator();
             chatInputArea.style.display = 'flex';
             chatInput.focus();
@@ -999,12 +1017,16 @@ document.addEventListener('DOMContentLoaded', function () {
                 ? (flowState.category || window.lastAppRelatedCategory)
                 : null;
 
-            if (!conversationId) {
+            if (forceNewConversation || !conversationId) {
                 createConversationAndEscalate(agentReason, appCategory);
             } else {
                 performEscalation(agentReason, appCategory);
             }
         }, 500);
+    }
+
+    function handleAgentConnect(option) {
+        connectToAgentDirect({ optionLabel: option });
     }
 
     function showMessageReceivedIndicator() {
@@ -1077,6 +1099,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 showConversationList();
             }
         } else {
+            closeActiveModals();
             chatBox.style.display = 'none';
             toggleBtn.innerHTML = '💬';
             toggleBtn.setAttribute('aria-label', 'Open chat');
@@ -1142,24 +1165,38 @@ document.addEventListener('DOMContentLoaded', function () {
 
         if (option === "Others") {
             setTimeout(() => {
-                appendMessage(getFlowCopy('appOtherPrompt', "Please describe your issue."), 'bot-message');
                 showSupportFormModal({
                     title: "Describe your issue",
-                    description: "Share a short description so I can route this correctly.",
-                    placeholder: "Please describe your issue...",
+                    textLabel: "Comment *",
+                    textHelp: "Minimum 10 characters",
+                    placeholder: getFlowCopy('appOtherPrompt', "Please describe your issue."),
                     requireText: true,
                     minLength: 10,
                     submitLabel: "Submit",
+                    backLabel: "Back",
+                    onBack: () => {
+                        updateFlowState({
+                            category: null,
+                            subcategory: null,
+                            detail: null
+                        });
+                        window.lastAppRelatedCategory = null;
+                        setTimeout(() => {
+                            appendMessage(getFlowCopy('appPrompt', "Choose one from the below options."), 'bot-message');
+                            showAppRelatedOptions();
+                        }, 300);
+                    },
                     onSubmit: payload => {
                         const summary = buildIssueSummary({
                             comments: payload.text
                         });
                         submitSupportIssue({
                             summary: summary,
-                            showUserSummary: true,
-                            successMessage: getFlowCopy('issueLoggedMessage', "Thanks for sharing the details. We have logged your issue."),
+                            showUserSummary: false,
+                            successMessage: getFlowCopy('appOtherLoggedMessage', "Thank you for sharing details. We have logged your issue."),
+                            forceNewConversation: true,
                             afterSubmit: () => {
-                                promptAgentTransfer(getFlowCopy('appAgentTransferPrompt', "I can connect you to a human agent for more help."));
+                                connectToAgentDirect();
                             }
                         });
                     }
@@ -1219,11 +1256,11 @@ document.addEventListener('DOMContentLoaded', function () {
         setTimeout(() => {
             appendMessage(getFlowCopy('appTryTroubleshooting', "Please try the troubleshooting steps and let me know if the issue is resolved."), 'bot-message');
             appendOptions(["I tried them", "Connect to Agent"], choice => {
-                appendMessage(choice, 'user-message');
                 if (choice === "Connect to Agent") {
-                    promptAgentTransfer(getFlowCopy('appAgentTransferPrompt', "I can connect you to a human agent for more help."));
+                    connectToAgentDirect({ optionLabel: choice });
                     return;
                 }
+                appendMessage(choice, 'user-message');
                 askAppResolution(issueLabel);
             });
         }, 500);
@@ -1247,7 +1284,7 @@ document.addEventListener('DOMContentLoaded', function () {
             return;
         }
 
-        promptAgentTransfer(getFlowCopy('appAgentTransferPrompt', "I can connect you to a human agent for more help."));
+        connectToAgentDirect();
     }
 
     function showRideRelatedOptions() {
@@ -1854,6 +1891,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function showSupportFormModal(config) {
+        closeActiveModals();
         const modal = document.createElement('div');
         modal.classList.add('chat-modal', 'support-form-modal');
 
@@ -1940,7 +1978,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const backBtn = document.createElement('button');
         backBtn.classList.add('modal-btn', 'btn-back');
-        backBtn.textContent = 'Go Back';
+        backBtn.textContent = config.backLabel || 'Go Back';
 
         buttonsDiv.appendChild(submitBtn);
         buttonsDiv.appendChild(backBtn);
@@ -1994,6 +2032,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
         backBtn.addEventListener('click', function () {
             modal.remove();
+            if (typeof config.onBack === 'function') {
+                config.onBack();
+            }
         });
 
         submitBtn.addEventListener('click', function () {
@@ -2012,11 +2053,13 @@ document.addEventListener('DOMContentLoaded', function () {
         showUserSummary = false,
         successMessage = '',
         afterSubmit = null,
-        title = null
+        title = null,
+        forceNewConversation = false
     }) {
         const supportSummary = summary || buildIssueSummary();
 
         ensureConversationInitialized({
+            forceNew: forceNewConversation,
             title: title || flowState.category || lastContext || 'Support Request'
         })
             .then(() => {
@@ -3173,25 +3216,56 @@ document.addEventListener('DOMContentLoaded', function () {
     chatInput.addEventListener('keypress', function (e) {
         if (e.key === 'Enter') sendMessage();
     });
-    const issuesUrl = window.issuesUrl || 'static/js/issues.json';
-    fetch(issuesUrl)
-        .then(response => response.json())
-        .then(data => {
-            troubleshootingSteps = data.troubleshooting || {};
-            mainOptions = data.mainOptions || [];
-            appRelatedOptions = data.appRelatedOptions || [];
-            rideRelatedOptions = data.rideRelatedOptions || [];
-            farePaymentOptions = data.farePaymentOptions || [];
-            paymentModes = data.paymentModes || [];
-            cancellationChargeOptions = data.cancellationChargeOptions || [];
-            cancellationWaiverOptions = data.cancellationWaiverOptions || [];
-            cancellationWaiverApprovedReasons = data.cancellationWaiverApprovedReasons || [];
-            vehicleRelatedOptions = data.vehicleRelatedOptions || [];
-            vehicleUnsafeCategories = data.vehicleUnsafeCategories || [];
-            safetyRelatedOptions = data.safetyRelatedOptions || [];
-            deleteAccountReasons = data.deleteAccountReasons || [];
-            flowCopy = data.copy || {};
-        });
+    const configuredIssuesUrl = window.issuesUrl || 'static/js/issues.json';
+    const issuesUrlCandidates = Array.from(new Set([
+        configuredIssuesUrl,
+        '../static/js/issues.json',
+        './static/js/issues.json',
+        'static/js/issues.json'
+    ].filter(Boolean)));
+
+    function applyFlowConfig(data = {}) {
+        troubleshootingSteps = {
+            ...DEFAULT_TROUBLESHOOTING_STEPS,
+            ...(data.troubleshooting || {})
+        };
+        mainOptions = data.mainOptions || [];
+        appRelatedOptions = data.appRelatedOptions || [];
+        rideRelatedOptions = data.rideRelatedOptions || [];
+        farePaymentOptions = data.farePaymentOptions || [];
+        paymentModes = data.paymentModes || [];
+        cancellationChargeOptions = data.cancellationChargeOptions || [];
+        cancellationWaiverOptions = data.cancellationWaiverOptions || [];
+        cancellationWaiverApprovedReasons = data.cancellationWaiverApprovedReasons || [];
+        vehicleRelatedOptions = data.vehicleRelatedOptions || [];
+        vehicleUnsafeCategories = data.vehicleUnsafeCategories || [];
+        safetyRelatedOptions = data.safetyRelatedOptions || [];
+        deleteAccountReasons = data.deleteAccountReasons || [];
+        flowCopy = data.copy || {};
+    }
+
+    function loadFlowConfig(index = 0) {
+        if (index >= issuesUrlCandidates.length) {
+            applyFlowConfig({});
+            return;
+        }
+
+        fetch(issuesUrlCandidates[index])
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                applyFlowConfig(data);
+            })
+            .catch(() => {
+                loadFlowConfig(index + 1);
+            });
+    }
+
+    loadFlowConfig();
     const lastConversationId = localStorage.getItem('chat_current_conversation');
 
     if (lastConversationId) {
