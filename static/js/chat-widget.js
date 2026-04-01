@@ -73,7 +73,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const isViewingConversation=c=>!!(c&&isChatOpen&&currentView==='chat'&&conversationId===c);
     const setLS=(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}};
     const getLS=k=>{try{return localStorage.getItem(k);}catch(e){}};
-    const CHAT_FLOW_VERSION = 'international-flow-2026-03-30-v3';
+    const CHAT_FLOW_VERSION = 'international-flow-2026-03-30-v8';
     let sseConnection = null;
     let sseReconnectAttempts = 0;
     const sseMaxReconnectAttempts = 10;
@@ -1319,25 +1319,32 @@ document.addEventListener('DOMContentLoaded', function () {
 
         if (option === "Multiple Debits occurred") {
             setTimeout(() => {
-                appendMessage(getFlowCopy('multipleDebitsPrompt', "Please upload screenshot(s) of the payment and add comments."), 'bot-message');
                 showSupportFormModal({
-                    title: "Payment details",
-                    description: "Upload screenshot(s) of the payment and add a short comment.",
+                    title: "Multiple Debits occurred",
+                    description: getFlowCopy('multipleDebitsPrompt', "Please upload screenshot(s) of the payment and add comments."),
+                    textLabel: "Short comment *",
+                    textHelp: "Minimum 10 characters",
                     placeholder: "Add comments...",
                     requireText: true,
                     minLength: 10,
                     allowFiles: true,
                     filesRequired: true,
+                    fileLabel: "Upload screenshot(s) *",
+                    fileButtonText: "Choose screenshot(s)",
+                    emptyFilesText: "No screenshot selected",
                     submitLabel: "Submit",
                     onSubmit: payload => {
                         const summary = buildIssueSummary({
                             comments: payload.text,
                             files: payload.files
                         });
+                        if (payload.text) {
+                            appendMessage(payload.text, 'user-message');
+                        }
                         submitSupportIssue({
                             summary: summary,
                             files: payload.files,
-                            showUserSummary: true,
+                            showUserSummary: false,
                             successMessage: getFlowCopy('issueLoggedMessage', "Thanks for sharing the details. We have logged your issue."),
                             afterSubmit: askVerificationProceed
                         });
@@ -1407,25 +1414,32 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             }
 
-            appendMessage(getFlowCopy('extraFareUpiPrompt', "Please upload screenshot(s) of the UPI payment and add comments."), 'bot-message');
             showSupportFormModal({
-                title: `${option} payment`,
-                description: "Upload screenshot(s) of the UPI payment and add comments.",
+                title: "UPI Issue",
+                description: getFlowCopy('extraFareUpiPrompt', "Please upload screenshot(s) of the UPI payment and add comments."),
+                textLabel: "Short comment *",
+                textHelp: "Minimum 10 characters",
                 placeholder: "Add comments...",
                 requireText: true,
                 minLength: 10,
                 allowFiles: true,
                 filesRequired: true,
+                fileLabel: "Upload screenshot(s) *",
+                fileButtonText: "Choose screenshot(s)",
+                emptyFilesText: "No screenshot selected",
                 submitLabel: "Submit",
                 onSubmit: payload => {
                     const summary = buildIssueSummary({
                         comments: payload.text,
                         files: payload.files
                     });
+                    if (payload.text) {
+                        appendMessage(payload.text, 'user-message');
+                    }
                     submitSupportIssue({
                         summary: summary,
                         files: payload.files,
-                        showUserSummary: true,
+                        showUserSummary: false,
                         successMessage: getFlowCopy('issueLoggedMessage', "Thanks for sharing the details. We have logged your issue."),
                         afterSubmit: () => showEndFlowCsat()
                     });
@@ -1697,10 +1711,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
         if (option === "Other") {
             setTimeout(() => {
-                appendMessage(getFlowCopy('safetyOtherPrompt', "Please enter your issue."), 'bot-message');
                 showSupportFormModal({
                     title: "Safety issue",
-                    description: "Tell us what happened so we can route it correctly.",
+                    description: getFlowCopy('safetyOtherPrompt', "Please enter your issue."),
+                    textLabel: "Enter issue *",
+                    textHelp: "Minimum 10 characters",
                     placeholder: "Please enter your issue...",
                     requireText: true,
                     minLength: 10,
@@ -1709,20 +1724,50 @@ document.addEventListener('DOMContentLoaded', function () {
                         const summary = buildIssueSummary({
                             comments: payload.text
                         });
-                        submitSupportIssue({
+                        if (payload.text) {
+                            appendMessage(payload.text, 'user-message');
+                        }
+                        logSupportIssueSilently({
                             summary: summary,
-                            showUserSummary: true,
-                            successMessage: getFlowCopy('safetyThankYou', "Thank you for reporting the issue. We have taken your feedback and we will work towards improving your experience."),
-                            afterSubmit: () => askForFeedback()
+                            title: "Safety Other"
                         });
+                        setTimeout(() => {
+                            appendMessage(
+                                getFlowCopy('safetyThankYou', "Thank you for reporting the issue. We have taken your feedback and we will work towards improving your experience."),
+                                'bot-message'
+                            );
+                            askForFurtherHelp({
+                                prompt: getFlowCopy('drunkDriveFurtherHelpPrompt', "Do you need further help?"),
+                                onYes: () => promptSafetySosFlow("Safety Other SOS"),
+                                onNo: () => showCsatBubble(),
+                                layout: 'row'
+                            });
+                        }, 500);
                     }
                 });
             }, 500);
             return;
         }
 
-        if (["Met with an accident", "Sexual Harassment", "Physical Fights"].includes(option)) {
-            promptSosFlow();
+        if ([
+            "Met with an accident",
+            "Sexual Harassment",
+            "Physical Fights",
+            "Extra Person in the vehicle",
+            "Rash Driving",
+            "Vehicle Broke down"
+        ].includes(option)) {
+            promptSafetySosFlow(`${option} SOS`);
+            return;
+        }
+
+        if (option === "Drunk and drive") {
+            handleDrunkAndDriveFlow();
+            return;
+        }
+
+        if (option === "Driver was rude or misbehaved") {
+            handleDriverMisbehavedFlow();
             return;
         }
 
@@ -1737,24 +1782,74 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    function promptSosFlow() {
+    function handleDrunkAndDriveFlow() {
+        logSupportIssueSilently({
+            summary: buildIssueSummary(),
+            title: "Drunk and drive"
+        });
+
         setTimeout(() => {
-            appendMessage(getFlowCopy('sosPrompt', "This will raise an SOS alert. Do you want to proceed?"), 'bot-message');
+            appendMessage(
+                getFlowCopy(
+                    'safetyImmediateResponse',
+                    "We sincerely apologize for your experience. Your safety is our top priority, and we take such incidents very seriously.\nThis has been escalated to safety team for immediate action against the driver."
+                ),
+                'bot-message'
+            );
+            askForFurtherHelp({
+                prompt: getFlowCopy('drunkDriveFurtherHelpPrompt', "Do you need further help?"),
+                onYes: () => promptSafetySosFlow("Drunk and drive SOS"),
+                onNo: () => showCsatBubble(),
+                layout: 'row'
+            });
+        }, 500);
+    }
+
+    function handleDriverMisbehavedFlow() {
+        logSupportIssueSilently({
+            summary: buildIssueSummary(),
+            title: "Driver was rude or misbehaved"
+        });
+
+        setTimeout(() => {
+            appendMessage(
+                getFlowCopy(
+                    'safetyRudeResponse',
+                    "We apologise for the poor experience. This is not something we wish for our customers.\nWe have taken your feedback and we will work towards improving your experience."
+                ),
+                'bot-message'
+            );
+            askForFurtherHelp({
+                prompt: getFlowCopy('drunkDriveFurtherHelpPrompt', "Do you need further help?"),
+                onYes: () => promptSafetySosFlow("Driver was rude or misbehaved SOS"),
+                onNo: () => showCsatBubble(),
+                layout: 'row'
+            });
+        }, 500);
+    }
+
+    function promptSafetySosFlow(sosTitle = "Safety SOS") {
+        setTimeout(() => {
+            appendMessage(getFlowCopy('drunkDriveSosPrompt', "This will raise an SOS alert. Proceed?"), 'bot-message');
             appendOptions(["Yes, proceed", "No"], option => {
                 appendMessage(option, 'user-message');
                 if (option === "Yes, proceed") {
-                    submitSupportIssue({
+                    logSupportIssueSilently({
                         summary: buildIssueSummary({ selection: "SOS requested" }),
-                        successMessage: "SOS alert raised. Our safety team has been notified and will reach out shortly.",
-                        afterSubmit: () => askForFeedback()
+                        title: sosTitle
                     });
+                    setTimeout(() => {
+                        appendMessage(
+                            getFlowCopy('sosRaisedMessage', "SOS ticket raised. Our safety team has been notified."),
+                            'bot-message'
+                        );
+                        showCsatBubble();
+                    }, 500);
                     return;
                 }
-                setTimeout(() => {
-                    appendMessage(getFlowCopy('safetyThankYou', "Thank you for reporting the issue. We have taken your feedback and we will work towards improving your experience."), 'bot-message');
-                    askForFurtherHelp();
-                }, 500);
-            });
+
+                showCsatBubble();
+            }, { layout: 'row' });
         }, 500);
     }
 
@@ -1777,25 +1872,39 @@ document.addEventListener('DOMContentLoaded', function () {
         let textArea = null;
 
         if (config.placeholder !== false) {
+            const textSection = document.createElement('div');
+            textSection.classList.add('support-form-section');
+
+            const textLabel = document.createElement('label');
+            textLabel.classList.add('support-form-field-label');
+            textLabel.textContent = config.textLabel || (config.requireText ? 'Comments *' : 'Comments');
+            textSection.appendChild(textLabel);
+
             textArea = document.createElement('textarea');
             textArea.classList.add('support-form-textarea');
             textArea.placeholder = config.placeholder || 'Type here...';
-            form.appendChild(textArea);
+            textSection.appendChild(textArea);
 
-            if (config.minLength) {
+            if (config.textHelp || config.minLength) {
                 const note = document.createElement('div');
                 note.classList.add('support-form-note');
-                note.textContent = `Minimum ${config.minLength} characters`;
-                form.appendChild(note);
+                note.textContent = config.textHelp || `Minimum ${config.minLength} characters`;
+                textSection.appendChild(note);
             }
+
+            form.appendChild(textSection);
         }
 
         let filePicker = null;
         let fileList = null;
         if (config.allowFiles) {
+            const fileSection = document.createElement('div');
+            fileSection.classList.add('support-form-section');
+
             const fileLabel = document.createElement('label');
             fileLabel.classList.add('support-form-file-label');
-            fileLabel.textContent = config.filesRequired ? 'Attach file(s) *' : 'Attach file(s)';
+            fileLabel.textContent = config.fileLabel || (config.filesRequired ? 'Upload file(s) *' : 'Upload file(s)');
+            fileSection.appendChild(fileLabel);
 
             filePicker = document.createElement('input');
             filePicker.type = 'file';
@@ -1803,13 +1912,22 @@ document.addEventListener('DOMContentLoaded', function () {
             filePicker.accept = '.pdf,.doc,.docx,.txt,.png,.jpg,.jpeg,.gif';
             filePicker.classList.add('support-form-file-input');
 
+            const fileTrigger = document.createElement('button');
+            fileTrigger.type = 'button';
+            fileTrigger.classList.add('support-form-file-trigger');
+            fileTrigger.textContent = config.fileButtonText || 'Choose file(s)';
+            fileTrigger.addEventListener('click', function () {
+                filePicker.click();
+            });
+
             fileList = document.createElement('div');
             fileList.classList.add('support-form-file-list');
-            fileList.textContent = 'No files selected';
+            fileList.textContent = config.emptyFilesText || 'No file selected';
 
-            form.appendChild(fileLabel);
-            form.appendChild(filePicker);
-            form.appendChild(fileList);
+            fileSection.appendChild(filePicker);
+            fileSection.appendChild(fileTrigger);
+            fileSection.appendChild(fileList);
+            form.appendChild(fileSection);
         }
 
         const buttonsDiv = document.createElement('div');
@@ -1840,7 +1958,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             }
             if (selectedFiles.length === 0) {
-                fileList.textContent = 'No files selected';
+                fileList.textContent = config.emptyFilesText || 'No file selected';
                 return;
             }
             fileList.innerHTML = '';
