@@ -73,7 +73,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const isViewingConversation=c=>!!(c&&isChatOpen&&currentView==='chat'&&conversationId===c);
     const setLS=(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}};
     const getLS=k=>{try{return localStorage.getItem(k);}catch(e){}};
-    const CHAT_FLOW_VERSION = 'international-flow-2026-03-28-v1';
+    const CHAT_FLOW_VERSION = 'international-flow-2026-03-30-v3';
     let sseConnection = null;
     let sseReconnectAttempts = 0;
     const sseMaxReconnectAttempts = 10;
@@ -1575,9 +1575,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function showVehicleRelatedOptions() {
         const options = vehicleRelatedOptions.length > 0 ? vehicleRelatedOptions : [
-            "AC not turned on / AC stopped working midway",
-            "Unclean / unhygienic vehicle",
+            "Unclean/unhygienic vehicle",
             "Vehicle unsafe",
+            "AC not turned on / AC stopped working midway",
             "Vehicle was different"
         ];
         appendOptions(options, handleVehicleRelatedOptionClick);
@@ -1585,30 +1585,67 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function handleVehicleRelatedOptionClick(option) {
         appendMessage(option, 'user-message');
+        const normalizedOption = option === "Unclean / unhygienic vehicle"
+            ? "Unclean/unhygienic vehicle"
+            : option;
+
         updateFlowState({
-            subcategory: option,
+            subcategory: normalizedOption,
             detail: null
         });
 
-        if (option === "Vehicle unsafe") {
+        if (normalizedOption === "Vehicle unsafe") {
             setTimeout(() => {
-                appendMessage("Choose one from the below options.", 'bot-message');
+                appendMessage(getFlowCopy('vehicleUnsafePrompt', "Select all that apply."), 'bot-message');
                 showVehicleUnsafeOptions();
             }, 500);
             return;
         }
 
         const responseMap = {
-            "AC not turned on / AC stopped working midway": getFlowCopy('acIssueResponse', "We apologise for the poor experience. This is not something we wish for our customers. We have recorded this AC-related issue and will work towards improving your experience going forward."),
-            "Unclean / unhygienic vehicle": getFlowCopy('uncleanVehicleResponse', "We apologise for the poor experience. This is not something we wish for our customers. We have taken your feedback about the vehicle condition and will work towards improving your experience."),
-            "Vehicle was different": getFlowCopy('vehicleDifferentResponse', "We apologise for the poor experience. This is not something we wish for our customers. It is advisable to cancel this ride and book another ride.")
+            "AC not turned on / AC stopped working midway": getFlowCopy('acIssueResponse', "We apologise for the poor experience. This is not something we wish for our customers.\nIt is advisable to cancel this ride and book another ride"),
+            "Unclean/unhygienic vehicle": getFlowCopy('uncleanVehicleResponse', "We apologise for the poor experience. This is not something we wish for our customers.\nWe will take your feedback and work towards improving your experience going forward"),
+            "Vehicle was different": getFlowCopy('vehicleDifferentResponse', "We apologise for the poor experience. This is not something we wish for our customers.\nIt is advisable to cancel this ride and book another ride")
         };
 
-        submitSupportIssue({
-            summary: buildIssueSummary(),
-            successMessage: responseMap[option] || getFlowCopy('issueLoggedMessage', "Thanks for sharing the details. We have logged your issue."),
-            afterSubmit: () => askForFurtherHelp()
-        });
+        if (normalizedOption === "Unclean/unhygienic vehicle") {
+            logSupportIssueSilently({
+                summary: buildIssueSummary(),
+                title: normalizedOption
+            });
+            setTimeout(() => {
+                appendMessage(responseMap[normalizedOption], 'bot-message');
+                showCsatBubble();
+            }, 500);
+            return;
+        }
+
+        if (
+            normalizedOption === "AC not turned on / AC stopped working midway" ||
+            normalizedOption === "Vehicle was different"
+        ) {
+            logSupportIssueSilently({
+                summary: buildIssueSummary(),
+                title: normalizedOption
+            });
+            setTimeout(() => {
+                appendMessage(responseMap[normalizedOption], 'bot-message');
+                askForFurtherHelp({
+                    prompt: getFlowCopy('vehicleFurtherHelpPrompt', "Do you need any further help?"),
+                    onYes: () => handleAgentConnect(),
+                    onNo: () => showCsatBubble(),
+                    layout: 'row'
+                });
+            }, 500);
+            return;
+        }
+
+        setTimeout(() => {
+            appendMessage(
+                getFlowCopy('issueLoggedMessage', "Thanks for sharing the details. We have logged your issue."),
+                'bot-message'
+            );
+        }, 500);
     }
 
     function showVehicleUnsafeOptions() {
@@ -1618,16 +1655,21 @@ document.addEventListener('DOMContentLoaded', function () {
             "Wheel wobbling",
             "Door is loose"
         ];
-        appendOptions(options, handleVehicleUnsafeOptionClick);
-    }
-
-    function handleVehicleUnsafeOptionClick(option) {
-        appendMessage(option, 'user-message');
-        updateFlowState({ detail: option });
-        submitSupportIssue({
-            summary: buildIssueSummary({ selection: option }),
-            successMessage: getFlowCopy('vehicleUnsafeResponse', "We have taken your feedback regarding the vehicle being unsafe and we will take this up with the driver."),
-            afterSubmit: () => askForFurtherHelp()
+        appendMultiSelectOptions(options, selectedOptions => {
+            const selectedText = selectedOptions.join(', ');
+            updateFlowState({ detail: selectedText });
+            appendMessage(`${getFlowCopy('vehicleUnsafeSelectionPrefix', "You have selected:")} ${selectedText}`, 'bot-message');
+            logSupportIssueSilently({
+                summary: buildIssueSummary({ selection: selectedText }),
+                title: "Vehicle unsafe"
+            });
+            setTimeout(() => {
+                appendMessage(
+                    getFlowCopy('vehicleUnsafeResponse', "We have taken your feedback regarding the vehicle being unsafe and we will be taking this up with the driver."),
+                    'bot-message'
+                );
+                showCsatBubble();
+            }, 500);
         });
     }
 
@@ -1887,6 +1929,29 @@ document.addEventListener('DOMContentLoaded', function () {
             });
     }
 
+    function logSupportIssueSilently({
+        summary = '',
+        files = [],
+        title = null
+    } = {}) {
+        const supportSummary = summary || buildIssueSummary();
+
+        ensureConversationInitialized({
+            title: title || flowState.category || lastContext || 'Support Request'
+        })
+            .then(() => {
+                if (supportSummary) {
+                    saveConversation(conversationId, null, supportSummary, new Date().toISOString());
+                    sendToSunshine(supportSummary);
+                }
+
+                if (files && files.length > 0) {
+                    files.forEach(file => sendDocument(file, ''));
+                }
+            })
+            .catch(() => {});
+    }
+
     function showEndFlowCsat(prompt = null) {
         setTimeout(() => {
             appendMessage(prompt || getFlowCopy('endFlowPrompt', "Was this helpful?"), 'bot-message');
@@ -1897,6 +1962,13 @@ document.addEventListener('DOMContentLoaded', function () {
                     chatInputArea.style.display = 'none';
                 }, 500);
             });
+        }, 500);
+    }
+
+    function showCsatBubble(message = null) {
+        setTimeout(() => {
+            appendMessage(message || getFlowCopy('endFlowPrompt', "CSAT"), 'bot-message');
+            chatInputArea.style.display = 'none';
         }, 500);
     }
 
@@ -1926,7 +1998,7 @@ document.addEventListener('DOMContentLoaded', function () {
             .catch(() => fallbackResult);
     }
 
-    function askForFurtherHelp({ prompt = null, onYes = null, onNo = null } = {}) {
+    function askForFurtherHelp({ prompt = null, onYes = null, onNo = null, layout = null } = {}) {
         setTimeout(() => {
             appendMessage(prompt || getFlowCopy('furtherHelpPrompt', "Do you need further help?"), 'bot-message');
             appendOptions(["Yes", "No"], option => {
@@ -1945,7 +2017,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 } else {
                     askForFeedback();
                 }
-            });
+            }, layout ? { layout } : {});
         }, 500);
     }
 
@@ -2285,6 +2357,61 @@ document.addEventListener('DOMContentLoaded', function () {
         messagesContainer.appendChild(optionsDiv);
         setTimeout(() => scrollToBottom(), 50);
         return optionsDiv;
+    }
+
+    function appendMultiSelectOptions(options, onSubmit, config = {}) {
+        const multiSelectDiv = document.createElement('div');
+        multiSelectDiv.classList.add('multi-select-container');
+
+        const optionsList = document.createElement('div');
+        optionsList.classList.add('multi-select-list');
+
+        const selectedValues = new Set();
+
+        options.forEach(option => {
+            const label = document.createElement('label');
+            label.classList.add('multi-select-item');
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.value = option;
+
+            const text = document.createElement('span');
+            text.textContent = option;
+
+            checkbox.addEventListener('change', function () {
+                if (checkbox.checked) {
+                    selectedValues.add(option);
+                } else {
+                    selectedValues.delete(option);
+                }
+                submitBtn.disabled = selectedValues.size === 0;
+            });
+
+            label.appendChild(checkbox);
+            label.appendChild(text);
+            optionsList.appendChild(label);
+        });
+
+        const submitBtn = document.createElement('button');
+        submitBtn.classList.add('multi-select-submit');
+        submitBtn.textContent = config.submitLabel || 'Submit';
+        submitBtn.disabled = true;
+        submitBtn.addEventListener('click', function () {
+            const selections = Array.from(selectedValues);
+            if (selections.length === 0) {
+                return;
+            }
+
+            multiSelectDiv.remove();
+            onSubmit(selections);
+        });
+
+        multiSelectDiv.appendChild(optionsList);
+        multiSelectDiv.appendChild(submitBtn);
+        messagesContainer.appendChild(multiSelectDiv);
+        setTimeout(() => scrollToBottom(), 50);
+        return multiSelectDiv;
     }
 
     function appendChoicesMessage(choices, className, msg) {

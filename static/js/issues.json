@@ -46,9 +46,9 @@
         "Could not connect with Driver"
     ],
     "vehicleRelatedOptions": [
-        "AC not turned on / AC stopped working midway",
-        "Unclean / unhygienic vehicle",
+        "Unclean/unhygienic vehicle",
         "Vehicle unsafe",
+        "AC not turned on / AC stopped working midway",
         "Vehicle was different"
     ],
     "vehicleUnsafeCategories": [
@@ -105,10 +105,13 @@
         "lostItemIntro": "Please find the details of your ride. Please call the driver to enquire about your belongings.",
         "lostItemCallDriverNote": "Use the ride details screen to call the driver. If an alternate number is available, you can try that as well.",
         "lostItemFurtherHelpPrompt": "Do you need any further assistance?",
-        "acIssueResponse": "We apologise for the poor experience. This is not something we wish for our customers. We have recorded this AC-related issue and will work towards improving your experience going forward.",
-        "uncleanVehicleResponse": "We apologise for the poor experience. This is not something we wish for our customers. We have taken your feedback about the vehicle condition and will work towards improving your experience.",
-        "vehicleUnsafeResponse": "We have taken your feedback regarding the vehicle being unsafe and we will take this up with the driver.",
-        "vehicleDifferentResponse": "We apologise for the poor experience. This is not something we wish for our customers. It is advisable to cancel this ride and book another ride.",
+        "vehicleFurtherHelpPrompt": "Do you need any further help?",
+        "vehicleUnsafePrompt": "Select all that apply.",
+        "vehicleUnsafeSelectionPrefix": "You have selected:",
+        "acIssueResponse": "We apologise for the poor experience. This is not something we wish for our customers.\nIt is advisable to cancel this ride and book another ride",
+        "uncleanVehicleResponse": "We apologise for the poor experience. This is not something we wish for our customers.\nWe will take your feedback and work towards improving your experience going forward",
+        "vehicleUnsafeResponse": "We have taken your feedback regarding the vehicle being unsafe and we will be taking this up with the driver.",
+        "vehicleDifferentResponse": "We apologise for the poor experience. This is not something we wish for our customers.\nIt is advisable to cancel this ride and book another ride",
         "safetyIssuePrompt": "Choose one from the below options.",
         "safetyOtherPrompt": "Please enter your issue.",
         "safetyImmediateResponse": "We sincerely apologise for your experience. Your safety is our top priority, and we take such incidents very seriously. This has been escalated to the safety team for immediate action against the driver.",
