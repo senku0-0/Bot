@@ -6,8 +6,7 @@
     },
     "mainOptions": [
         "App Related Issues",
-        "Ride Related Issues",
-        "Delete Account"
+        "Ride Related Issues"
     ],
     "appRelatedOptions": [
         "Location Not Found or Inaccurate",
@@ -67,14 +66,6 @@
         "Extra Person in the vehicle",
         "Rash Driving",
         "Vehicle Broke down"
-    ],
-    "deleteAccountReasons": [
-        "Moving out of town",
-        "App experience issues",
-        "Change of phone number",
-        "Not getting rides",
-        "Not required as of now",
-        "Others"
     ],
     "copy": {
         "rideCategoryPrompt": "Choose your concern.",

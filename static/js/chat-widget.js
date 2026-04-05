@@ -78,7 +78,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const isViewingConversation=c=>!!(c&&isChatOpen&&currentView==='chat'&&conversationId===c);
     const setLS=(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}};
     const getLS=k=>{try{return localStorage.getItem(k);}catch(e){}};
-    const CHAT_FLOW_VERSION = 'international-flow-2026-04-01-v10';
+    const CHAT_FLOW_VERSION = 'international-flow-2026-04-04-v11';
     let sseConnection = null;
     let sseReconnectAttempts = 0;
     const sseMaxReconnectAttempts = 10;
@@ -673,7 +673,7 @@ document.addEventListener('DOMContentLoaded', function () {
             }
             if (!agentJoinAnnounced) {
                 removeLoadingIndicator();
-                appendMessage(`${agentName} will help you now.`, 'system-message');
+                appendMessage(agentName, 'system-message');
                 agentJoinAnnounced = true;
                 localStorage.setItem('chat_agentJoinAnnounced', 'true');
                 localStorage.setItem('chat_agentName', agentName);
@@ -938,6 +938,69 @@ document.addEventListener('DOMContentLoaded', function () {
         return lines.join('\n');
     }
 
+    function getConversationTranscript() {
+        const lines = [];
+        messagesContainer.querySelectorAll('.message').forEach(messageNode => {
+            if (messageNode.classList.contains('day-separator')) {
+                return;
+            }
+
+            let speaker = 'Bot';
+            if (messageNode.classList.contains('user-message')) {
+                speaker = 'User';
+            } else if (messageNode.classList.contains('system-message') || messageNode.classList.contains('agent-announcement')) {
+                speaker = 'System';
+            }
+
+            const text = (messageNode.innerText || messageNode.textContent || '').trim();
+            if (!text) {
+                return;
+            }
+
+            lines.push(`${speaker}: ${text}`);
+        });
+
+        return lines.join('\n');
+    }
+
+    function createZendeskTicketFromConversation({ title = null } = {}) {
+        const ticketTitle = title || getCurrentFlowPath() || lastContext || 'Support Request';
+        const appCategory = flowState.mainCategory === "App Related Issues"
+            ? (flowState.category || window.lastAppRelatedCategory)
+            : null;
+
+        return ensureConversationInitialized({
+            title: ticketTitle
+        })
+            .then(() => fetch('/api/chat/create-ticket', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    conversationId: conversationId,
+                    appUserId: appUserId,
+                    title: ticketTitle,
+                    transcript: getConversationTranscript(),
+                    appRelatedCategory: appCategory
+                })
+            }))
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                return response.json();
+            });
+    }
+
+    function finalizeConversationByTicket({ title = null } = {}) {
+        createZendeskTicketFromConversation({ title })
+            .then(() => {
+                chatInputArea.style.display = 'none';
+            })
+            .catch(() => {
+                appendMessage("Connection error. Please try again.", 'system-message');
+            });
+    }
+
     function ensureConversationInitialized({ forceNew = false, title = 'Support Request' } = {}) {
         return new Promise((resolve, reject) => {
             if (!forceNew && conversationId) {
@@ -1111,7 +1174,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function showMainOptions() {
-        const options = mainOptions.length > 0 ? mainOptions : ["App Related Issues", "Ride Related Issues", "Delete Account"];
+        const options = mainOptions.length > 0 ? mainOptions : ["App Related Issues", "Ride Related Issues"];
         appendOptions(options, handleMainOptionClick);
     }
 
@@ -1134,8 +1197,6 @@ document.addEventListener('DOMContentLoaded', function () {
                 appendMessage(getFlowCopy('rideCategoryPrompt', "Choose your concern."), 'bot-message');
                 showRideRelatedOptions();
             }, 500);
-        } else if (option === "Delete Account") {
-            showDeleteAccountModal();
         } else {
             setTimeout(() => {
                 appendMessage("I'm sorry, I don't have information on that yet.", 'bot-message');
@@ -1382,8 +1443,8 @@ document.addEventListener('DOMContentLoaded', function () {
                             summary: summary,
                             files: payload.files,
                             showUserSummary: false,
-                            successMessage: getFlowCopy('issueLoggedMessage', "Thanks for sharing the details. We have logged your issue."),
-                            afterSubmit: askVerificationProceed
+                            successMessage: '',
+                            afterSubmit: () => connectToAgentDirect()
                         });
                     }
                 });
@@ -1410,7 +1471,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         ),
                         'bot-message'
                     );
-                    askForFeedback();
+                    askFarePaymentFurtherHelp();
                 }, 500);
             }, 500);
             return;
@@ -1443,10 +1504,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         handleAgentConnect();
                         return;
                     }
-                    setTimeout(() => {
-                        appendMessage(getFlowCopy('endFlowPrompt', "CSAT"), 'bot-message');
-                        chatInputArea.style.display = 'none';
-                    }, 500);
+                    finalizeConversationByTicket();
                 });
                 return;
             }
@@ -1478,7 +1536,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         files: payload.files,
                         showUserSummary: false,
                         successMessage: getFlowCopy('issueLoggedMessage', "Thanks for sharing the details. We have logged your issue."),
-                        afterSubmit: () => showEndFlowCsat()
+                        afterSubmit: () => finalizeConversationByTicket()
                     });
                 }
             });
@@ -1496,9 +1554,24 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
                 setTimeout(() => {
                     appendMessage(getFlowCopy('verificationDeclinedMessage', "Okay, we will not proceed with this request right now."), 'bot-message');
-                    askForFeedback();
+                    askFarePaymentFurtherHelp();
                 }, 500);
             });
+        }, 500);
+    }
+
+    function askFarePaymentFurtherHelp() {
+        setTimeout(() => {
+            appendMessage(getFlowCopy('furtherHelpPrompt', "Do you need any further help?"), 'bot-message');
+            appendOptions(["Yes", "No"], option => {
+                appendMessage(option, 'user-message');
+                if (option === "Yes") {
+                    connectToAgentDirect();
+                    return;
+                }
+
+                finalizeConversationByTicket();
+            }, { layout: 'row' });
         }, 500);
     }
 
@@ -1597,14 +1670,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
                         appendMessage(lostItemHelpChoice, 'user-message');
                         if (lostItemHelpChoice === "Yes") {
-                            handleAgentConnect();
+                            promptAgentTransfer();
                             return;
                         }
 
-                        setTimeout(() => {
-                            appendMessage(getFlowCopy('endFlowPrompt', "CSAT"), 'bot-message');
-                            chatInputArea.style.display = 'none';
-                        }, 500);
+                        finalizeConversationByTicket();
                     }, { layout: 'row' });
                 }, 500);
             }, 500);
@@ -1683,8 +1753,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 appendMessage(responseMap[normalizedOption], 'bot-message');
                 askForFurtherHelp({
                     prompt: getFlowCopy('vehicleFurtherHelpPrompt', "Do you need any further help?"),
-                    onYes: () => handleAgentConnect(),
-                    onNo: () => showCsatBubble(),
+                    onYes: () => promptAgentTransfer(),
+                    onNo: () => finalizeConversationByTicket(),
                     layout: 'row'
                 });
             }, 500);
@@ -2115,21 +2185,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function showEndFlowCsat(prompt = null) {
         setTimeout(() => {
-            appendMessage(prompt || getFlowCopy('endFlowPrompt', "Was this helpful?"), 'bot-message');
-            appendOptions(["Yes", "No"], option => {
-                appendMessage(option, 'user-message');
-                setTimeout(() => {
-                    appendMessage(getFlowCopy('endFlowClosure', "Thank you for your feedback."), 'bot-message');
-                    chatInputArea.style.display = 'none';
-                }, 500);
-            });
+            finalizeConversationByTicket();
         }, 500);
     }
 
     function showCsatBubble(message = null) {
         setTimeout(() => {
-            appendMessage(message || getFlowCopy('endFlowPrompt', "CSAT"), 'bot-message');
-            chatInputArea.style.display = 'none';
+            finalizeConversationByTicket();
         }, 500);
     }
 
@@ -3063,114 +3125,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const clearImagePreview=()=>{const p=document.getElementById('image-preview-container');if(p)p.remove();pendingImage=null;chatInput.placeholder='Type a message...';};
 
     function showDeleteAccountModal() {
-        const modal = document.createElement('div');
-        modal.classList.add('chat-modal');
-
-        const header = document.createElement('div');
-        header.classList.add('chat-modal-header');
-        header.textContent = 'Why do you want to delete your account?';
-
-        const radioGroup = document.createElement('div');
-        radioGroup.classList.add('radio-group');
-
-        const reasons = deleteAccountReasons.length > 0 ? deleteAccountReasons : [
-            "Moving out of town",
-            "App experience issues",
-            "Change of phone number",
-            "Not getting rides",
-            "Not required as of now",
-            "Others"
-        ];
-        let selectedReason = null;
-
-        reasons.forEach((reason, index) => {
-            const optionDiv = document.createElement('div');
-            optionDiv.classList.add('radio-option');
-
-            const radio = document.createElement('input');
-            radio.type = 'radio';
-            radio.name = 'delete-reason';
-            radio.id = `reason-${index}`;
-            radio.value = reason;
-
-            const label = document.createElement('label');
-            label.htmlFor = `reason-${index}`;
-            label.textContent = reason;
-
-            optionDiv.appendChild(radio);
-            optionDiv.appendChild(label);
-            radioGroup.appendChild(optionDiv);
-
-            radio.addEventListener('change', function () {
-                selectedReason = this.value;
-                if (selectedReason === "Others") {
-                    otherInput.style.display = 'block';
-                    otherInput.focus();
-                    validateDeleteButton();
-                } else {
-                    otherInput.style.display = 'none';
-                    deleteBtn.disabled = false;
-                }
-            });
-        });
-
-        const otherInput = document.createElement('textarea');
-        otherInput.classList.add('delete-reason-input');
-        otherInput.placeholder = 'Please describe the issue...';
-        otherInput.style.display = 'none';
-        otherInput.addEventListener('input', validateDeleteButton);
-
-        const buttonsDiv = document.createElement('div');
-        buttonsDiv.classList.add('modal-buttons');
-
-        const deleteBtn = document.createElement('button');
-        deleteBtn.classList.add('modal-btn', 'btn-delete');
-        deleteBtn.textContent = 'Delete Account';
-        deleteBtn.disabled = true;
-
-        const backBtn = document.createElement('button');
-        backBtn.classList.add('modal-btn', 'btn-back');
-        backBtn.textContent = 'Go Back';
-
-        buttonsDiv.appendChild(deleteBtn);
-        buttonsDiv.appendChild(backBtn);
-
-        modal.appendChild(header);
-        modal.appendChild(radioGroup);
-        modal.appendChild(otherInput);
-        modal.appendChild(buttonsDiv);
-
-        chatBox.appendChild(modal);
-        function validateDeleteButton() {
-            if (selectedReason === "Others") {
-                const hasText = otherInput.value.trim() !== "";
-                deleteBtn.disabled = !hasText;
-            } else {
-                deleteBtn.disabled = selectedReason === null;
-            }
-        }
-
-        backBtn.addEventListener('click', function () {
-            modal.remove();
-            appendMessage("What can I help you with?", 'bot-message');
-            showMainOptions();
-        });
-
-        deleteBtn.addEventListener('click', function () {
-            let reasonText = selectedReason;
-            if (selectedReason === "Others") {
-                const otherText = otherInput.value.trim();
-                reasonText += ": " + otherText;
-            }
-            sendToSunshine("Delete Account Request: " + reasonText);
-
-            modal.remove();
-            appendMessage("Delete Account Request", 'user-message');
-
-            setTimeout(() => {
-                appendMessage("Your request has been submitted. Our team will contact you shortly.", 'bot-message');
-            }, 500);
-        });
+        // Delete Account flow disabled per request.
     }
 
     toggleBtn.addEventListener('click', toggleChat);
