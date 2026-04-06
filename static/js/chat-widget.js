@@ -27,6 +27,8 @@ document.addEventListener('DOMContentLoaded', function () {
     let sessionEnded = false;
     let isAgentConnected = localStorage.getItem('chat_isAgentConnected') === 'true';
     let agentJoinAnnounced = localStorage.getItem('chat_agentJoinAnnounced') === 'true';
+    const FORCE_NEW_CONVERSATION_KEY = 'chat_force_new_conversation';
+    let shouldForceNewConversation = localStorage.getItem(FORCE_NEW_CONVERSATION_KEY) === 'true';
     const DEFAULT_TROUBLESHOOTING_STEPS = {
         "Location Not Found or Inaccurate": "There could be multiple reasons why the location is inaccurate. Please try the following:\n\nCheck location settings: Ensure GPS / Location is turned ON.\n\nEnable app permissions: Go to Settings -> Apps -> Namma Yatri -> Permissions -> Location and make sure it is set to Allow all the time or While using the app.\n\nTurn location off and on: Switch off GPS, wait a few seconds, then turn it back on.\n\nCheck for app and OS updates: Update the Namma Yatri app and your phone's operating system to the latest version.\n\nRestart your device: A restart helps refresh location services.",
         "Unable to Login": "There could be multiple reasons why you are unable to log in. Please try the following:\n\nCheck internet connection: Ensure you have a stable Wi-Fi or mobile data connection.\n\nClear cache and data: Go to your device settings, clear the app cache and data, and try logging in again.\n\nCheck for app updates: Make sure you are using the latest version of the app and update it if needed.",
@@ -79,7 +81,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const isViewingConversation=c=>!!(c&&isChatOpen&&currentView==='chat'&&conversationId===c);
     const setLS=(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}};
     const getLS=k=>{try{return localStorage.getItem(k);}catch(e){}};
-    const CHAT_FLOW_VERSION = 'international-flow-2026-04-06-v11';
+    const CHAT_FLOW_VERSION = 'international-flow-2026-04-06-v12';
     let sseConnection = null;
     let sseReconnectAttempts = 0;
     const sseMaxReconnectAttempts = 10;
@@ -107,6 +109,17 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     resetStoredWidgetStateIfNeeded();
+
+    function setForceNewConversation(value) {
+        shouldForceNewConversation = Boolean(value);
+        try {
+            if (shouldForceNewConversation) {
+                localStorage.setItem(FORCE_NEW_CONVERSATION_KEY, 'true');
+            } else {
+                localStorage.removeItem(FORCE_NEW_CONVERSATION_KEY);
+            }
+        } catch (e) {}
+    }
 
     function closeActiveModals() {
         chatBox.querySelectorAll('.chat-modal').forEach(modal => modal.remove());
@@ -328,6 +341,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }).catch(() => {});
         
         conversationId = convId;
+        setForceNewConversation(false);
         localStorage.setItem('chat_current_conversation', convId);
         const storedAppUserId = localStorage.getItem(`chat_appUserId_${convId}`);
         if (storedAppUserId) {
@@ -419,6 +433,7 @@ document.addEventListener('DOMContentLoaded', function () {
         closeActiveModals();
         conversationId = null;
         appUserId = null;
+        setForceNewConversation(true);
         displayedMessageIds.clear();
         displayedImageFileNames.clear();
         surveyMessageShown = false; // Reset survey flag
@@ -476,6 +491,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     localStorage.setItem(`chat_appUserId_${conversationId}`, appUserId);
 
                     localStorage.setItem('chat_current_conversation', conversationId);
+                    setForceNewConversation(false);
                     saveConversation(conversationId, category || 'Support Request', '', new Date().toISOString());
                     if (sunshineSocket) {
                         sunshineSocket.disconnect();
@@ -941,7 +957,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function ensureConversationInitialized({ forceNew = false, title = 'Support Request' } = {}) {
         return new Promise((resolve, reject) => {
-            if (!forceNew && conversationId) {
+            const effectiveForceNew = forceNew || shouldForceNewConversation;
+
+            if (!effectiveForceNew && conversationId) {
                 if (!appUserId) {
                     const storedAppUserId = localStorage.getItem(`chat_appUserId_${conversationId}`)
                         || localStorage.getItem('chat_user_id');
@@ -958,7 +976,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const storedUserId = localStorage.getItem('chat_user_id');
             const payload = {
                 userId: storedUserId || null,
-                forceNew: forceNew
+                forceNew: effectiveForceNew
             };
 
             fetch('/api/chat/init', {
@@ -988,6 +1006,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
                     localStorage.setItem(`chat_appUserId_${conversationId}`, appUserId);
                     localStorage.setItem('chat_current_conversation', conversationId);
+                    setForceNewConversation(false);
                     saveConversation(conversationId, title || 'Support Request', '', new Date().toISOString());
 
                     if (sunshineSocket) {
@@ -1018,7 +1037,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 ? (flowState.category || window.lastAppRelatedCategory)
                 : null;
 
-            if (forceNewConversation || !conversationId) {
+            if (forceNewConversation || shouldForceNewConversation || !conversationId) {
                 createConversationAndEscalate(agentReason, appCategory);
             } else {
                 performEscalation(agentReason, appCategory);
@@ -2242,61 +2261,24 @@ document.addEventListener('DOMContentLoaded', function () {
         // If no conversation yet, initialize one before sending
         if (!conversationId) {
             showLoadingIndicator();
-            const storedUserId = localStorage.getItem('chat_user_id');
-            const payload = {
-                userId: storedUserId || null,
-                forceNew: false
-            };
-
-            fetch('/api/chat/init', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
+            ensureConversationInitialized({
+                title: lastContext || 'Support Request'
             })
-                .then(response => {
-                    if (!response.ok) {
-                        return response.text().then(text => {
-                            throw new Error(`HTTP ${response.status}: ${text}`);
-                        });
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    if (data.appUserId && data.conversationId) {
-                        appUserId = data.appUserId;
-                        conversationId = data.conversationId;
+                .then(() => {
+                    removeLoadingIndicator();
+                    appendMessage(messageText, 'user-message');
+                    saveConversation(conversationId, null, messageText, new Date().toISOString());
+                    sendToSunshine(messageText);
+                    chatInput.value = '';
+                    chatInputArea.style.display = 'none';
 
-                        if (data.externalId) {
-                            localStorage.setItem('chat_user_id', data.externalId);
-                        }
-                        localStorage.setItem(`chat_appUserId_${conversationId}`, appUserId);
-                        localStorage.setItem('chat_current_conversation', conversationId);
-                        
-                        // Save conversation and setup WebSocket
-                        saveConversation(conversationId, lastContext || 'Support Request', '', new Date().toISOString());
-                        sunshineSocket = new SunshineWebSocketManager(conversationId);
-                        sunshineSocket.connect();
-                        
-                        removeLoadingIndicator();
-                        // Now send the message
-                        appendMessage(messageText, 'user-message');
-                        saveConversation(conversationId, null, messageText, new Date().toISOString());
-                        sendToSunshine(messageText);
-                        chatInput.value = '';
-                        chatInputArea.style.display = 'none';
-
-                        // Show escalation message
-                        if (!isAgentConnected) {
-                            setTimeout(() => {
-                                appendMessage("Your issue has been forwarded to our support team. An agent will review it shortly.", 'bot-message');
-                            }, 1500);
-                        }
-                    } else {
-                        removeLoadingIndicator();
-                        appendMessage("Failed to initialize chat. Please try again.", 'system-message');
+                    if (!isAgentConnected) {
+                        setTimeout(() => {
+                            appendMessage("Your issue has been forwarded to our support team. An agent will review it shortly.", 'bot-message');
+                        }, 1500);
                     }
                 })
-                .catch(error => {
+                .catch(() => {
                     removeLoadingIndicator();
                     appendMessage("Connection error. Please try again.", 'system-message');
                 });
@@ -3172,6 +3154,7 @@ document.addEventListener('DOMContentLoaded', function () {
         
         if (lastConv) {
             conversationId = lastConversationId;
+            setForceNewConversation(false);
             const storedUserId = localStorage.getItem(`chat_appUserId_${lastConversationId}`) 
                               || localStorage.getItem('chat_user_id');
             if (storedUserId) {
@@ -3179,8 +3162,10 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         } else {
             localStorage.removeItem('chat_current_conversation');
+            setForceNewConversation(true);
         }
     } else {
+        setForceNewConversation(true);
     }
     showConversationList();
     initNotificationSystem();
