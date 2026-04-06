@@ -44,6 +44,7 @@ document.addEventListener('DOMContentLoaded', function () {
     let vehicleRelatedOptions = [];
     let vehicleUnsafeCategories = [];
     let safetyRelatedOptions = [];
+    // Delete Account flow disabled.
     let deleteAccountReasons = [];
     let flowCopy = {};
     let surveyMessageShown = false;
@@ -78,7 +79,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const isViewingConversation=c=>!!(c&&isChatOpen&&currentView==='chat'&&conversationId===c);
     const setLS=(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}};
     const getLS=k=>{try{return localStorage.getItem(k);}catch(e){}};
-    const CHAT_FLOW_VERSION = 'international-flow-2026-04-04-v11';
+    const CHAT_FLOW_VERSION = 'international-flow-2026-04-06-v11';
     let sseConnection = null;
     let sseReconnectAttempts = 0;
     const sseMaxReconnectAttempts = 10;
@@ -673,7 +674,7 @@ document.addEventListener('DOMContentLoaded', function () {
             }
             if (!agentJoinAnnounced) {
                 removeLoadingIndicator();
-                appendMessage(agentName, 'system-message');
+                appendMessage(`${agentName} will help you now.`, 'system-message');
                 agentJoinAnnounced = true;
                 localStorage.setItem('chat_agentJoinAnnounced', 'true');
                 localStorage.setItem('chat_agentName', agentName);
@@ -936,69 +937,6 @@ document.addEventListener('DOMContentLoaded', function () {
             lines.push(`Attachments: ${details.files.length} file(s)`);
         }
         return lines.join('\n');
-    }
-
-    function getConversationTranscript() {
-        const lines = [];
-        messagesContainer.querySelectorAll('.message').forEach(messageNode => {
-            if (messageNode.classList.contains('day-separator')) {
-                return;
-            }
-
-            let speaker = 'Bot';
-            if (messageNode.classList.contains('user-message')) {
-                speaker = 'User';
-            } else if (messageNode.classList.contains('system-message') || messageNode.classList.contains('agent-announcement')) {
-                speaker = 'System';
-            }
-
-            const text = (messageNode.innerText || messageNode.textContent || '').trim();
-            if (!text) {
-                return;
-            }
-
-            lines.push(`${speaker}: ${text}`);
-        });
-
-        return lines.join('\n');
-    }
-
-    function createZendeskTicketFromConversation({ title = null } = {}) {
-        const ticketTitle = title || getCurrentFlowPath() || lastContext || 'Support Request';
-        const appCategory = flowState.mainCategory === "App Related Issues"
-            ? (flowState.category || window.lastAppRelatedCategory)
-            : null;
-
-        return ensureConversationInitialized({
-            title: ticketTitle
-        })
-            .then(() => fetch('/api/chat/create-ticket', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    conversationId: conversationId,
-                    appUserId: appUserId,
-                    title: ticketTitle,
-                    transcript: getConversationTranscript(),
-                    appRelatedCategory: appCategory
-                })
-            }))
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-                return response.json();
-            });
-    }
-
-    function finalizeConversationByTicket({ title = null } = {}) {
-        createZendeskTicketFromConversation({ title })
-            .then(() => {
-                chatInputArea.style.display = 'none';
-            })
-            .catch(() => {
-                appendMessage("Connection error. Please try again.", 'system-message');
-            });
     }
 
     function ensureConversationInitialized({ forceNew = false, title = 'Support Request' } = {}) {
@@ -1504,7 +1442,10 @@ document.addEventListener('DOMContentLoaded', function () {
                         handleAgentConnect();
                         return;
                     }
-                    finalizeConversationByTicket();
+                    setTimeout(() => {
+                        appendMessage(getFlowCopy('endFlowPrompt', "CSAT"), 'bot-message');
+                        chatInputArea.style.display = 'none';
+                    }, 500);
                 });
                 return;
             }
@@ -1536,7 +1477,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         files: payload.files,
                         showUserSummary: false,
                         successMessage: getFlowCopy('issueLoggedMessage', "Thanks for sharing the details. We have logged your issue."),
-                        afterSubmit: () => finalizeConversationByTicket()
+                        afterSubmit: () => showCsatBubble()
                     });
                 }
             });
@@ -1561,18 +1502,12 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function askFarePaymentFurtherHelp() {
-        setTimeout(() => {
-            appendMessage(getFlowCopy('furtherHelpPrompt', "Do you need any further help?"), 'bot-message');
-            appendOptions(["Yes", "No"], option => {
-                appendMessage(option, 'user-message');
-                if (option === "Yes") {
-                    connectToAgentDirect();
-                    return;
-                }
-
-                finalizeConversationByTicket();
-            }, { layout: 'row' });
-        }, 500);
+        askForFurtherHelp({
+            prompt: "Do you need any further help?",
+            onYes: () => connectToAgentDirect(),
+            onNo: () => showCsatBubble(),
+            layout: 'row'
+        });
     }
 
     function showCancellationChargeOptions() {
@@ -1674,7 +1609,7 @@ document.addEventListener('DOMContentLoaded', function () {
                             return;
                         }
 
-                        finalizeConversationByTicket();
+                        showCsatBubble();
                     }, { layout: 'row' });
                 }, 500);
             }, 500);
@@ -1754,7 +1689,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 askForFurtherHelp({
                     prompt: getFlowCopy('vehicleFurtherHelpPrompt', "Do you need any further help?"),
                     onYes: () => promptAgentTransfer(),
-                    onNo: () => finalizeConversationByTicket(),
+                    onNo: () => showCsatBubble(),
                     layout: 'row'
                 });
             }, 500);
@@ -2185,13 +2120,21 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function showEndFlowCsat(prompt = null) {
         setTimeout(() => {
-            finalizeConversationByTicket();
+            appendMessage(prompt || getFlowCopy('endFlowPrompt', "Was this helpful?"), 'bot-message');
+            appendOptions(["Yes", "No"], option => {
+                appendMessage(option, 'user-message');
+                setTimeout(() => {
+                    appendMessage(getFlowCopy('endFlowClosure', "Thank you for your feedback."), 'bot-message');
+                    chatInputArea.style.display = 'none';
+                }, 500);
+            });
         }, 500);
     }
 
     function showCsatBubble(message = null) {
         setTimeout(() => {
-            finalizeConversationByTicket();
+            appendMessage(message || getFlowCopy('endFlowPrompt', "CSAT"), 'bot-message');
+            chatInputArea.style.display = 'none';
         }, 500);
     }
 
@@ -3125,7 +3068,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const clearImagePreview=()=>{const p=document.getElementById('image-preview-container');if(p)p.remove();pendingImage=null;chatInput.placeholder='Type a message...';};
 
     function showDeleteAccountModal() {
-        // Delete Account flow disabled per request.
+        // Delete Account flow intentionally disabled.
     }
 
     toggleBtn.addEventListener('click', toggleChat);
@@ -3195,7 +3138,7 @@ document.addEventListener('DOMContentLoaded', function () {
         vehicleRelatedOptions = data.vehicleRelatedOptions || [];
         vehicleUnsafeCategories = data.vehicleUnsafeCategories || [];
         safetyRelatedOptions = data.safetyRelatedOptions || [];
-        deleteAccountReasons = data.deleteAccountReasons || [];
+        deleteAccountReasons = [];
         flowCopy = data.copy || {};
     }
 
