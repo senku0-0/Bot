@@ -29,6 +29,7 @@ document.addEventListener('DOMContentLoaded', function () {
     let agentJoinAnnounced = localStorage.getItem('chat_agentJoinAnnounced') === 'true';
     const FORCE_NEW_CONVERSATION_KEY = 'chat_force_new_conversation';
     let shouldForceNewConversation = localStorage.getItem(FORCE_NEW_CONVERSATION_KEY) === 'true';
+    const csatTicketRequestedConversations = new Set();
     const DEFAULT_TROUBLESHOOTING_STEPS = {
         "Location Not Found or Inaccurate": "There could be multiple reasons why the location is inaccurate. Please try the following:\n\nCheck location settings: Ensure GPS / Location is turned ON.\n\nEnable app permissions: Go to Settings -> Apps -> Namma Yatri -> Permissions -> Location and make sure it is set to Allow all the time or While using the app.\n\nTurn location off and on: Switch off GPS, wait a few seconds, then turn it back on.\n\nCheck for app and OS updates: Update the Namma Yatri app and your phone's operating system to the latest version.\n\nRestart your device: A restart helps refresh location services.",
         "Unable to Login": "There could be multiple reasons why you are unable to log in. Please try the following:\n\nCheck internet connection: Ensure you have a stable Wi-Fi or mobile data connection.\n\nClear cache and data: Go to your device settings, clear the app cache and data, and try logging in again.\n\nCheck for app updates: Make sure you are using the latest version of the app and update it if needed.",
@@ -962,6 +963,141 @@ document.addEventListener('DOMContentLoaded', function () {
         return lines.join('\n');
     }
 
+    function getIssueContextPayload() {
+        return {
+            mainCategory: flowState.mainCategory,
+            category: flowState.category,
+            subcategory: flowState.subcategory,
+            detail: flowState.detail,
+            currentPath: getCurrentFlowPath() || lastContext
+        };
+    }
+
+    function cleanTranscriptText(value) {
+        return String(value || '')
+            .replace(/\u00a0/g, ' ')
+            .replace(/\r/g, '')
+            .replace(/[ \t]+\n/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .replace(/[ \t]{2,}/g, ' ')
+            .trim();
+    }
+
+    function getTranscriptSpeaker(messageElement) {
+        if (messageElement.classList.contains('user-message')) {
+            return 'User';
+        }
+        if (messageElement.classList.contains('system-message')) {
+            return 'System';
+        }
+        return 'Bot';
+    }
+
+    function getTranscriptMessageText(messageElement) {
+        if (!messageElement || messageElement.id === 'agent-loading-indicator' || messageElement.classList.contains('day-separator')) {
+            return '';
+        }
+
+        const parts = [];
+        const seenParts = new Set();
+
+        const pushPart = value => {
+            const cleaned = cleanTranscriptText(value);
+            if (!cleaned || seenParts.has(cleaned)) {
+                return;
+            }
+            seenParts.add(cleaned);
+            parts.push(cleaned);
+        };
+
+        messageElement.querySelectorAll('.message-content, .message-text-content, .caption-text').forEach(node => {
+            pushPart(node.textContent);
+        });
+
+        const fileNameNode = messageElement.querySelector('.file-name, .filename, .name');
+        if (fileNameNode) {
+            pushPart(`[Attachment: ${fileNameNode.textContent}]`);
+        } else if (messageElement.classList.contains('file-bubble')) {
+            pushPart('[Attachment]');
+        }
+
+        if (messageElement.classList.contains('image-bubble')) {
+            pushPart('[Image attachment]');
+        }
+
+        if (parts.length === 0) {
+            const clone = messageElement.cloneNode(true);
+            clone.querySelectorAll('button, iframe, img, svg, video, audio, .choices-container, .survey-bubble, .webview-survey-container').forEach(node => node.remove());
+            pushPart(clone.textContent || '');
+        }
+
+        return parts.join('\n');
+    }
+
+    function getConversationTranscript() {
+        const lines = [];
+        messagesContainer.querySelectorAll('.message').forEach(messageElement => {
+            const text = getTranscriptMessageText(messageElement);
+            if (!text) {
+                return;
+            }
+            lines.push(`${getTranscriptSpeaker(messageElement)}: ${text}`);
+        });
+        return lines.join('\n\n');
+    }
+
+    function createConversationTicketSilently({ title = null } = {}) {
+        const ticketTitle = title || getCurrentFlowPath() || lastContext || 'Support Request';
+
+        return ensureConversationInitialized({ title: ticketTitle })
+            .then(({ conversationId: activeConversationId, appUserId: activeAppUserId }) => {
+                if (!activeConversationId) {
+                    return null;
+                }
+                if (csatTicketRequestedConversations.has(activeConversationId)) {
+                    return { status: 'already_requested', conversation_id: activeConversationId };
+                }
+
+                const transcript = getConversationTranscript();
+                const payload = {
+                    conversationId: activeConversationId,
+                    appUserId: activeAppUserId,
+                    title: ticketTitle,
+                    transcript: transcript,
+                    appRelatedCategory: flowState.mainCategory === "App Related Issues"
+                        ? (flowState.category || window.lastAppRelatedCategory)
+                        : null,
+                    issueContext: getIssueContextPayload()
+                };
+
+                return fetch('/api/chat/create-ticket', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                })
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        if (data && (data.ticket_id || ['created', 'existing', 'updated'].includes(data.status))) {
+                            csatTicketRequestedConversations.add(activeConversationId);
+                        }
+                        return data;
+                    });
+            })
+            .catch(error => {
+                console.error('Silent CSAT ticket creation failed', error);
+                return null;
+            });
+    }
+
+    function triggerCsatTicketCreation(options = {}) {
+        void createConversationTicketSilently(options);
+    }
+
     function ensureConversationInitialized({ forceNew = false, title = 'Support Request' } = {}) {
         return new Promise((resolve, reject) => {
             const effectiveForceNew = forceNew || shouldForceNewConversation;
@@ -1468,10 +1604,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         handleAgentConnect();
                         return;
                     }
-                    setTimeout(() => {
-                        appendMessage(getFlowCopy('endFlowPrompt', "CSAT"), 'bot-message');
-                        chatInputArea.style.display = 'none';
-                    }, 500);
+                    showCsatBubble();
                 });
                 return;
             }
@@ -2147,6 +2280,7 @@ document.addEventListener('DOMContentLoaded', function () {
     function showEndFlowCsat(prompt = null) {
         setTimeout(() => {
             appendMessage(prompt || getFlowCopy('endFlowPrompt', "Was this helpful?"), 'bot-message');
+            triggerCsatTicketCreation();
             appendOptions(["Yes", "No"], option => {
                 appendMessage(option, 'user-message');
                 setTimeout(() => {
@@ -2160,6 +2294,7 @@ document.addEventListener('DOMContentLoaded', function () {
     function showCsatBubble(message = null) {
         setTimeout(() => {
             appendMessage(message || getFlowCopy('endFlowPrompt', "CSAT"), 'bot-message');
+            triggerCsatTicketCreation();
             chatInputArea.style.display = 'none';
         }, 500);
     }

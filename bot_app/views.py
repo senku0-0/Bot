@@ -424,6 +424,48 @@ def update_ticket_routing(
         logger.error(f"Ticket routing update error: {e}")
         return False
 
+def build_conversation_transcript_body(title: str, transcript: Optional[str]) -> str:
+    return "\n".join([
+        f"Issue Path: {title}",
+        "",
+        "Conversation Transcript:",
+        transcript or "No transcript captured."
+    ])
+
+def add_ticket_transcript_note(
+    ticket_id: str,
+    title: str,
+    transcript: Optional[str],
+    issue_context: Optional[Dict[str, Any]] = None,
+    conversation_id: Optional[str] = None,
+    app_user_id: Optional[str] = None,
+    app_related_sub_category: Optional[Union[str, int]] = None,
+) -> bool:
+    try:
+        payload = build_ticket_routing_payload(
+            conversation_id=conversation_id,
+            app_user_id=app_user_id,
+            issue_context=issue_context,
+            title=title,
+            transcript=transcript,
+            app_related_sub_category=app_related_sub_category,
+        )
+        payload["comment"] = {
+            "body": build_conversation_transcript_body(title, transcript),
+            "public": False
+        }
+        url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+        response = requests.put(
+            url,
+            json={"ticket": payload},
+            auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+            timeout=15
+        )
+        return response.status_code == 200
+    except Exception as e:
+        logger.error(f"Ticket transcript note error: {e}")
+        return False
+
 def forward_agent_message_to_websocket(conversation_id: str, message_text: str, agent_name: str = "Agent", choices: list = None, actions: list = None, received_timestamp: str = None) -> bool:
     """
     Send agent message to WebSocket clients via Django Channels group.
@@ -1047,30 +1089,28 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             except Exception:
                 logger.exception("create_conversation_ticket search error")
 
+        category_tag = APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None
+        description_body = build_conversation_transcript_body(title, transcript)
+
         if ticket_id:
-            return JsonResponse({"status": "existing", "ticket_id": ticket_id, "conversation_id": conversation_id})
+            updated = add_ticket_transcript_note(
+                ticket_id=ticket_id,
+                title=title[:200],
+                transcript=transcript,
+                issue_context=issue_context,
+                conversation_id=conversation_id,
+                app_user_id=app_user_id,
+                app_related_sub_category=category_tag,
+            )
+            return JsonResponse({
+                "status": "updated" if updated else "existing",
+                "ticket_id": ticket_id,
+                "conversation_id": conversation_id
+            })
 
-        category_mapping = {
-            "Location Not Found or Inaccurate": "location_not_found_or_inaccurate",
-            "Unable to Login": "unable_to_login",
-            "My App is Not Responding": "my_app_is_not_responding",
-            "Others": "others",
-            "location_not_found_or_inaccurate": "location_not_found_or_inaccurate",
-            "unable_to_login": "unable_to_login",
-            "my_app_is_not_responding": "my_app_is_not_responding",
-            "others": "others"
-        }
-        category_tag = category_mapping.get(app_related_category) if app_related_category else None
-
-        description_lines = [
-            f"Issue Path: {title}",
-            "",
-            "Conversation Transcript:",
-            transcript or "No transcript captured."
-        ]
         result = create_zendesk_ticket(
             subject=title[:200],
-            description="\n".join(description_lines),
+            description=description_body,
             conversation_id=conversation_id,
             app_related_sub_category=category_tag,
             ticket_context=issue_context,
