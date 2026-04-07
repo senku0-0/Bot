@@ -698,13 +698,11 @@ document.addEventListener('DOMContentLoaded', function () {
             }
             if (!agentJoinAnnounced) {
                 removeLoadingIndicator();
-                appendMessage(`${agentName} will help you now.`, 'system-message');
                 agentJoinAnnounced = true;
                 localStorage.setItem('chat_agentJoinAnnounced', 'true');
                 localStorage.setItem('chat_agentName', agentName);
                 chatInputArea.style.display = 'flex';
                 chatHeaderTitle.textContent = agentName;
-                ensureScrollToBottom();
             }
             displayedMessageIds.add(messageId);
             // Don't display text message if it has choices/actions - let appendChoicesMessage handle the full message with question + buttons
@@ -819,7 +817,6 @@ document.addEventListener('DOMContentLoaded', function () {
                     const isAgent = msg.messageClass === 'agent';
                     if (isAgent && !agentJoinAnnounced && authorName) {
                         removeLoadingIndicator();
-                        appendMessage(`${authorName} joined the chat`, 'system-message');
                         agentJoinAnnounced = true;
                         localStorage.setItem('chat_agentJoinAnnounced', 'true');
                         localStorage.setItem('chat_agentName', authorName);
@@ -2342,21 +2339,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function showEndFlowCsat(prompt = null) {
         setTimeout(() => {
-            appendMessage(prompt || getFlowCopy('endFlowPrompt', "Was this helpful?"), 'bot-message');
             triggerCsatTicketCreation();
-            appendOptions(["Yes", "No"], option => {
-                appendMessage(option, 'user-message');
-                setTimeout(() => {
-                    appendMessage(getFlowCopy('endFlowClosure', "Thank you for your feedback."), 'bot-message');
-                    chatInputArea.style.display = 'none';
-                }, 500);
-            });
+            chatInputArea.style.display = 'none';
         }, 500);
     }
 
     function showCsatBubble(message = null) {
         setTimeout(() => {
-            appendMessage(message || getFlowCopy('endFlowPrompt', "CSAT"), 'bot-message');
             triggerCsatTicketCreation();
             chatInputArea.style.display = 'none';
         }, 500);

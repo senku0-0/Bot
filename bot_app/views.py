@@ -591,6 +591,50 @@ def silently_pass_conversation_to_agent(
         logger.error(f"Silent passControl error: {e}")
         return False
 
+def resolve_ticket_id_for_conversation(
+    conversation_id: str,
+    timeout_seconds: float = 10.0,
+    poll_interval: float = 0.5,
+) -> Optional[str]:
+    """
+    Resolve the Zendesk ticket linked to a Sunshine conversation.
+
+    This is used immediately after passControl because ticket creation is
+    asynchronous and webhook timing is not guaranteed. Polling here lets us
+    reliably apply the correct ticket form and custom fields for silent CSAT
+    handoffs.
+    """
+    try:
+        cached_ticket_id = cache.get(f'conversation_{conversation_id}')
+        if cached_ticket_id:
+            return str(cached_ticket_id)
+
+        if not all([ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, ZENDESK_API_TOKEN, ZENDESK_CHAT_CONVERSATION_FIELD_ID]):
+            return None
+
+        search_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/search.json"
+        search_query = f"custom_field_{ZENDESK_CHAT_CONVERSATION_FIELD_ID}:{conversation_id}"
+        auth = HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN)
+        deadline = time.time() + max(timeout_seconds, 0)
+
+        while True:
+            response = requests.get(search_url, params={"query": search_query}, auth=auth, timeout=15)
+            if response.status_code == 200:
+                results = response.json().get("results", []) or []
+                for result in results:
+                    ticket_id = str(result.get("id", "")).strip()
+                    if ticket_id:
+                        store_conversation_ticket_mapping(conversation_id, ticket_id)
+                        return ticket_id
+
+            if time.time() >= deadline:
+                break
+            time.sleep(max(poll_interval, 0.1))
+        return None
+    except Exception as e:
+        logger.exception(f"resolve_ticket_id_for_conversation error: {e}")
+        return None
+
 def forward_agent_message_to_websocket(conversation_id: str, message_text: str, agent_name: str = "Agent", choices: list = None, actions: list = None, received_timestamp: str = None) -> bool:
     """
     Send agent message to WebSocket clients via Django Channels group.
@@ -1228,11 +1272,29 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
 
         cache.set(f'csat_handoff_{source_conversation_id}', handoff_conversation_id, timeout=604800)
 
+        ticket_id = resolve_ticket_id_for_conversation(handoff_conversation_id)
+        routing_updated = False
+        if ticket_id:
+            routing_updated = update_ticket_routing(
+                ticket_id,
+                issue_context=issue_context,
+                conversation_id=handoff_conversation_id,
+                app_user_id=app_user_id,
+                reason=title,
+                title=title,
+                transcript=transcript,
+                app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
+            )
+            if routing_updated:
+                cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
+
         return JsonResponse({
             "status": "created",
             "conversation_id": handoff_conversation_id,
             "source_conversation_id": source_conversation_id,
-            "appUserId": app_user_id
+            "appUserId": app_user_id,
+            "ticket_id": ticket_id,
+            "routing_updated": routing_updated,
         })
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
