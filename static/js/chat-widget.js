@@ -987,7 +987,7 @@ document.addEventListener('DOMContentLoaded', function () {
         if (messageElement.classList.contains('user-message')) {
             return 'User';
         }
-        if (messageElement.classList.contains('system-message')) {
+        if (messageElement.classList.contains('system-message') || messageElement.classList.contains('agent-announcement')) {
             return 'System';
         }
         return 'Bot';
@@ -1046,6 +1046,61 @@ document.addEventListener('DOMContentLoaded', function () {
         return lines.join('\n\n');
     }
 
+    function getConversationTranscriptEntries() {
+        const entries = [];
+        messagesContainer.querySelectorAll('.message').forEach(messageElement => {
+            const text = getTranscriptMessageText(messageElement);
+            if (!text) {
+                return;
+            }
+            entries.push({
+                speaker: getTranscriptSpeaker(messageElement),
+                text: text
+            });
+        });
+        return entries;
+    }
+
+    function adoptSilentHandoffConversation(newConversationId, newAppUserId, title = null) {
+        if (!newConversationId) {
+            return;
+        }
+
+        const previousConversationId = conversationId;
+        if (previousConversationId && previousConversationId !== newConversationId) {
+            notifyBackendViewingStatus(previousConversationId, false);
+        }
+
+        conversationId = newConversationId;
+        if (newAppUserId) {
+            appUserId = newAppUserId;
+        }
+
+        setForceNewConversation(false);
+        localStorage.setItem('chat_current_conversation', newConversationId);
+        if (appUserId) {
+            localStorage.setItem(`chat_appUserId_${newConversationId}`, appUserId);
+        }
+        localStorage.removeItem('chat_isAgentConnected');
+        localStorage.removeItem('chat_agentJoinAnnounced');
+        localStorage.removeItem('chat_agentName');
+
+        isAgentConnected = false;
+        agentJoinAnnounced = false;
+        chatInputArea.style.display = 'none';
+        chatHeaderTitle.textContent = 'Yatri Bandhu';
+
+        if (sunshineSocket) {
+            sunshineSocket.disconnect();
+        }
+        sunshineSocket = new SunshineWebSocketManager(newConversationId);
+        sunshineSocket.connect();
+
+        clearUnreadCount(newConversationId);
+        notifyBackendViewingStatus(newConversationId, true);
+        saveConversation(newConversationId, title || getCurrentFlowPath() || lastContext || 'Support Request', '', new Date().toISOString());
+    }
+
     function createConversationTicketSilently({ title = null } = {}) {
         const ticketTitle = title || getCurrentFlowPath() || lastContext || 'Support Request';
 
@@ -1059,11 +1114,13 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
 
                 const transcript = getConversationTranscript();
+                const transcriptEntries = getConversationTranscriptEntries();
                 const payload = {
                     conversationId: activeConversationId,
                     appUserId: activeAppUserId,
                     title: ticketTitle,
                     transcript: transcript,
+                    transcriptEntries: transcriptEntries,
                     appRelatedCategory: flowState.mainCategory === "App Related Issues"
                         ? (flowState.category || window.lastAppRelatedCategory)
                         : null,
@@ -1082,8 +1139,14 @@ document.addEventListener('DOMContentLoaded', function () {
                         return response.json();
                     })
                     .then(data => {
-                        if (data && (data.ticket_id || ['created', 'existing', 'updated'].includes(data.status))) {
+                        if (data && ['created', 'existing', 'updated'].includes(data.status)) {
                             csatTicketRequestedConversations.add(activeConversationId);
+                            if (data.conversation_id) {
+                                csatTicketRequestedConversations.add(data.conversation_id);
+                                if (data.conversation_id !== activeConversationId) {
+                                    adoptSilentHandoffConversation(data.conversation_id, data.appUserId || activeAppUserId, ticketTitle);
+                                }
+                            }
                         }
                         return data;
                     });

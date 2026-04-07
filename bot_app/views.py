@@ -466,6 +466,131 @@ def add_ticket_transcript_note(
         logger.error(f"Ticket transcript note error: {e}")
         return False
 
+def create_sunshine_conversation_for_user(app_user_id: str) -> Optional[str]:
+    try:
+        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+        conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations"
+        conv_payload = {"type": "personal", "participants": [{"userId": app_user_id}]}
+        conv_response = requests.post(conv_url, json=conv_payload, auth=auth, timeout=15)
+        if conv_response.status_code in [200, 201]:
+            return conv_response.json().get("conversation", {}).get("id")
+        logger.error(f"Failed to create Sunshine conversation: {conv_response.status_code} - {conv_response.text}")
+        return None
+    except Exception as e:
+        logger.error(f"Sunshine conversation create error: {e}")
+        return None
+
+def normalize_transcript_entries(entries: Any) -> List[Dict[str, str]]:
+    normalized: List[Dict[str, str]] = []
+    if not isinstance(entries, list):
+        return normalized
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        speaker = strip_html_tags(str(entry.get("speaker", "") or "")).strip() or "Bot"
+        text = str(entry.get("text", "") or "")
+        text = text.replace('\u00a0', ' ').replace('\r', '')
+        text = re.sub(r'\n{3,}', '\n\n', text).strip()
+        if not text:
+            continue
+        normalized.append({"speaker": speaker, "text": text})
+    return normalized
+
+def sync_transcript_entries_to_sunshine(
+    conversation_id: str,
+    app_user_id: str,
+    transcript_entries: List[Dict[str, str]]
+) -> bool:
+    if not transcript_entries:
+        return True
+    try:
+        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+        msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+        for entry in transcript_entries:
+            speaker = normalize_issue_key(entry.get("speaker"))
+            text = entry.get("text", "")
+            if not text:
+                continue
+            if speaker == "user":
+                author = {"type": "user", "userId": app_user_id}
+            elif speaker == "system":
+                author = {"type": "business", "displayName": "System"}
+            else:
+                author = {"type": "business", "displayName": "Yatri Bandhu"}
+            payload = {"author": author, "content": {"type": "text", "text": text}}
+            response = requests.post(msg_url, json=payload, auth=auth, timeout=15)
+            if response.status_code not in [200, 201]:
+                logger.error(f"Transcript sync failed for {conversation_id}: {response.status_code} - {response.text}")
+                return False
+        return True
+    except Exception as e:
+        logger.error(f"Transcript sync error: {e}")
+        return False
+
+def build_pass_control_metadata(
+    conversation_id: str,
+    app_user_id: Optional[str],
+    issue_context: Optional[Dict[str, Any]],
+    reason: Optional[str],
+    app_related_sub_category: Optional[Union[str, int]] = None,
+) -> Dict[str, Any]:
+    metadata: Dict[str, Any] = {
+        "dataCapture.systemField.tags": "escalated_from_bot",
+        "dataCapture.systemField.requester.name": "Guest User"
+    }
+    routing_payload = build_ticket_routing_payload(
+        conversation_id=conversation_id,
+        app_user_id=app_user_id,
+        issue_context=issue_context,
+        reason=reason,
+        app_related_sub_category=app_related_sub_category,
+    )
+    for field in routing_payload.get("custom_fields", []):
+        field_id = field.get("id")
+        if field_id:
+            metadata[f"dataCapture.ticketField.{field_id}"] = field.get("value")
+    return metadata
+
+def silently_pass_conversation_to_agent(
+    conversation_id: str,
+    app_user_id: Optional[str],
+    reason: Optional[str],
+    issue_context: Optional[Dict[str, Any]],
+    app_related_category: Optional[str],
+) -> bool:
+    try:
+        pending_data = {
+            "conversation_id": conversation_id,
+            "app_user_id": app_user_id,
+            "reason": reason,
+            "app_related_category": app_related_category,
+            "issue_context": issue_context,
+            "timestamp": datetime.now().isoformat(),
+        }
+        cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=300)
+        if app_related_category:
+            cache.set(f'category_{conversation_id}', app_related_category, timeout=3600)
+
+        metadata = build_pass_control_metadata(
+            conversation_id=conversation_id,
+            app_user_id=app_user_id,
+            issue_context=issue_context,
+            reason=reason,
+            app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
+        )
+
+        auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+        pass_control_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/passControl"
+        pass_control_payload = {"switchboardIntegration": "next", "metadata": metadata}
+        response = requests.post(pass_control_url, json=pass_control_payload, auth=auth, timeout=15)
+        if response.status_code != 200:
+            logger.error(f"Silent passControl failed: {response.status_code} - {response.text}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Silent passControl error: {e}")
+        return False
+
 def forward_agent_message_to_websocket(conversation_id: str, message_text: str, agent_name: str = "Agent", choices: list = None, actions: list = None, received_timestamp: str = None) -> bool:
     """
     Send agent message to WebSocket clients via Django Channels group.
@@ -1038,26 +1163,30 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
 @csrf_exempt
 def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
     """
-    Create a Zendesk ticket from the full visible conversation transcript.
+    Create a Sunshine handoff conversation from the visible transcript and
+    silently escalate it to Zendesk via passControl.
 
     Request body (POST):
-        - conversationId (str, required): Sunshine conversation ID
+        - conversationId (str, required): Source Sunshine conversation ID
+        - appUserId (str, required): Sunshine user ID
         - title (str, optional): Ticket subject/title
         - transcript (str, optional): Full conversation transcript from top to bottom
+        - transcriptEntries (list, optional): Structured transcript entries
         - appRelatedCategory (str, optional): App-related category for custom field mapping
 
     Returns:
-        JsonResponse: {"status": "created" | "existing", "ticket_id": str}
+        JsonResponse: {"status": "created" | "existing", "conversation_id": str}
     """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
     try:
         data = json.loads(request.body)
-        conversation_id = str(data.get("conversationId", "")).strip()
+        source_conversation_id = str(data.get("conversationId", "")).strip()
         title = strip_html_tags(str(data.get("title", "Support Request"))).strip() or "Support Request"
         transcript = str(data.get("transcript", "")).strip()
         app_user_id = str(data.get("appUserId", "")).strip() or None
+        transcript_entries = normalize_transcript_entries(data.get("transcriptEntries"))
         app_related_category = data.get("appRelatedCategory")
         issue_context = build_issue_context(
             issue_context=data.get("issueContext"),
@@ -1066,72 +1195,44 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             app_related_category=app_related_category
         )
 
-        if not conversation_id:
+        if not source_conversation_id:
             return JsonResponse({"error": "Missing conversationId"}, status=400)
+        if not app_user_id:
+            return JsonResponse({"error": "Missing appUserId"}, status=400)
 
-        ticket_id = cache.get(f'conversation_{conversation_id}')
-
-        if not ticket_id and ZENDESK_CHAT_CONVERSATION_FIELD_ID:
-            try:
-                search_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/search.json"
-                search_query = f"custom_field_{ZENDESK_CHAT_CONVERSATION_FIELD_ID}:{conversation_id}"
-                response = requests.get(
-                    search_url,
-                    params={"query": search_query},
-                    auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
-                    timeout=15
-                )
-                if response.status_code == 200:
-                    results = response.json().get("results", [])
-                    if results:
-                        ticket_id = str(results[0].get("id"))
-                        store_conversation_ticket_mapping(conversation_id, ticket_id)
-            except Exception:
-                logger.exception("create_conversation_ticket search error")
-
-        category_tag = APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None
-        description_body = build_conversation_transcript_body(title, transcript)
-
-        if ticket_id:
-            updated = add_ticket_transcript_note(
-                ticket_id=ticket_id,
-                title=title[:200],
-                transcript=transcript,
-                issue_context=issue_context,
-                conversation_id=conversation_id,
-                app_user_id=app_user_id,
-                app_related_sub_category=category_tag,
-            )
+        existing_handoff_conversation_id = cache.get(f'csat_handoff_{source_conversation_id}')
+        if existing_handoff_conversation_id:
             return JsonResponse({
-                "status": "updated" if updated else "existing",
-                "ticket_id": ticket_id,
-                "conversation_id": conversation_id
+                "status": "existing",
+                "conversation_id": existing_handoff_conversation_id,
+                "source_conversation_id": source_conversation_id,
+                "appUserId": app_user_id
             })
 
-        result = create_zendesk_ticket(
-            subject=title[:200],
-            description=description_body,
-            conversation_id=conversation_id,
-            app_related_sub_category=category_tag,
-            ticket_context=issue_context,
+        handoff_conversation_id = create_sunshine_conversation_for_user(app_user_id)
+        if not handoff_conversation_id:
+            return JsonResponse({"error": "Failed to create Sunshine handoff conversation"}, status=500)
+
+        if not sync_transcript_entries_to_sunshine(handoff_conversation_id, app_user_id, transcript_entries):
+            return JsonResponse({"error": "Failed to sync transcript to Sunshine conversation"}, status=500)
+
+        passed = silently_pass_conversation_to_agent(
+            conversation_id=handoff_conversation_id,
             app_user_id=app_user_id,
+            reason=title,
+            issue_context=issue_context,
+            app_related_category=app_related_category
         )
+        if not passed:
+            return JsonResponse({"error": "Failed to hand off Sunshine conversation"}, status=500)
 
-        ticket_obj = result.get("ticket") if isinstance(result, dict) else None
-        created_ticket_id = None
-        if isinstance(ticket_obj, dict):
-            created_ticket_id = ticket_obj.get("id")
-        elif isinstance(result, dict):
-            created_ticket_id = result.get("id")
-
-        if not created_ticket_id:
-            logger.error(f"create_conversation_ticket failed: {result}")
-            return JsonResponse({"error": "Failed to create ticket", "details": result}, status=500)
+        cache.set(f'csat_handoff_{source_conversation_id}', handoff_conversation_id, timeout=604800)
 
         return JsonResponse({
             "status": "created",
-            "ticket_id": str(created_ticket_id),
-            "conversation_id": conversation_id
+            "conversation_id": handoff_conversation_id,
+            "source_conversation_id": source_conversation_id,
+            "appUserId": app_user_id
         })
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
