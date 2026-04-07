@@ -635,6 +635,37 @@ def resolve_ticket_id_for_conversation(
         logger.exception(f"resolve_ticket_id_for_conversation error: {e}")
         return None
 
+def apply_ticket_routing_after_handoff(
+    conversation_id: str,
+    app_user_id: Optional[str],
+    reason: Optional[str],
+    issue_context: Optional[Dict[str, Any]],
+    app_related_category: Optional[str] = None,
+    title: Optional[str] = None,
+    transcript: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Resolve the Zendesk ticket created by Sunshine handoff and apply the
+    mapped form/custom fields immediately, instead of waiting only on webhooks.
+    """
+    ticket_id = resolve_ticket_id_for_conversation(conversation_id)
+    if not ticket_id:
+        return {"ticket_id": None, "routing_updated": False}
+
+    routing_updated = update_ticket_routing(
+        ticket_id,
+        issue_context=issue_context,
+        conversation_id=conversation_id,
+        app_user_id=app_user_id,
+        reason=reason,
+        title=title,
+        transcript=transcript,
+        app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
+    )
+    if routing_updated:
+        cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
+    return {"ticket_id": ticket_id, "routing_updated": routing_updated}
+
 def forward_agent_message_to_websocket(conversation_id: str, message_text: str, agent_name: str = "Agent", choices: list = None, actions: list = None, received_timestamp: str = None) -> bool:
     """
     Send agent message to WebSocket clients via Django Channels group.
@@ -1199,7 +1230,22 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         if pc_response.status_code != 200:
             return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
 
-        return JsonResponse({"status": "escalated", "conversation_id": conversation_id, "category": app_related_category})
+        routing_result = apply_ticket_routing_after_handoff(
+            conversation_id=conversation_id,
+            app_user_id=app_user_id,
+            reason=reason,
+            issue_context=issue_context,
+            app_related_category=app_related_category,
+            title=reason,
+        )
+
+        return JsonResponse({
+            "status": "escalated",
+            "conversation_id": conversation_id,
+            "category": app_related_category,
+            "ticket_id": routing_result.get("ticket_id"),
+            "routing_updated": routing_result.get("routing_updated", False),
+        })
     except Exception as e:
         logger.exception("escalate_to_agent error")
         return JsonResponse({"error": str(e)}, status=500)
@@ -1272,29 +1318,23 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
 
         cache.set(f'csat_handoff_{source_conversation_id}', handoff_conversation_id, timeout=604800)
 
-        ticket_id = resolve_ticket_id_for_conversation(handoff_conversation_id)
-        routing_updated = False
-        if ticket_id:
-            routing_updated = update_ticket_routing(
-                ticket_id,
-                issue_context=issue_context,
-                conversation_id=handoff_conversation_id,
-                app_user_id=app_user_id,
-                reason=title,
-                title=title,
-                transcript=transcript,
-                app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
-            )
-            if routing_updated:
-                cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
+        routing_result = apply_ticket_routing_after_handoff(
+            conversation_id=handoff_conversation_id,
+            app_user_id=app_user_id,
+            reason=title,
+            issue_context=issue_context,
+            app_related_category=app_related_category,
+            title=title,
+            transcript=transcript,
+        )
 
         return JsonResponse({
             "status": "created",
             "conversation_id": handoff_conversation_id,
             "source_conversation_id": source_conversation_id,
             "appUserId": app_user_id,
-            "ticket_id": ticket_id,
-            "routing_updated": routing_updated,
+            "ticket_id": routing_result.get("ticket_id"),
+            "routing_updated": routing_result.get("routing_updated", False),
         })
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
