@@ -109,10 +109,320 @@ ZENDESK_EMAIL = os.getenv("ZENDESK_EMAIL")
 ZENDESK_API_TOKEN = os.getenv("ZENDESK_API_TOKEN")
 ZENDESK_CHAT_CONVERSATION_FIELD_ID = os.getenv("ZENDESK_CHAT_CONVERSATION_FIELD_ID")
 APP_RELATED_SUB_CATEGORY = os.getenv("APP_RELATED_SUB_CATEGORY")
+NAME_FIELD_ID = os.getenv("Name") or os.getenv("NAME_FIELD_ID")
+EMAIL_ID_FIELD_ID = os.getenv("Email_ID") or os.getenv("EMAIL_ID_FIELD_ID")
+FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID = os.getenv("Fare_and_payemt_subcategory") or os.getenv("FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID")
+RIDE_ID_FIELD_ID = os.getenv("rideId") or os.getenv("RIDE_ID_FIELD_ID")
+DRIVER_NAME_FIELD_ID = os.getenv("Driver_Name") or os.getenv("DRIVER_NAME_FIELD_ID")
+PAYMENT_MODE_FIELD_ID = os.getenv("Payment_Mode") or os.getenv("PAYMENT_MODE_FIELD_ID")
+CONTACT_FIELD_ID = os.getenv("Contact") or os.getenv("CONTACT_FIELD_ID")
+VEHICLE_NUMBER_FIELD_ID = os.getenv("Vehicle_Number") or os.getenv("VEHICLE_NUMBER_FIELD_ID")
+VEHICLE_ISSUE_TYPE_FIELD_ID = os.getenv("Vehicle_Issue_Type") or os.getenv("VEHICLE_ISSUE_TYPE_FIELD_ID")
+ESCALATION_TO_SAFETY_TEAM_FIELD_ID = os.getenv("Escalationto_Safety_Team") or os.getenv("ESCALATION_TO_SAFETY_TEAM_FIELD_ID")
+SAFETY_ISSUE_TYPE_FIELD_ID = os.getenv("Safety_issue_type") or os.getenv("SAFETY_ISSUE_TYPE_FIELD_ID")
+FARE_AND_PAYMENT_FORM_ID = os.getenv("FARE_AND_PAYMENT_FORM_ID")
+FIMD_A_LOST_ITEM_FORM_ID = os.getenv("FIMD_A_LOST_ITEM_FORM_ID")
+APP_RELATED_ISSUE_FORM_ID = os.getenv("APP_RELATED_ISSUE_FORM_ID")
+VEHUICLE_AC_ISSUE_FORM_ID = os.getenv("VEHUICLE_AC_ISSUE_FORM_ID")
+SAFETY_ISSUE_FORM_ID = os.getenv("SAFETY_ISSUE_FORM_ID")
 SUNSHINE_APP_ID = os.getenv("SUNSHINE_APP_ID", "").strip()
 SUNSHINE_API_KEY_ID = os.getenv("SUNSHINE_API_KEY_ID", "").strip()
 SUNSHINE_API_KEY_SECRET = os.getenv("SUNSHINE_API_KEY_SECRET", "").strip()
 SUNSHINE_API_BASE_URL = os.getenv("SUNSHINE_API_BASE_URL", "https://api.smooch.io").strip().rstrip('/')
+
+APP_RELATED_CATEGORY_TAGS = {
+    "location not found or inaccurate": "location_not_found_or_inaccurate",
+    "unable to login": "unable_to_login",
+    "my app is not responding": "my_app_is_not_responding",
+    "others": "others",
+    "other": "others",
+    "location_not_found_or_inaccurate": "location_not_found_or_inaccurate",
+    "unable_to_login": "unable_to_login",
+    "my_app_is_not_responding": "my_app_is_not_responding",
+    "others": "others",
+}
+
+FARE_AND_PAYMENT_SUBCATEGORY_TAGS = {
+    "multiple debits occurred": "multiple_debits_occured",
+    "multiple debits occured": "multiple_debits_occured",
+    "driver charged extra fare": "driver_charged_extra_fare",
+    "charged higher than estimated fare": "charged_higher_than_estimated_fare",
+    "cancellation charges": "cancellation_charges",
+}
+
+VEHICLE_ISSUE_TYPE_TAGS = {
+    "unclean unhygienic vehicle": "unclean/unhygienic_vehicle",
+    "vehicle unsafe": "vehicle_unsafe",
+    "ac not turned on ac stopped working midway": "ac_not_turned_on_/_ac_stopped_working",
+    "ac not turned on ac stopped working": "ac_not_turned_on_/_ac_stopped_working",
+    "vehicle was different": "vehicle_was_different",
+}
+
+SAFETY_ISSUE_TYPE_TAGS = {
+    "drunk and drive": "drunk_and_drive",
+    "driver was rude or misbehaved": "driver_was_rude_or_misbehaved",
+    "other": "other",
+    "others": "other",
+    "met with an accident": "met_with_an_accident",
+    "sexual harassment": "sexual_harresment",
+    "sexual harrasment": "sexual_harresment",
+    "sexual harresment": "sexual_harresment",
+    "physical fights": "phyiscal_fights",
+    "phyiscal fights": "phyiscal_fights",
+    "extra person in the vehicle": "extra_person_in_the_vehicle",
+    "rash driving": "rash_driving",
+    "vehicle broke down": "vehicle_broke_down",
+}
+
+PAYMENT_MODE_TAGS = {
+    "cash": "cash",
+    "upi": "upi",
+}
+
+ISSUE_PATH_PREFIXES = ("App Related Issues", "Ride Related Issues")
+
+def normalize_issue_key(value: Any) -> str:
+    text = strip_html_tags(str(value or "")).lower()
+    text = text.replace("&", " and ")
+    text = re.sub(r'[^a-z0-9]+', ' ', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+def safe_int(value: Any) -> Optional[int]:
+    try:
+        if value is None or str(value).strip() == "":
+            return None
+        return int(str(value).strip())
+    except Exception:
+        return None
+
+def append_custom_field(custom_fields: List[Dict[str, Any]], field_id: Any, value: Any) -> None:
+    field_int = safe_int(field_id)
+    if not field_int or value is None or value == "":
+        return
+    for field in custom_fields:
+        if field.get("id") == field_int:
+            field["value"] = value
+            return
+    custom_fields.append({"id": field_int, "value": value})
+
+def first_non_empty(*values: Any) -> Optional[Any]:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            if value.strip():
+                return value.strip()
+        else:
+            return value
+    return None
+
+def extract_issue_path_from_text(*candidates: Any) -> str:
+    for candidate in candidates:
+        if not candidate:
+            continue
+        text = str(candidate)
+        match = re.search(r'Issue Path:\s*([^\r\n]+)', text, re.IGNORECASE)
+        if match:
+            return strip_html_tags(match.group(1)).strip()
+        cleaned = strip_html_tags(text).strip()
+        if any(cleaned.startswith(prefix) for prefix in ISSUE_PATH_PREFIXES):
+            return cleaned
+    return ""
+
+def extract_named_value(patterns: List[str], *text_sources: Any) -> Optional[str]:
+    for source in text_sources:
+        if not source:
+            continue
+        cleaned = strip_html_tags(str(source))
+        for pattern in patterns:
+            match = re.search(pattern, cleaned, re.IGNORECASE | re.MULTILINE)
+            if match:
+                value = match.group(1).strip().strip(",.;")
+                if value:
+                    return value
+    return None
+
+def looks_like_email(value: Any) -> bool:
+    return bool(value and re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', str(value).strip()))
+
+def looks_like_phone(value: Any) -> bool:
+    return bool(value and re.fullmatch(r'\+?[0-9][0-9\s-]{6,}', str(value).strip()))
+
+def looks_like_uuid(value: Any) -> bool:
+    return bool(value and re.fullmatch(r'[0-9a-fA-F-]{32,36}', str(value).strip()))
+
+def build_issue_context(
+    issue_context: Optional[Dict[str, Any]] = None,
+    reason: Optional[str] = None,
+    title: Optional[str] = None,
+    transcript: Optional[str] = None,
+    app_related_category: Optional[str] = None
+) -> Dict[str, Any]:
+    context = dict(issue_context) if isinstance(issue_context, dict) else {}
+    current_path = first_non_empty(context.get("currentPath"), extract_issue_path_from_text(reason, title, transcript))
+    if current_path:
+        context["currentPath"] = current_path
+        parts = [strip_html_tags(part).strip() for part in str(current_path).split(">") if strip_html_tags(part).strip()]
+        if parts and not context.get("mainCategory"):
+            context["mainCategory"] = parts[0]
+        if len(parts) > 1 and not context.get("category"):
+            context["category"] = parts[1]
+        if len(parts) > 2 and not context.get("subcategory"):
+            context["subcategory"] = parts[2]
+        if len(parts) > 3 and not context.get("detail"):
+            context["detail"] = parts[3]
+    if app_related_category and not context.get("category"):
+        context["mainCategory"] = context.get("mainCategory") or "App Related Issues"
+        context["category"] = app_related_category
+    return context
+
+def build_ticket_routing_payload(
+    conversation_id: Optional[str] = None,
+    app_user_id: Optional[str] = None,
+    issue_context: Optional[Dict[str, Any]] = None,
+    reason: Optional[str] = None,
+    title: Optional[str] = None,
+    transcript: Optional[str] = None,
+    app_related_sub_category: Optional[Union[str, int]] = None,
+) -> Dict[str, Any]:
+    context = build_issue_context(
+        issue_context=issue_context,
+        reason=reason,
+        title=title,
+        transcript=transcript,
+        app_related_category=str(app_related_sub_category) if app_related_sub_category else None
+    )
+    custom_fields: List[Dict[str, Any]] = []
+    ticket_payload: Dict[str, Any] = {}
+
+    append_custom_field(custom_fields, ZENDESK_CHAT_CONVERSATION_FIELD_ID, conversation_id)
+    append_custom_field(custom_fields, NAME_FIELD_ID, context.get("name") or "Guest User")
+
+    email_value = first_non_empty(
+        context.get("email"),
+        extract_named_value([r'email(?:_id)?\s*[:#-]\s*([^\s,;]+@[^\s,;]+)'], title, reason, transcript),
+        app_user_id if looks_like_email(app_user_id) else None,
+    )
+    append_custom_field(custom_fields, EMAIL_ID_FIELD_ID, email_value)
+
+    contact_value = first_non_empty(
+        context.get("contact"),
+        extract_named_value([r'contact\s*[:#-]\s*(\+?[0-9][0-9\s-]{6,})'], title, reason, transcript),
+        app_user_id if looks_like_phone(app_user_id) and not looks_like_uuid(app_user_id) else None,
+    )
+    append_custom_field(custom_fields, CONTACT_FIELD_ID, contact_value)
+
+    main_key = normalize_issue_key(context.get("mainCategory"))
+    category_key = normalize_issue_key(context.get("category"))
+    subcategory_key = normalize_issue_key(context.get("subcategory"))
+    detail_key = normalize_issue_key(context.get("detail"))
+
+    if main_key == "app related issues" or app_related_sub_category:
+        form_id = safe_int(APP_RELATED_ISSUE_FORM_ID)
+        if form_id:
+            ticket_payload["ticket_form_id"] = form_id
+        tag_value = str(app_related_sub_category) if app_related_sub_category else APP_RELATED_CATEGORY_TAGS.get(category_key)
+        append_custom_field(custom_fields, APP_RELATED_SUB_CATEGORY, tag_value)
+    elif main_key == "ride related issues":
+        if category_key == "fare and payment":
+            form_id = safe_int(FARE_AND_PAYMENT_FORM_ID)
+            if form_id:
+                ticket_payload["ticket_form_id"] = form_id
+            append_custom_field(
+                custom_fields,
+                FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID,
+                FARE_AND_PAYMENT_SUBCATEGORY_TAGS.get(subcategory_key)
+            )
+            append_custom_field(
+                custom_fields,
+                PAYMENT_MODE_FIELD_ID,
+                PAYMENT_MODE_TAGS.get(detail_key)
+            )
+        elif category_key == "find a lost item":
+            form_id = safe_int(FIMD_A_LOST_ITEM_FORM_ID)
+            if form_id:
+                ticket_payload["ticket_form_id"] = form_id
+            append_custom_field(
+                custom_fields,
+                RIDE_ID_FIELD_ID,
+                first_non_empty(
+                    context.get("rideId"),
+                    extract_named_value([r'ride\s*id\s*[:#-]\s*([A-Za-z0-9_-]+)'], title, reason, transcript)
+                )
+            )
+            append_custom_field(
+                custom_fields,
+                DRIVER_NAME_FIELD_ID,
+                first_non_empty(
+                    context.get("driverName"),
+                    extract_named_value([r'driver\s*name\s*[:#-]\s*([^\r\n]+)'], title, reason, transcript)
+                )
+            )
+            append_custom_field(
+                custom_fields,
+                VEHICLE_NUMBER_FIELD_ID,
+                first_non_empty(
+                    context.get("vehicleNumber"),
+                    extract_named_value([r'vehicle\s*(?:number|no)\s*[:#-]\s*([A-Za-z0-9 -]+)'], title, reason, transcript)
+                )
+            )
+        elif category_key == "vehicle related issue":
+            form_id = safe_int(VEHUICLE_AC_ISSUE_FORM_ID)
+            if form_id:
+                ticket_payload["ticket_form_id"] = form_id
+            append_custom_field(
+                custom_fields,
+                VEHICLE_ISSUE_TYPE_FIELD_ID,
+                VEHICLE_ISSUE_TYPE_TAGS.get(subcategory_key)
+            )
+        elif category_key == "safety related":
+            form_id = safe_int(SAFETY_ISSUE_FORM_ID)
+            if form_id:
+                ticket_payload["ticket_form_id"] = form_id
+            append_custom_field(custom_fields, ESCALATION_TO_SAFETY_TEAM_FIELD_ID, True)
+            append_custom_field(
+                custom_fields,
+                SAFETY_ISSUE_TYPE_FIELD_ID,
+                SAFETY_ISSUE_TYPE_TAGS.get(subcategory_key)
+            )
+
+    if custom_fields:
+        ticket_payload["custom_fields"] = custom_fields
+    return ticket_payload
+
+def update_ticket_routing(
+    ticket_id: str,
+    issue_context: Optional[Dict[str, Any]] = None,
+    conversation_id: Optional[str] = None,
+    app_user_id: Optional[str] = None,
+    reason: Optional[str] = None,
+    title: Optional[str] = None,
+    transcript: Optional[str] = None,
+    app_related_sub_category: Optional[Union[str, int]] = None,
+) -> bool:
+    try:
+        payload = build_ticket_routing_payload(
+            conversation_id=conversation_id,
+            app_user_id=app_user_id,
+            issue_context=issue_context,
+            reason=reason,
+            title=title,
+            transcript=transcript,
+            app_related_sub_category=app_related_sub_category,
+        )
+        if not payload:
+            return True
+        url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+        response = requests.put(
+            url,
+            json={"ticket": payload},
+            auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+            timeout=15
+        )
+        return response.status_code == 200
+    except Exception as e:
+        logger.error(f"Ticket routing update error: {e}")
+        return False
 
 def forward_agent_message_to_websocket(conversation_id: str, message_text: str, agent_name: str = "Agent", choices: list = None, actions: list = None, received_timestamp: str = None) -> bool:
     """
@@ -289,13 +599,19 @@ def verify_signature(payload: bytes, signature: str) -> bool:
     calc = hmac.new(SECRET.encode(), payload, hashlib.sha256).hexdigest()
     return hmac.compare_digest(calc, signature)
 
-def create_zendesk_ticket(subject: str, description: str, conversation_id: Optional[str] = None, app_related_sub_category: Optional[Union[str,int]] = None) -> Dict[str, Any]:
+def create_zendesk_ticket(
+    subject: str,
+    description: str,
+    conversation_id: Optional[str] = None,
+    app_related_sub_category: Optional[Union[str, int]] = None,
+    ticket_context: Optional[Dict[str, Any]] = None,
+    app_user_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Create a support ticket in Zendesk and link to conversation.
     
-    Creates a new support ticket with optional custom field mappings to track
-    the associated Sunshine conversation and app subcategory. Stores the mapping
-    in cache for quick lookup.
+    Creates a new support ticket with optional form and custom-field mappings.
+    Stores the conversation-ticket mapping in cache for quick lookup.
     
     Args:
         subject (str): Ticket subject line
@@ -314,22 +630,16 @@ def create_zendesk_ticket(subject: str, description: str, conversation_id: Optio
     """
     url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets.json"
     ticket = {"subject": subject, "comment": {"body": description}}
-    custom_fields: List[Dict[str, Union[int,str]]] = []
-    
-    try:
-        if conversation_id and ZENDESK_CHAT_CONVERSATION_FIELD_ID:
-            custom_fields.append({"id": int(ZENDESK_CHAT_CONVERSATION_FIELD_ID), "value": conversation_id})
-    except Exception:
-        logger.exception("Invalid ZENDESK_CHAT_CONVERSATION_FIELD_ID")
-
-    try:
-        if app_related_sub_category and APP_RELATED_SUB_CATEGORY:
-            custom_fields.append({"id": int(APP_RELATED_SUB_CATEGORY), "value": app_related_sub_category})
-    except Exception:
-        logger.exception("Invalid APP_RELATED_SUB_CATEGORY")
-
-    if custom_fields:
-        ticket["custom_fields"] = custom_fields
+    ticket.update(
+        build_ticket_routing_payload(
+            conversation_id=conversation_id,
+            app_user_id=app_user_id,
+            issue_context=ticket_context,
+            title=subject,
+            transcript=description,
+            app_related_sub_category=app_related_sub_category,
+        )
+    )
 
     response = requests.post(url, json={"ticket": ticket}, auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN), timeout=15)
     
@@ -619,6 +929,11 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         app_user_id = data.get("appUserId")
         reason = data.get("reason", "User requested agent support")
         app_related_category = data.get("appRelatedCategory")
+        issue_context = build_issue_context(
+            issue_context=data.get("issueContext"),
+            reason=reason,
+            app_related_category=app_related_category
+        )
         
         if not conversation_id:
             return JsonResponse({"error": "Missing conversationId"}, status=400)
@@ -630,32 +945,27 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             'conversation_id': conversation_id,
             'app_user_id': app_user_id,
             'reason': reason,
-            'app_related_category': app_related_category
+            'app_related_category': app_related_category,
+            'issue_context': issue_context,
+            'timestamp': datetime.now().isoformat()
         }
         cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=300)
 
         app_id = SUNSHINE_APP_ID
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
-
-        category_mapping = {
-            "Location Not Found or Inaccurate": "location_not_found_or_inaccurate",
-            "Unable to Login": "unable_to_login",
-            "My App is Not Responding": "my_app_is_not_responding",
-            "Others": "others",
-            "location_not_found_or_inaccurate": "location_not_found_or_inaccurate",
-            "unable_to_login": "unable_to_login",
-            "my_app_is_not_responding": "my_app_is_not_responding",
-            "others": "others"
-        }
-        
-        category_tag = category_mapping.get(app_related_category, "others") if app_related_category else None
         metadata = {"dataCapture.systemField.tags": "escalated_from_bot", "dataCapture.systemField.requester.name": "Guest User"}
-        
-        if ZENDESK_CHAT_CONVERSATION_FIELD_ID:
-            metadata[f"dataCapture.ticketField.{ZENDESK_CHAT_CONVERSATION_FIELD_ID}"] = conversation_id
-        
-        if category_tag and APP_RELATED_SUB_CATEGORY:
-            metadata[f"dataCapture.ticketField.{APP_RELATED_SUB_CATEGORY}"] = category_tag
+
+        routing_payload = build_ticket_routing_payload(
+            conversation_id=conversation_id,
+            app_user_id=app_user_id,
+            issue_context=issue_context,
+            reason=reason,
+            app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
+        )
+        for field in routing_payload.get("custom_fields", []):
+            field_id = field.get("id")
+            if field_id:
+                metadata[f"dataCapture.ticketField.{field_id}"] = field.get("value")
 
         if app_user_id:
             msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/messages"
@@ -681,6 +991,112 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"status": "escalated", "conversation_id": conversation_id, "category": app_related_category})
     except Exception as e:
         logger.exception("escalate_to_agent error")
+        return JsonResponse({"error": str(e)}, status=500)
+
+@csrf_exempt
+def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
+    """
+    Create a Zendesk ticket from the full visible conversation transcript.
+
+    Request body (POST):
+        - conversationId (str, required): Sunshine conversation ID
+        - title (str, optional): Ticket subject/title
+        - transcript (str, optional): Full conversation transcript from top to bottom
+        - appRelatedCategory (str, optional): App-related category for custom field mapping
+
+    Returns:
+        JsonResponse: {"status": "created" | "existing", "ticket_id": str}
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        conversation_id = str(data.get("conversationId", "")).strip()
+        title = strip_html_tags(str(data.get("title", "Support Request"))).strip() or "Support Request"
+        transcript = str(data.get("transcript", "")).strip()
+        app_user_id = str(data.get("appUserId", "")).strip() or None
+        app_related_category = data.get("appRelatedCategory")
+        issue_context = build_issue_context(
+            issue_context=data.get("issueContext"),
+            title=title,
+            transcript=transcript,
+            app_related_category=app_related_category
+        )
+
+        if not conversation_id:
+            return JsonResponse({"error": "Missing conversationId"}, status=400)
+
+        ticket_id = cache.get(f'conversation_{conversation_id}')
+
+        if not ticket_id and ZENDESK_CHAT_CONVERSATION_FIELD_ID:
+            try:
+                search_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/search.json"
+                search_query = f"custom_field_{ZENDESK_CHAT_CONVERSATION_FIELD_ID}:{conversation_id}"
+                response = requests.get(
+                    search_url,
+                    params={"query": search_query},
+                    auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+                    timeout=15
+                )
+                if response.status_code == 200:
+                    results = response.json().get("results", [])
+                    if results:
+                        ticket_id = str(results[0].get("id"))
+                        store_conversation_ticket_mapping(conversation_id, ticket_id)
+            except Exception:
+                logger.exception("create_conversation_ticket search error")
+
+        if ticket_id:
+            return JsonResponse({"status": "existing", "ticket_id": ticket_id, "conversation_id": conversation_id})
+
+        category_mapping = {
+            "Location Not Found or Inaccurate": "location_not_found_or_inaccurate",
+            "Unable to Login": "unable_to_login",
+            "My App is Not Responding": "my_app_is_not_responding",
+            "Others": "others",
+            "location_not_found_or_inaccurate": "location_not_found_or_inaccurate",
+            "unable_to_login": "unable_to_login",
+            "my_app_is_not_responding": "my_app_is_not_responding",
+            "others": "others"
+        }
+        category_tag = category_mapping.get(app_related_category) if app_related_category else None
+
+        description_lines = [
+            f"Issue Path: {title}",
+            "",
+            "Conversation Transcript:",
+            transcript or "No transcript captured."
+        ]
+        result = create_zendesk_ticket(
+            subject=title[:200],
+            description="\n".join(description_lines),
+            conversation_id=conversation_id,
+            app_related_sub_category=category_tag,
+            ticket_context=issue_context,
+            app_user_id=app_user_id,
+        )
+
+        ticket_obj = result.get("ticket") if isinstance(result, dict) else None
+        created_ticket_id = None
+        if isinstance(ticket_obj, dict):
+            created_ticket_id = ticket_obj.get("id")
+        elif isinstance(result, dict):
+            created_ticket_id = result.get("id")
+
+        if not created_ticket_id:
+            logger.error(f"create_conversation_ticket failed: {result}")
+            return JsonResponse({"error": "Failed to create ticket", "details": result}, status=500)
+
+        return JsonResponse({
+            "status": "created",
+            "ticket_id": str(created_ticket_id),
+            "conversation_id": conversation_id
+        })
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    except Exception as e:
+        logger.exception("create_conversation_ticket error")
         return JsonResponse({"error": str(e)}, status=500)
 
 @csrf_exempt
@@ -796,11 +1212,21 @@ def handle_agent_take_control(event_data: Dict[str, Any]) -> None:
         if ticket_id:
             pending_data = cache.get(f'pending_escalation_{conversation_id}')
             app_related_category = None
+            issue_context = None
+            app_user_id = None
             if pending_data:
                 app_related_category = pending_data.get('app_related_category')
+                issue_context = pending_data.get('issue_context')
+                app_user_id = pending_data.get('app_user_id')
             store_conversation_ticket_mapping(conversation_id, ticket_id)
-            if app_related_category and APP_RELATED_SUB_CATEGORY:
-                update_ticket_custom_field(ticket_id, app_related_category)
+            update_ticket_routing(
+                ticket_id,
+                issue_context=issue_context,
+                conversation_id=conversation_id,
+                app_user_id=app_user_id,
+                reason=pending_data.get('reason') if pending_data else None,
+                app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
+            )
             cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
 
 def update_ticket_custom_field(ticket_id: str, category: str) -> bool:
@@ -826,25 +1252,12 @@ def update_ticket_custom_field(ticket_id: str, category: str) -> bool:
     Note:
         Requires APP_RELATED_SUB_CATEGORY environment variable with custom field ID
     """
-    try:
-        category_mapping = {
-            "Location Not Found or Inaccurate": "location_not_found_or_inaccurate",
-            "Unable to Login": "unable_to_login",
-            "My App is Not Responding": "my_app_is_not_responding",
-            "Others": "others",
-            "location_not_found_or_inaccurate": "location_not_found_or_inaccurate",
-            "unable_to_login": "unable_to_login",
-            "my_app_is_not_responding": "my_app_is_not_responding",
-            "others": "others"
-        }
-        tag_value = category_mapping.get(category, "others")
-        url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
-        data = {"ticket": {"custom_fields": [{"id": int(APP_RELATED_SUB_CATEGORY), "value": tag_value}]}}
-        response = requests.put(url, json=data, auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN), timeout=15)
-        return response.status_code == 200
-    except Exception as e:
-        logger.error(f"Ticket update error: {e}")
-        return False
+    tag_value = APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(category), "others")
+    return update_ticket_routing(
+        ticket_id,
+        issue_context={"mainCategory": "App Related Issues", "category": category},
+        app_related_sub_category=tag_value,
+    )
 
 def handle_user_typing(event_data: Dict[str, Any]) -> None:
     """
@@ -1137,7 +1550,14 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
                     return None
 
                 app_related_tag = get_app_related_tag_from_text(text)
-                create_zendesk_ticket(subject=f"Conversation {conversation_id}", description=f"User {app_user_id} said: {text}", conversation_id=conversation_id, app_related_sub_category=app_related_tag)
+                create_zendesk_ticket(
+                    subject=f"Conversation {conversation_id}",
+                    description=f"User {app_user_id} said: {text}",
+                    conversation_id=conversation_id,
+                    app_related_sub_category=app_related_tag,
+                    ticket_context=build_issue_context(reason=text, app_related_category=app_related_tag),
+                    app_user_id=app_user_id,
+                )
             except Exception as e:
                 logger.error(f"Failed to create ticket: {e}")
     except Exception as e:
@@ -1617,32 +2037,50 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
             store_conversation_ticket_mapping(conversation_id, ticket_id)
             pending_data = cache.get(f'pending_escalation_{conversation_id}')
             app_related_category = None
+            issue_context = None
+            app_user_id = None
             
             if pending_data:
                 app_related_category = pending_data.get('app_related_category')
+                issue_context = pending_data.get('issue_context')
+                app_user_id = pending_data.get('app_user_id')
             else:
                 app_related_category = cache.get(f'category_{conversation_id}')
             
-            if app_related_category and APP_RELATED_SUB_CATEGORY:
-                try:
-                    success = update_ticket_custom_field(ticket_id, app_related_category)
-                    if success:
-                        cache.delete(f'pending_escalation_{conversation_id}')
-                        if pending_data and 'unique_marker' in pending_data:
-                            cache.delete(f"marker_{pending_data['unique_marker']}")
-                        return JsonResponse({"status": "ticket_updated", "ticket_id": ticket_id, "conversation_id": conversation_id, "app_related_category": app_related_category, "message": "Custom field updated successfully"})
-                    else:
-                        return JsonResponse({"status": "mapping_stored_but_update_failed", "ticket_id": ticket_id, "conversation_id": conversation_id, "error": "update_ticket_custom_field returned False"})
-                except Exception as e:
-                    logger.error(f"Ticket update error: {e}")
-                    return JsonResponse({"status": "mapping_stored_but_update_failed", "ticket_id": ticket_id, "conversation_id": conversation_id, "error": str(e)})
-            else:
-                missing_what = ""
-                if not app_related_category:
-                    missing_what = "app_related_category"
-                if not APP_RELATED_SUB_CATEGORY:
-                    missing_what += " and APP_RELATED_SUB_CATEGORY" if missing_what else "APP_RELATED_SUB_CATEGORY"
-                return JsonResponse({"status": "mapping_stored", "ticket_id": ticket_id, "conversation_id": conversation_id, "message": f"Mapping stored successfully (no category update needed: {missing_what})"})
+            try:
+                success = update_ticket_routing(
+                    ticket_id,
+                    issue_context=issue_context,
+                    conversation_id=conversation_id,
+                    app_user_id=app_user_id,
+                    reason=pending_data.get('reason') if pending_data else None,
+                    app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
+                )
+                if success:
+                    cache.delete(f'pending_escalation_{conversation_id}')
+                    if pending_data and 'unique_marker' in pending_data:
+                        cache.delete(f"marker_{pending_data['unique_marker']}")
+                    return JsonResponse({
+                        "status": "ticket_updated",
+                        "ticket_id": ticket_id,
+                        "conversation_id": conversation_id,
+                        "app_related_category": app_related_category,
+                        "message": "Ticket routing updated successfully"
+                    })
+                return JsonResponse({
+                    "status": "mapping_stored_but_update_failed",
+                    "ticket_id": ticket_id,
+                    "conversation_id": conversation_id,
+                    "error": "update_ticket_routing returned False"
+                })
+            except Exception as e:
+                logger.error(f"Ticket update error: {e}")
+                return JsonResponse({
+                    "status": "mapping_stored_but_update_failed",
+                    "ticket_id": ticket_id,
+                    "conversation_id": conversation_id,
+                    "error": str(e)
+                })
         
         elif 'ticket.solved' in event_type:
             ticket_id = None

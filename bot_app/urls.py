@@ -8,6 +8,7 @@ urlpatterns = [
     path('api/chat/init', views.init_conversation, name='init_conversation'),
     path('api/chat/send', views.send_message_to_sunshine, name='send_message_to_sunshine'),
     path('api/chat/escalate', views.escalate_to_agent, name='escalate_to_agent'),
+    path('api/chat/create-ticket', views.create_conversation_ticket, name='create_conversation_ticket'),
     path('api/chat/messages', views.get_conversation_messages, name='get_conversation_messages'),
     path('api/chat/full-history', views.get_full_chat_history, name='get_full_chat_history'),  # NEW!
     path('api/chat/viewing-status', views.update_viewing_status, name='update_viewing_status'),  # COMBINED APPROACH

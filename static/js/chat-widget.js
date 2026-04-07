@@ -520,7 +520,14 @@ document.addEventListener('DOMContentLoaded', function () {
                 conversationId: conversationId,
                 appUserId: appUserId,
                 reason: reason || lastContext,
-                appRelatedCategory: category || window.lastAppRelatedCategory
+                appRelatedCategory: category || window.lastAppRelatedCategory,
+                issueContext: {
+                    mainCategory: flowState.mainCategory,
+                    category: flowState.category,
+                    subcategory: flowState.subcategory,
+                    detail: flowState.detail,
+                    currentPath: getCurrentFlowPath() || lastContext
+                }
             })
         })
             .then(response => {
