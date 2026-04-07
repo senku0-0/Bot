@@ -413,13 +413,55 @@ def update_ticket_routing(
         if not payload:
             return True
         url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
-        response = requests.put(
-            url,
-            json={"ticket": payload},
-            auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
-            timeout=15
-        )
-        return response.status_code == 200
+        auth = HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN)
+
+        form_id = payload.pop("ticket_form_id", None)
+        custom_fields = payload.pop("custom_fields", None)
+        succeeded = True
+
+        if form_id:
+            form_response = requests.put(
+                url,
+                json={"ticket": {"ticket_form_id": form_id}},
+                auth=auth,
+                timeout=15
+            )
+            if form_response.status_code != 200:
+                logger.error(
+                    f"Ticket form update failed for {ticket_id}: "
+                    f"{form_response.status_code} - {form_response.text}"
+                )
+                return False
+
+        if custom_fields:
+            fields_response = requests.put(
+                url,
+                json={"ticket": {"custom_fields": custom_fields}},
+                auth=auth,
+                timeout=15
+            )
+            if fields_response.status_code != 200:
+                logger.error(
+                    f"Ticket custom field update failed for {ticket_id}: "
+                    f"{fields_response.status_code} - {fields_response.text}"
+                )
+                succeeded = False
+
+        if payload:
+            extra_response = requests.put(
+                url,
+                json={"ticket": payload},
+                auth=auth,
+                timeout=15
+            )
+            if extra_response.status_code != 200:
+                logger.error(
+                    f"Ticket routing extra update failed for {ticket_id}: "
+                    f"{extra_response.status_code} - {extra_response.text}"
+                )
+                succeeded = False
+
+        return succeeded
     except Exception as e:
         logger.error(f"Ticket routing update error: {e}")
         return False
