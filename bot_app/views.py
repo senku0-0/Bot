@@ -2194,12 +2194,13 @@ def handle_event_webhook(data: Dict[str, Any]) -> JsonResponse:
     
 def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
     """
-    Process Zendesk webhook notification event (ticket.comment_added or ticket.solved).
+    Process Zendesk webhook notification event (ticket.created, ticket.comment_added, or ticket.solved).
     
-    Handles two scenarios:
-    1. ticket.comment_added: Extracts agent comment, finds linked Sunshine conversation,
+    Handles three scenarios:
+    1. ticket.created: Finds linked Sunshine conversation and applies mapped form/custom fields
+    2. ticket.comment_added: Extracts agent comment, finds linked Sunshine conversation,
        and forwards message to conversation chat
-    2. ticket.solved: Sends session end message to user
+    3. ticket.solved: Sends session end message to user
     
     Searches for conversation ID in multiple locations:
     - Custom field value (ZENDESK_CHAT_CONVERSATION_FIELD_ID)
@@ -2226,7 +2227,26 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
     try:
         event_type = data.get('type', '')
         event_data = data.get('event', {})
-        
+
+        if 'ticket.created' in event_type:
+            ticket_id = None
+            if 'ticket' in event_data:
+                ticket_id = str(event_data['ticket'].get('id', ''))
+            elif 'ticket_id' in event_data:
+                ticket_id = str(event_data['ticket_id'])
+            if not ticket_id:
+                ticket_id = extract_ticket_id_from_data(data)
+            if not ticket_id:
+                return JsonResponse({"status": "no_ticket_id_in_created"})
+
+            result = update_ticket_routing_from_conversation_mapping(ticket_id)
+            if result.get("status") == "ticket_updated":
+                conversation_id = result.get("conversation_id")
+                if conversation_id:
+                    cache.delete(f'pending_escalation_{conversation_id}')
+                return JsonResponse(result)
+            return JsonResponse(result)
+
         if 'ticket.comment_added' in event_type:
             comment = event_data.get('comment', {})
             comment_body = comment.get('body', '')
@@ -2247,126 +2267,47 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                 ticket_id = extract_ticket_id_from_data(data)
             if not ticket_id:
                 return JsonResponse({"status": "no_ticket_id_in_created"})
-            
-            conversation_id = None
-            ticket_description = ""
-            
-            try:
-                url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
-                response = requests.get(url, auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN), timeout=15)
-                
-                if response.status_code == 200:
-                    ticket_data = response.json().get('ticket', {})
-                    ticket_description = ticket_data.get('description', '')
-                    
-                    if ZENDESK_CHAT_CONVERSATION_FIELD_ID:
-                        custom_fields = ticket_data.get('custom_fields', [])
-                        for field in custom_fields:
-                            field_id = str(field.get('id'))
-                            field_value = field.get('value')
-                            if field_id == str(ZENDESK_CHAT_CONVERSATION_FIELD_ID):
-                                if field_value and str(field_value).strip():
-                                    conversation_id = str(field_value).strip()
-                                    break
-                    
-                    if not conversation_id and ticket_description:
-                        conv_match = re.search(r'\[?Sunshine Conversation:\s*(\S+?)\]?(?:\s|$)', ticket_description)
-                        if conv_match:
-                            conversation_id = conv_match.group(1).strip().rstrip(']')
-                        else:
-                            marker_match = re.search(r'\[?Marker:\s*SUNSHINE_CONV_(\S+?)\]?(?:\s|$)', ticket_description)
-                            if marker_match:
-                                conversation_id = marker_match.group(1).strip().rstrip(']')
-            except Exception as e:
-                logger.exception(f"Ticket fetch error: {e}")
 
+            routing_result = update_ticket_routing_from_conversation_mapping(ticket_id)
+            conversation_id = routing_result.get("conversation_id")
             if not conversation_id:
-                webhook_description = ""
-                if 'ticket' in event_data:
-                    webhook_description = event_data['ticket'].get('description', '')
-                elif 'comment' in event_data and 'body' in event_data['comment']:
-                    webhook_description = event_data['comment'].get('body', '')
-                
-                if webhook_description:
-                    conv_match = re.search(r'\[?Sunshine Conversation:\s*(\S+?)\]?(?:\s|$)', webhook_description)
-                    if conv_match:
-                        conversation_id = conv_match.group(1).strip().rstrip(']')
-                    else:
-                        marker_match = re.search(r'\[?Marker:\s*SUNSHINE_CONV_(\S+?)\]?(?:\s|$)', webhook_description)
-                        if marker_match:
-                            conversation_id = marker_match.group(1).strip().rstrip(']')
-            
-            if not conversation_id:
-                try:
-                    cache_keys = cache.keys('pending_escalation_*') if hasattr(cache, 'keys') else []
-                    current_time = datetime.now()
-                    for key in cache_keys:
-                        pending_data = cache.get(key)
-                        if pending_data:
-                            try:
-                                escalation_time = datetime.fromisoformat(pending_data.get('timestamp', '2000-01-01'))
-                                time_diff = (current_time - escalation_time).total_seconds()
-                                if time_diff < 120:
-                                    pending_reason = pending_data.get('reason', '')
-                                    if pending_reason and ticket_description and pending_reason in ticket_description:
-                                        conversation_id = key.replace('pending_escalation_', '')
-                                        break
-                            except Exception:
-                                pass
-                except Exception as e:
-                    logger.error(f"Cache lookup error: {e}")
-            
-            if not conversation_id:
-                return JsonResponse({"status": "no_conversation_found", "ticket_id": ticket_id, "message": "Ticket created but no conversation mapping found"})
-            
-            store_conversation_ticket_mapping(conversation_id, ticket_id)
-            pending_data = cache.get(f'pending_escalation_{conversation_id}')
-            app_related_category = None
-            issue_context = None
-            app_user_id = None
-            
-            if pending_data:
-                app_related_category = pending_data.get('app_related_category')
-                issue_context = pending_data.get('issue_context')
-                app_user_id = pending_data.get('app_user_id')
-            else:
-                app_related_category = cache.get(f'category_{conversation_id}')
-            
+                return JsonResponse(routing_result)
+
+            agent_name = "Support Agent"
             try:
-                success = update_ticket_routing(
-                    ticket_id,
-                    issue_context=issue_context,
-                    conversation_id=conversation_id,
-                    app_user_id=app_user_id,
-                    reason=pending_data.get('reason') if pending_data else None,
-                    app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
-                )
-                if success:
-                    cache.delete(f'pending_escalation_{conversation_id}')
-                    if pending_data and 'unique_marker' in pending_data:
-                        cache.delete(f"marker_{pending_data['unique_marker']}")
-                    return JsonResponse({
-                        "status": "ticket_updated",
-                        "ticket_id": ticket_id,
-                        "conversation_id": conversation_id,
-                        "app_related_category": app_related_category,
-                        "message": "Ticket routing updated successfully"
-                    })
+                if isinstance(comment_author, dict):
+                    agent_name = (
+                        comment_author.get('name')
+                        or comment_author.get('display_name')
+                        or comment_author.get('email')
+                        or agent_name
+                    )
+            except Exception:
+                pass
+
+            auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+            url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
+            payload = {
+                "author": {"type": "business", "displayName": agent_name},
+                "content": {"type": "text", "text": comment_body}
+            }
+            response = requests.post(url, json=payload, auth=auth, timeout=15)
+            if response.status_code in [200, 201]:
+                forward_agent_message_to_websocket(conversation_id, comment_body, agent_name)
                 return JsonResponse({
-                    "status": "mapping_stored_but_update_failed",
+                    "status": "forwarded",
                     "ticket_id": ticket_id,
                     "conversation_id": conversation_id,
-                    "error": "update_ticket_routing returned False"
+                    "agent_name": agent_name,
+                    "routing_status": routing_result.get("status"),
                 })
-            except Exception as e:
-                logger.error(f"Ticket update error: {e}")
-                return JsonResponse({
-                    "status": "mapping_stored_but_update_failed",
-                    "ticket_id": ticket_id,
-                    "conversation_id": conversation_id,
-                    "error": str(e)
-                })
-        
+            return JsonResponse({
+                "status": "routing_updated_but_forward_failed",
+                "ticket_id": ticket_id,
+                "conversation_id": conversation_id,
+                "error": response.text,
+            })
+
         elif 'ticket.solved' in event_type:
             ticket_id = None
             if 'ticket' in event_data:
@@ -2490,6 +2431,59 @@ def resolve_conversation_id_for_ticket(ticket_id: str) -> Optional[str]:
     except Exception as e:
         logger.exception(f"resolve_conversation_id_for_ticket error: {e}")
         return None
+
+def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str, Any]:
+    """
+    Resolve a ticket back to its Sunshine conversation using the shared
+    ZENDESK_CHAT_CONVERSATION_FIELD_ID custom field, then apply the correct
+    Zendesk form and custom-field mapping for the stored issue context.
+    """
+    conversation_id = resolve_conversation_id_for_ticket(ticket_id)
+    if not conversation_id:
+        return {
+            "status": "no_conversation_found",
+            "ticket_id": ticket_id,
+            "message": "Ticket created but no conversation mapping found",
+        }
+
+    store_conversation_ticket_mapping(conversation_id, ticket_id)
+    pending_data = cache.get(f'pending_escalation_{conversation_id}')
+    app_related_category = None
+    issue_context = None
+    app_user_id = None
+
+    if pending_data:
+        app_related_category = pending_data.get('app_related_category')
+        issue_context = pending_data.get('issue_context')
+        app_user_id = pending_data.get('app_user_id')
+    else:
+        app_related_category = cache.get(f'category_{conversation_id}')
+
+    success = update_ticket_routing(
+        ticket_id,
+        issue_context=issue_context,
+        conversation_id=conversation_id,
+        app_user_id=app_user_id,
+        reason=pending_data.get('reason') if pending_data else None,
+        app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
+    )
+    if success:
+        cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
+        return {
+            "status": "ticket_updated",
+            "ticket_id": ticket_id,
+            "conversation_id": conversation_id,
+            "app_related_category": app_related_category,
+            "message": "Ticket routing updated successfully",
+        }
+
+    return {
+        "status": "mapping_stored_but_update_failed",
+        "ticket_id": ticket_id,
+        "conversation_id": conversation_id,
+        "app_related_category": app_related_category,
+        "error": "update_ticket_routing returned False",
+    }
 
 @csrf_exempt
 def get_full_chat_history(request: HttpRequest) -> JsonResponse:
