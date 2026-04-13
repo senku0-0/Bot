@@ -343,21 +343,31 @@ def build_ticket_routing_payload(
         logger.info(f"Processing ride issue: category_key={category_key}, subcategory_key={subcategory_key}, detail_key={detail_key}")
         
         if category_key == "fare and payment":
+            logger.info(f"Matched: Fare and Payment")
             form_id = safe_int(FARE_AND_PAYMENT_FORM_ID)
+            logger.info(f"Form ID: {form_id}")
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
+            
+            fare_tag = FARE_AND_PAYMENT_SUBCATEGORY_TAGS.get(subcategory_key)
+            logger.info(f"Fare tag lookup for '{subcategory_key}': {fare_tag}")
             append_custom_field(
                 custom_fields,
                 FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID,
-                FARE_AND_PAYMENT_SUBCATEGORY_TAGS.get(subcategory_key)
+                fare_tag
             )
+            
+            payment_tag = PAYMENT_MODE_TAGS.get(detail_key)
+            logger.info(f"Payment tag lookup for '{detail_key}': {payment_tag}")
             append_custom_field(
                 custom_fields,
                 PAYMENT_MODE_FIELD_ID,
-                PAYMENT_MODE_TAGS.get(detail_key)
+                payment_tag
             )
         elif category_key == "find a lost item":
+            logger.info(f"Matched: Find a Lost Item")
             form_id = safe_int(FIMD_A_LOST_ITEM_FORM_ID)
+            logger.info(f"Form ID: {form_id}")
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
             append_custom_field(
@@ -385,26 +395,34 @@ def build_ticket_routing_payload(
                 )
             )
         elif category_key == "vehicle related issue":
+            logger.info(f"Matched: Vehicle Related Issue")
             form_id = safe_int(VEHUICLE_AC_ISSUE_FORM_ID)
+            logger.info(f"Form ID: {form_id}")
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
+            vehicle_tag = VEHICLE_ISSUE_TYPE_TAGS.get(subcategory_key)
+            logger.info(f"Vehicle tag lookup for '{subcategory_key}': {vehicle_tag}")
             append_custom_field(
                 custom_fields,
                 VEHICLE_ISSUE_TYPE_FIELD_ID,
-                VEHICLE_ISSUE_TYPE_TAGS.get(subcategory_key)
+                vehicle_tag
             )
         elif category_key == "safety related":
+            logger.info(f"Matched: Safety Related")
             form_id = safe_int(SAFETY_ISSUE_FORM_ID)
+            logger.info(f"Form ID: {form_id}")
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
             append_custom_field(custom_fields, ESCALATION_TO_SAFETY_TEAM_FIELD_ID, True)
+            safety_tag = SAFETY_ISSUE_TYPE_TAGS.get(subcategory_key)
+            logger.info(f"Safety tag lookup for '{subcategory_key}': {safety_tag}")
             append_custom_field(
                 custom_fields,
                 SAFETY_ISSUE_TYPE_FIELD_ID,
-                SAFETY_ISSUE_TYPE_TAGS.get(subcategory_key)
+                safety_tag
             )
         else:
-            logger.warning(f"Unmatched ride category: '{category_key}' (original: {context.get('category')}). Available: fare and payment, find a lost item, vehicle related issue, safety related")
+            logger.warning(f"✗ Unmatched ride category: '{category_key}' (original: {context.get('category')}). Available: fare and payment, find a lost item, vehicle related issue, safety related")
 
     if custom_fields:
         ticket_payload["custom_fields"] = custom_fields
