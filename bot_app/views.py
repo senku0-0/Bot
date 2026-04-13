@@ -256,7 +256,10 @@ def build_issue_context(
     reason: Optional[str] = None,
     title: Optional[str] = None,
     transcript: Optional[str] = None,
-    app_related_category: Optional[str] = None
+    app_related_category: Optional[str] = None,
+    ride_related_category: Optional[str] = None,
+    ride_related_subcategory: Optional[str] = None,
+    ride_related_detail: Optional[str] = None
 ) -> Dict[str, Any]:
     context = dict(issue_context) if isinstance(issue_context, dict) else {}
     current_path = first_non_empty(context.get("currentPath"), extract_issue_path_from_text(reason, title, transcript))
@@ -274,6 +277,13 @@ def build_issue_context(
     if app_related_category and not context.get("category"):
         context["mainCategory"] = context.get("mainCategory") or "App Related Issues"
         context["category"] = app_related_category
+    if ride_related_category and not context.get("category"):
+        context["mainCategory"] = context.get("mainCategory") or "Ride Related Issues"
+        context["category"] = ride_related_category
+        if ride_related_subcategory and not context.get("subcategory"):
+            context["subcategory"] = ride_related_subcategory
+        if ride_related_detail and not context.get("detail"):
+            context["detail"] = ride_related_detail
     return context
 
 def build_ticket_routing_payload(
@@ -284,13 +294,19 @@ def build_ticket_routing_payload(
     title: Optional[str] = None,
     transcript: Optional[str] = None,
     app_related_sub_category: Optional[Union[str, int]] = None,
+    ride_related_category: Optional[str] = None,
+    ride_related_subcategory: Optional[str] = None,
+    ride_related_detail: Optional[str] = None,
 ) -> Dict[str, Any]:
     context = build_issue_context(
         issue_context=issue_context,
         reason=reason,
         title=title,
         transcript=transcript,
-        app_related_category=str(app_related_sub_category) if app_related_sub_category else None
+        app_related_category=str(app_related_sub_category) if app_related_sub_category else None,
+        ride_related_category=ride_related_category,
+        ride_related_subcategory=ride_related_subcategory,
+        ride_related_detail=ride_related_detail
     )
     custom_fields: List[Dict[str, Any]] = []
     ticket_payload: Dict[str, Any] = {}
@@ -399,6 +415,9 @@ def update_ticket_routing(
     title: Optional[str] = None,
     transcript: Optional[str] = None,
     app_related_sub_category: Optional[Union[str, int]] = None,
+    ride_related_category: Optional[str] = None,
+    ride_related_subcategory: Optional[str] = None,
+    ride_related_detail: Optional[str] = None,
 ) -> bool:
     try:
         payload = build_ticket_routing_payload(
@@ -409,6 +428,9 @@ def update_ticket_routing(
             title=title,
             transcript=transcript,
             app_related_sub_category=app_related_sub_category,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail,
         )
         if not payload:
             return True
@@ -482,6 +504,9 @@ def add_ticket_transcript_note(
     conversation_id: Optional[str] = None,
     app_user_id: Optional[str] = None,
     app_related_sub_category: Optional[Union[str, int]] = None,
+    ride_related_category: Optional[str] = None,
+    ride_related_subcategory: Optional[str] = None,
+    ride_related_detail: Optional[str] = None,
 ) -> bool:
     try:
         payload = build_ticket_routing_payload(
@@ -491,6 +516,9 @@ def add_ticket_transcript_note(
             title=title,
             transcript=transcript,
             app_related_sub_category=app_related_sub_category,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail,
         )
         payload["comment"] = {
             "body": build_conversation_transcript_body(title, transcript),
@@ -575,6 +603,9 @@ def build_pass_control_metadata(
     issue_context: Optional[Dict[str, Any]],
     reason: Optional[str],
     app_related_sub_category: Optional[Union[str, int]] = None,
+    ride_related_category: Optional[str] = None,
+    ride_related_subcategory: Optional[str] = None,
+    ride_related_detail: Optional[str] = None,
 ) -> Dict[str, Any]:
     metadata: Dict[str, Any] = {
         "dataCapture.systemField.tags": "escalated_from_bot",
@@ -586,6 +617,9 @@ def build_pass_control_metadata(
         issue_context=issue_context,
         reason=reason,
         app_related_sub_category=app_related_sub_category,
+        ride_related_category=ride_related_category,
+        ride_related_subcategory=ride_related_subcategory,
+        ride_related_detail=ride_related_detail,
     )
     for field in routing_payload.get("custom_fields", []):
         field_id = field.get("id")
@@ -599,6 +633,9 @@ def silently_pass_conversation_to_agent(
     reason: Optional[str],
     issue_context: Optional[Dict[str, Any]],
     app_related_category: Optional[str],
+    ride_related_category: Optional[str] = None,
+    ride_related_subcategory: Optional[str] = None,
+    ride_related_detail: Optional[str] = None,
 ) -> bool:
     try:
         pending_data = {
@@ -606,12 +643,17 @@ def silently_pass_conversation_to_agent(
             "app_user_id": app_user_id,
             "reason": reason,
             "app_related_category": app_related_category,
+            "ride_related_category": ride_related_category,
+            "ride_related_subcategory": ride_related_subcategory,
+            "ride_related_detail": ride_related_detail,
             "issue_context": issue_context,
             "timestamp": datetime.now().isoformat(),
         }
         cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=300)
         if app_related_category:
             cache.set(f'category_{conversation_id}', app_related_category, timeout=3600)
+        if ride_related_category:
+            cache.set(f'ride_category_{conversation_id}', ride_related_category, timeout=3600)
 
         metadata = build_pass_control_metadata(
             conversation_id=conversation_id,
@@ -619,6 +661,9 @@ def silently_pass_conversation_to_agent(
             issue_context=issue_context,
             reason=reason,
             app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail,
         )
 
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
@@ -683,6 +728,9 @@ def apply_ticket_routing_after_handoff(
     reason: Optional[str],
     issue_context: Optional[Dict[str, Any]],
     app_related_category: Optional[str] = None,
+    ride_related_category: Optional[str] = None,
+    ride_related_subcategory: Optional[str] = None,
+    ride_related_detail: Optional[str] = None,
     title: Optional[str] = None,
     transcript: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -703,6 +751,9 @@ def apply_ticket_routing_after_handoff(
         title=title,
         transcript=transcript,
         app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
+        ride_related_category=ride_related_category,
+        ride_related_subcategory=ride_related_subcategory,
+        ride_related_detail=ride_related_detail,
     )
     if routing_updated:
         cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
@@ -890,6 +941,9 @@ def create_zendesk_ticket(
     app_related_sub_category: Optional[Union[str, int]] = None,
     ticket_context: Optional[Dict[str, Any]] = None,
     app_user_id: Optional[str] = None,
+    ride_related_category: Optional[str] = None,
+    ride_related_subcategory: Optional[str] = None,
+    ride_related_detail: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a support ticket in Zendesk and link to conversation.
@@ -902,6 +956,9 @@ def create_zendesk_ticket(
         description (str): Detailed ticket description/body
         conversation_id (str, optional): Sunshine conversation ID to link
         app_related_sub_category (str or int, optional): Category value for custom field
+        ride_related_category (str, optional): Ride-related issue category
+        ride_related_subcategory (str, optional): Ride-related issue subcategory
+        ride_related_detail (str, optional): Ride-related issue detail
     
     Returns:
         Dict[str, Any]: API response containing created ticket data
@@ -922,6 +979,9 @@ def create_zendesk_ticket(
             title=subject,
             transcript=description,
             app_related_sub_category=app_related_sub_category,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail,
         )
     )
 
@@ -1213,10 +1273,16 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         app_user_id = data.get("appUserId")
         reason = data.get("reason", "User requested agent support")
         app_related_category = data.get("appRelatedCategory")
+        ride_related_category = data.get("rideRelatedCategory")
+        ride_related_subcategory = data.get("rideRelatedSubcategory")
+        ride_related_detail = data.get("rideRelatedDetail")
         issue_context = build_issue_context(
             issue_context=data.get("issueContext"),
             reason=reason,
-            app_related_category=app_related_category
+            app_related_category=app_related_category,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail
         )
         
         if not conversation_id:
@@ -1224,12 +1290,17 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
 
         if app_related_category:
             cache.set(f'category_{conversation_id}', app_related_category, timeout=3600)
+        if ride_related_category:
+            cache.set(f'ride_category_{conversation_id}', ride_related_category, timeout=3600)
 
         pending_data = {
             'conversation_id': conversation_id,
             'app_user_id': app_user_id,
             'reason': reason,
             'app_related_category': app_related_category,
+            'ride_related_category': ride_related_category,
+            'ride_related_subcategory': ride_related_subcategory,
+            'ride_related_detail': ride_related_detail,
             'issue_context': issue_context,
             'timestamp': datetime.now().isoformat()
         }
@@ -1245,6 +1316,9 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             issue_context=issue_context,
             reason=reason,
             app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail,
         )
         for field in routing_payload.get("custom_fields", []):
             field_id = field.get("id")
@@ -1257,7 +1331,11 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             
             # Format category with proper display name
             if app_related_category:
-                escalation_message += f"\nCategory: App related issue"
+                escalation_message += f"\nCategory: App Related Issues - {app_related_category}"
+            elif ride_related_category:
+                escalation_message += f"\nCategory: Ride Related Issues - {ride_related_category}"
+                if ride_related_subcategory:
+                    escalation_message += f" > {ride_related_subcategory}"
             
             msg_payload = {"author": {"type": "user", "userId": app_user_id}, "content": {"type": "text", "text": escalation_message}}
             msg_response = requests.post(msg_url, json=msg_payload, auth=auth)
@@ -1278,13 +1356,17 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             reason=reason,
             issue_context=issue_context,
             app_related_category=app_related_category,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail,
             title=reason,
         )
 
         return JsonResponse({
             "status": "escalated",
             "conversation_id": conversation_id,
-            "category": app_related_category,
+            "app_category": app_related_category,
+            "ride_category": ride_related_category,
             "ticket_id": routing_result.get("ticket_id"),
             "routing_updated": routing_result.get("routing_updated", False),
         })
@@ -1305,6 +1387,9 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
         - transcript (str, optional): Full conversation transcript from top to bottom
         - transcriptEntries (list, optional): Structured transcript entries
         - appRelatedCategory (str, optional): App-related category for custom field mapping
+        - rideRelatedCategory (str, optional): Ride-related category (Fare and Payment, Find a Lost Item, etc.)
+        - rideRelatedSubcategory (str, optional): Specific ride issue subcategory
+        - rideRelatedDetail (str, optional): Additional details for ride issue
 
     Returns:
         JsonResponse: {"status": "created" | "existing", "conversation_id": str}
@@ -1320,11 +1405,17 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
         app_user_id = str(data.get("appUserId", "")).strip() or None
         transcript_entries = normalize_transcript_entries(data.get("transcriptEntries"))
         app_related_category = data.get("appRelatedCategory")
+        ride_related_category = data.get("rideRelatedCategory")
+        ride_related_subcategory = data.get("rideRelatedSubcategory")
+        ride_related_detail = data.get("rideRelatedDetail")
         issue_context = build_issue_context(
             issue_context=data.get("issueContext"),
             title=title,
             transcript=transcript,
-            app_related_category=app_related_category
+            app_related_category=app_related_category,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail
         )
 
         if not source_conversation_id:
@@ -1353,7 +1444,10 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             app_user_id=app_user_id,
             reason=title,
             issue_context=issue_context,
-            app_related_category=app_related_category
+            app_related_category=app_related_category,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail
         )
         if not passed:
             return JsonResponse({"error": "Failed to hand off Sunshine conversation"}, status=500)
@@ -1366,6 +1460,9 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             reason=title,
             issue_context=issue_context,
             app_related_category=app_related_category,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail,
             title=title,
             transcript=transcript,
         )
