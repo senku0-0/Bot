@@ -340,6 +340,8 @@ def build_ticket_routing_payload(
         tag_value = str(app_related_sub_category) if app_related_sub_category else APP_RELATED_CATEGORY_TAGS.get(category_key)
         append_custom_field(custom_fields, APP_RELATED_SUB_CATEGORY, tag_value)
     elif main_key == "ride related issues":
+        logger.info(f"Processing ride issue: category_key={category_key}, subcategory_key={subcategory_key}, detail_key={detail_key}")
+        
         if category_key == "fare and payment":
             form_id = safe_int(FARE_AND_PAYMENT_FORM_ID)
             if form_id:
@@ -401,6 +403,8 @@ def build_ticket_routing_payload(
                 SAFETY_ISSUE_TYPE_FIELD_ID,
                 SAFETY_ISSUE_TYPE_TAGS.get(subcategory_key)
             )
+        else:
+            logger.warning(f"Unmatched ride category: '{category_key}' (original: {context.get('category')}). Available: fare and payment, find a lost item, vehicle related issue, safety related")
 
     if custom_fields:
         ticket_payload["custom_fields"] = custom_fields
@@ -1276,6 +1280,9 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         ride_related_category = data.get("rideRelatedCategory")
         ride_related_subcategory = data.get("rideRelatedSubcategory")
         ride_related_detail = data.get("rideRelatedDetail")
+        
+        logger.info(f"escalate_to_agent called: app_cat={app_related_category}, ride_cat={ride_related_category}, ride_subcat={ride_related_subcategory}, ride_detail={ride_related_detail}")
+        
         issue_context = build_issue_context(
             issue_context=data.get("issueContext"),
             reason=reason,
@@ -1284,6 +1291,8 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             ride_related_subcategory=ride_related_subcategory,
             ride_related_detail=ride_related_detail
         )
+        
+        logger.info(f"Built issue_context: {issue_context}")
         
         if not conversation_id:
             return JsonResponse({"error": "Missing conversationId"}, status=400)
