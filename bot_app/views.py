@@ -464,6 +464,7 @@ def update_ticket_routing(
         succeeded = True
 
         if form_id:
+            logger.info(f"🔄 Updating ticket {ticket_id} form to: {form_id}")
             form_response = requests.put(
                 url,
                 json={"ticket": {"ticket_form_id": form_id}},
@@ -472,12 +473,15 @@ def update_ticket_routing(
             )
             if form_response.status_code != 200:
                 logger.error(
-                    f"Ticket form update failed for {ticket_id}: "
+                    f"❌ Ticket form update FAILED for {ticket_id}: "
                     f"{form_response.status_code} - {form_response.text}"
                 )
                 return False
+            else:
+                logger.info(f"✅ Ticket form update SUCCESS for {ticket_id}")
 
         if custom_fields:
+            logger.info(f"🔄 Updating ticket {ticket_id} custom fields: {len(custom_fields)} fields")
             fields_response = requests.put(
                 url,
                 json={"ticket": {"custom_fields": custom_fields}},
@@ -486,10 +490,12 @@ def update_ticket_routing(
             )
             if fields_response.status_code != 200:
                 logger.error(
-                    f"Ticket custom field update failed for {ticket_id}: "
+                    f"❌ Ticket custom field update FAILED for {ticket_id}: "
                     f"{fields_response.status_code} - {fields_response.text}"
                 )
                 succeeded = False
+            else:
+                logger.info(f"✅ Ticket custom fields update SUCCESS for {ticket_id}")
 
         if payload:
             extra_response = requests.put(
