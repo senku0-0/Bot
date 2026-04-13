@@ -722,27 +722,37 @@ def resolve_ticket_id_for_conversation(
     try:
         cached_ticket_id = cache.get(f'conversation_{conversation_id}')
         if cached_ticket_id:
+            logger.info(f"✅ Found cached ticket ID {cached_ticket_id} for conversation {conversation_id}")
             return str(cached_ticket_id)
 
         if not all([ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, ZENDESK_API_TOKEN, ZENDESK_CHAT_CONVERSATION_FIELD_ID]):
+            logger.warning(f"❌ Missing required environment variables for ticket search. SUBDOMAIN={bool(ZENDESK_SUBDOMAIN)}, EMAIL={bool(ZENDESK_EMAIL)}, TOKEN={bool(ZENDESK_API_TOKEN)}, CHAT_FIELD_ID={ZENDESK_CHAT_CONVERSATION_FIELD_ID}")
             return None
 
         search_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/search.json"
         search_query = f"custom_field_{ZENDESK_CHAT_CONVERSATION_FIELD_ID}:{conversation_id}"
         auth = HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN)
         deadline = time.time() + max(timeout_seconds, 0)
+        attempt = 0
 
+        logger.info(f"🔄 Starting ticket search for conversation {conversation_id}: query='{search_query}', timeout={timeout_seconds}s")
         while True:
+            attempt += 1
             response = requests.get(search_url, params={"query": search_query}, auth=auth, timeout=15)
             if response.status_code == 200:
                 results = response.json().get("results", []) or []
+                logger.info(f"   Search attempt {attempt}: got {len(results)} results")
                 for result in results:
                     ticket_id = str(result.get("id", "")).strip()
                     if ticket_id:
+                        logger.info(f"✅ Found ticket {ticket_id} in search results")
                         store_conversation_ticket_mapping(conversation_id, ticket_id)
                         return ticket_id
+            else:
+                logger.warning(f"   Search attempt {attempt}: HTTP {response.status_code}: {response.text[:200]}")
 
             if time.time() >= deadline:
+                logger.warning(f"❌ Ticket search timeout after {attempt} attempts - conversation {conversation_id} not found in Zendesk")
                 break
             time.sleep(max(poll_interval, 0.1))
         return None
@@ -766,9 +776,12 @@ def apply_ticket_routing_after_handoff(
     Resolve the Zendesk ticket created by Sunshine handoff and apply the
     mapped form/custom fields immediately, instead of waiting only on webhooks.
     """
+    logger.info(f"🔄 Attempting to resolve ticket for conversation: {conversation_id}")
     ticket_id = resolve_ticket_id_for_conversation(conversation_id)
     if not ticket_id:
+        logger.warning(f"❌ Could not resolve ticket ID for conversation: {conversation_id} - ticket may not have been created yet or ZENDESK_CHAT_CONVERSATION_FIELD_ID not configured")
         return {"ticket_id": None, "routing_updated": False}
+    logger.info(f"✅ Resolved ticket ID {ticket_id} for conversation {conversation_id}")
 
     routing_updated = update_ticket_routing(
         ticket_id,
