@@ -340,17 +340,13 @@ def build_ticket_routing_payload(
         tag_value = str(app_related_sub_category) if app_related_sub_category else APP_RELATED_CATEGORY_TAGS.get(category_key)
         append_custom_field(custom_fields, APP_RELATED_SUB_CATEGORY, tag_value)
     elif main_key == "ride related issues":
-        logger.info(f"Processing ride issue: category_key={category_key}, subcategory_key={subcategory_key}, detail_key={detail_key}")
         
         if category_key == "fare and payment":
-            logger.info(f"Matched: Fare and Payment")
             form_id = safe_int(FARE_AND_PAYMENT_FORM_ID)
-            logger.info(f"Form ID: {form_id}")
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
             
             fare_tag = FARE_AND_PAYMENT_SUBCATEGORY_TAGS.get(subcategory_key)
-            logger.info(f"Fare tag lookup for '{subcategory_key}': {fare_tag}")
             append_custom_field(
                 custom_fields,
                 FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID,
@@ -358,16 +354,13 @@ def build_ticket_routing_payload(
             )
             
             payment_tag = PAYMENT_MODE_TAGS.get(detail_key)
-            logger.info(f"Payment tag lookup for '{detail_key}': {payment_tag}")
             append_custom_field(
                 custom_fields,
                 PAYMENT_MODE_FIELD_ID,
                 payment_tag
             )
         elif category_key == "find a lost item":
-            logger.info(f"Matched: Find a Lost Item")
             form_id = safe_int(FIMD_A_LOST_ITEM_FORM_ID)
-            logger.info(f"Form ID: {form_id}")
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
             append_custom_field(
@@ -395,34 +388,28 @@ def build_ticket_routing_payload(
                 )
             )
         elif category_key == "vehicle related issue":
-            logger.info(f"Matched: Vehicle Related Issue")
             form_id = safe_int(VEHUICLE_AC_ISSUE_FORM_ID)
-            logger.info(f"Form ID: {form_id}")
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
             vehicle_tag = VEHICLE_ISSUE_TYPE_TAGS.get(subcategory_key)
-            logger.info(f"Vehicle tag lookup for '{subcategory_key}': {vehicle_tag}")
             append_custom_field(
                 custom_fields,
                 VEHICLE_ISSUE_TYPE_FIELD_ID,
                 vehicle_tag
             )
         elif category_key == "safety related":
-            logger.info(f"Matched: Safety Related")
             form_id = safe_int(SAFETY_ISSUE_FORM_ID)
-            logger.info(f"Form ID: {form_id}")
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
             append_custom_field(custom_fields, ESCALATION_TO_SAFETY_TEAM_FIELD_ID, True)
             safety_tag = SAFETY_ISSUE_TYPE_TAGS.get(subcategory_key)
-            logger.info(f"Safety tag lookup for '{subcategory_key}': {safety_tag}")
             append_custom_field(
                 custom_fields,
                 SAFETY_ISSUE_TYPE_FIELD_ID,
                 safety_tag
             )
         else:
-            logger.warning(f"✗ Unmatched ride category: '{category_key}' (original: {context.get('category')}). Available: fare and payment, find a lost item, vehicle related issue, safety related")
+            pass
 
     if custom_fields:
         ticket_payload["custom_fields"] = custom_fields
@@ -1306,8 +1293,6 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         ride_related_subcategory = data.get("rideRelatedSubcategory")
         ride_related_detail = data.get("rideRelatedDetail")
         
-        logger.info(f"escalate_to_agent called: app_cat={app_related_category}, ride_cat={ride_related_category}, ride_subcat={ride_related_subcategory}, ride_detail={ride_related_detail}")
-        
         issue_context = build_issue_context(
             issue_context=data.get("issueContext"),
             reason=reason,
@@ -1316,8 +1301,6 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             ride_related_subcategory=ride_related_subcategory,
             ride_related_detail=ride_related_detail
         )
-        
-        logger.info(f"Built issue_context: {issue_context}")
         
         if not conversation_id:
             return JsonResponse({"error": "Missing conversationId"}, status=400)
@@ -1398,7 +1381,6 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         # Keep only the last 50 escalations (within ~5 minutes at high volume)
         recent_escalations = recent_escalations[-50:]
         cache.set('recent_escalations_queue', recent_escalations, timeout=300)
-        logger.info(f"📝 Stored escalation for conversation {conversation_id} in queue (queue size: {len(recent_escalations)})")
         
         if pc_response.status_code != 200:
             return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
