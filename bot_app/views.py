@@ -2505,9 +2505,9 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                 cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)
                 cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
                 
-                # Store the issue context for routing
-                if found_escalation.get('issue_context'):
-                    cache.set(f'ticket_{ticket_id}_context', found_escalation['issue_context'], timeout=3600)
+                # Store the full escalation data so update_ticket_routing_from_conversation_mapping() can access it
+                cache.set(f'pending_escalation_{conversation_id}', found_escalation, timeout=3600)
+                logger.info(f"📝 Stored escalation data for conversation {conversation_id} with ride_category={found_escalation.get('ride_related_category')}")
 
             result = update_ticket_routing_from_conversation_mapping(ticket_id)
             if result.get("status") == "ticket_updated":
@@ -2723,15 +2723,22 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
     store_conversation_ticket_mapping(conversation_id, ticket_id)
     pending_data = cache.get(f'pending_escalation_{conversation_id}')
     app_related_category = None
+    ride_related_category = None
+    ride_related_subcategory = None
+    ride_related_detail = None
     issue_context = None
     app_user_id = None
 
     if pending_data:
         app_related_category = pending_data.get('app_related_category')
+        ride_related_category = pending_data.get('ride_related_category')
+        ride_related_subcategory = pending_data.get('ride_related_subcategory')
+        ride_related_detail = pending_data.get('ride_related_detail')
         issue_context = pending_data.get('issue_context')
         app_user_id = pending_data.get('app_user_id')
     else:
         app_related_category = cache.get(f'category_{conversation_id}')
+        ride_related_category = cache.get(f'ride_category_{conversation_id}')
 
     success = update_ticket_routing(
         ticket_id,
@@ -2740,6 +2747,9 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
         app_user_id=app_user_id,
         reason=pending_data.get('reason') if pending_data else None,
         app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
+        ride_related_category=ride_related_category,
+        ride_related_subcategory=ride_related_subcategory,
+        ride_related_detail=ride_related_detail,
     )
     if success:
         cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
@@ -2748,6 +2758,7 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
             "ticket_id": ticket_id,
             "conversation_id": conversation_id,
             "app_related_category": app_related_category,
+            "ride_related_category": ride_related_category,
             "message": "Ticket routing updated successfully",
         }
 
@@ -2756,6 +2767,7 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
         "ticket_id": ticket_id,
         "conversation_id": conversation_id,
         "app_related_category": app_related_category,
+        "ride_related_category": ride_related_category,
         "error": "update_ticket_routing returned False",
     }
 
