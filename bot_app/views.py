@@ -19,6 +19,21 @@ logger.addHandler(handler)
 
 load_dotenv()
 
+def get_env_any(*names: str, default: Optional[str] = None) -> Optional[str]:
+    """
+    Return the first non-empty environment value from a list of possible keys.
+
+    This keeps Zendesk field/form ID loading backward-compatible across
+    different `.env` naming styles used by teammates and older deployments.
+    """
+    for name in names:
+        if not name:
+            continue
+        value = os.getenv(name)
+        if value is not None and str(value).strip() != "":
+            return str(value).strip()
+    return default
+
 def strip_html_tags(text: str) -> str:
     """
     Remove HTML tags from text and normalize whitespace.
@@ -107,24 +122,34 @@ if not SECRET:
 ZENDESK_SUBDOMAIN = os.getenv("ZENDESK_SUBDOMAIN")
 ZENDESK_EMAIL = os.getenv("ZENDESK_EMAIL")
 ZENDESK_API_TOKEN = os.getenv("ZENDESK_API_TOKEN")
-ZENDESK_CHAT_CONVERSATION_FIELD_ID = os.getenv("ZENDESK_CHAT_CONVERSATION_FIELD_ID")
-APP_RELATED_SUB_CATEGORY = os.getenv("APP_RELATED_SUB_CATEGORY")
-NAME_FIELD_ID = os.getenv("Name") or os.getenv("NAME_FIELD_ID")
-EMAIL_ID_FIELD_ID = os.getenv("Email_ID") or os.getenv("EMAIL_ID_FIELD_ID")
-FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID = os.getenv("Fare_and_payemt_subcategory") or os.getenv("FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID")
-RIDE_ID_FIELD_ID = os.getenv("rideId") or os.getenv("RIDE_ID_FIELD_ID")
-DRIVER_NAME_FIELD_ID = os.getenv("Driver_Name") or os.getenv("DRIVER_NAME_FIELD_ID")
-PAYMENT_MODE_FIELD_ID = os.getenv("Payment_Mode") or os.getenv("PAYMENT_MODE_FIELD_ID")
-CONTACT_FIELD_ID = os.getenv("Contact") or os.getenv("CONTACT_FIELD_ID")
-VEHICLE_NUMBER_FIELD_ID = os.getenv("Vehicle_Number") or os.getenv("VEHICLE_NUMBER_FIELD_ID")
-VEHICLE_ISSUE_TYPE_FIELD_ID = os.getenv("Vehicle_Issue_Type") or os.getenv("VEHICLE_ISSUE_TYPE_FIELD_ID")
-ESCALATION_TO_SAFETY_TEAM_FIELD_ID = os.getenv("Escalationto_Safety_Team") or os.getenv("ESCALATION_TO_SAFETY_TEAM_FIELD_ID")
-SAFETY_ISSUE_TYPE_FIELD_ID = os.getenv("Safety_issue_type") or os.getenv("SAFETY_ISSUE_TYPE_FIELD_ID")
-FARE_AND_PAYMENT_FORM_ID = os.getenv("FARE_AND_PAYMENT_FORM_ID")
-FIMD_A_LOST_ITEM_FORM_ID = os.getenv("FIMD_A_LOST_ITEM_FORM_ID")
-APP_RELATED_ISSUE_FORM_ID = os.getenv("APP_RELATED_ISSUE_FORM_ID")
-VEHUICLE_AC_ISSUE_FORM_ID = os.getenv("VEHUICLE_AC_ISSUE_FORM_ID")
-SAFETY_ISSUE_FORM_ID = os.getenv("SAFETY_ISSUE_FORM_ID")
+ZENDESK_CHAT_CONVERSATION_FIELD_ID = get_env_any("ZENDESK_CHAT_CONVERSATION_FIELD_ID")
+APP_RELATED_SUB_CATEGORY = get_env_any("APP_RELATED_SUB_CATEGORY")
+NAME_FIELD_ID = get_env_any("NAME_FIELD_ID", "NAME", "Name")
+EMAIL_ID_FIELD_ID = get_env_any("EMAIL_ID_FIELD_ID", "EMAIL_ID", "Email_ID")
+FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID = get_env_any(
+    "FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID",
+    "FARE_AND_PAYEMT_SUBCATEGORY_FIELD_ID",
+    "FARE_AND_PAYMENT_SUBCATEGORY",
+    "FARE_AND_PAYEMT_SUBCATEGORY",
+    "Fare_and_payemt_subcategory",
+)
+RIDE_ID_FIELD_ID = get_env_any("RIDE_ID_FIELD_ID", "RIDE_ID", "rideId")
+DRIVER_NAME_FIELD_ID = get_env_any("DRIVER_NAME_FIELD_ID", "DRIVER_NAME", "Driver_Name")
+PAYMENT_MODE_FIELD_ID = get_env_any("PAYMENT_MODE_FIELD_ID", "PAYMENT_MODE", "Payment_Mode")
+CONTACT_FIELD_ID = get_env_any("CONTACT_FIELD_ID", "CONTACT", "Contact")
+VEHICLE_NUMBER_FIELD_ID = get_env_any("VEHICLE_NUMBER_FIELD_ID", "VEHICLE_NUMBER", "Vehicle_Number")
+VEHICLE_ISSUE_TYPE_FIELD_ID = get_env_any("VEHICLE_ISSUE_TYPE_FIELD_ID", "VEHICLE_ISSUE_TYPE", "Vehicle_Issue_Type")
+ESCALATION_TO_SAFETY_TEAM_FIELD_ID = get_env_any(
+    "ESCALATION_TO_SAFETY_TEAM_FIELD_ID",
+    "ESCALATION_TO_SAFETY_TEAM",
+    "Escalationto_Safety_Team",
+)
+SAFETY_ISSUE_TYPE_FIELD_ID = get_env_any("SAFETY_ISSUE_TYPE_FIELD_ID", "SAFETY_ISSUE_TYPE", "Safety_issue_type")
+FARE_AND_PAYMENT_FORM_ID = get_env_any("FARE_AND_PAYMENT_FORM_ID", "FARE_PAYMENT_FORM_ID")
+FIMD_A_LOST_ITEM_FORM_ID = get_env_any("FIMD_A_LOST_ITEM_FORM_ID", "FIND_A_LOST_ITEM_FORM_ID")
+APP_RELATED_ISSUE_FORM_ID = get_env_any("APP_RELATED_ISSUE_FORM_ID")
+VEHUICLE_AC_ISSUE_FORM_ID = get_env_any("VEHUICLE_AC_ISSUE_FORM_ID", "VEHICLE_AC_ISSUE_FORM_ID")
+SAFETY_ISSUE_FORM_ID = get_env_any("SAFETY_ISSUE_FORM_ID")
 SUNSHINE_APP_ID = os.getenv("SUNSHINE_APP_ID", "").strip()
 SUNSHINE_API_KEY_ID = os.getenv("SUNSHINE_API_KEY_ID", "").strip()
 SUNSHINE_API_KEY_SECRET = os.getenv("SUNSHINE_API_KEY_SECRET", "").strip()
@@ -256,10 +281,7 @@ def build_issue_context(
     reason: Optional[str] = None,
     title: Optional[str] = None,
     transcript: Optional[str] = None,
-    app_related_category: Optional[str] = None,
-    ride_related_category: Optional[str] = None,
-    ride_related_subcategory: Optional[str] = None,
-    ride_related_detail: Optional[str] = None
+    app_related_category: Optional[str] = None
 ) -> Dict[str, Any]:
     context = dict(issue_context) if isinstance(issue_context, dict) else {}
     current_path = first_non_empty(context.get("currentPath"), extract_issue_path_from_text(reason, title, transcript))
@@ -277,13 +299,6 @@ def build_issue_context(
     if app_related_category and not context.get("category"):
         context["mainCategory"] = context.get("mainCategory") or "App Related Issues"
         context["category"] = app_related_category
-    if ride_related_category and not context.get("category"):
-        context["mainCategory"] = context.get("mainCategory") or "Ride Related Issues"
-        context["category"] = ride_related_category
-        if ride_related_subcategory and not context.get("subcategory"):
-            context["subcategory"] = ride_related_subcategory
-        if ride_related_detail and not context.get("detail"):
-            context["detail"] = ride_related_detail
     return context
 
 def build_ticket_routing_payload(
@@ -294,19 +309,13 @@ def build_ticket_routing_payload(
     title: Optional[str] = None,
     transcript: Optional[str] = None,
     app_related_sub_category: Optional[Union[str, int]] = None,
-    ride_related_category: Optional[str] = None,
-    ride_related_subcategory: Optional[str] = None,
-    ride_related_detail: Optional[str] = None,
 ) -> Dict[str, Any]:
     context = build_issue_context(
         issue_context=issue_context,
         reason=reason,
         title=title,
         transcript=transcript,
-        app_related_category=str(app_related_sub_category) if app_related_sub_category else None,
-        ride_related_category=ride_related_category,
-        ride_related_subcategory=ride_related_subcategory,
-        ride_related_detail=ride_related_detail
+        app_related_category=str(app_related_sub_category) if app_related_sub_category else None
     )
     custom_fields: List[Dict[str, Any]] = []
     ticket_payload: Dict[str, Any] = {}
@@ -340,24 +349,19 @@ def build_ticket_routing_payload(
         tag_value = str(app_related_sub_category) if app_related_sub_category else APP_RELATED_CATEGORY_TAGS.get(category_key)
         append_custom_field(custom_fields, APP_RELATED_SUB_CATEGORY, tag_value)
     elif main_key == "ride related issues":
-        
         if category_key == "fare and payment":
             form_id = safe_int(FARE_AND_PAYMENT_FORM_ID)
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
-            
-            fare_tag = FARE_AND_PAYMENT_SUBCATEGORY_TAGS.get(subcategory_key)
             append_custom_field(
                 custom_fields,
                 FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID,
-                fare_tag
+                FARE_AND_PAYMENT_SUBCATEGORY_TAGS.get(subcategory_key)
             )
-            
-            payment_tag = PAYMENT_MODE_TAGS.get(detail_key)
             append_custom_field(
                 custom_fields,
                 PAYMENT_MODE_FIELD_ID,
-                payment_tag
+                PAYMENT_MODE_TAGS.get(detail_key)
             )
         elif category_key == "find a lost item":
             form_id = safe_int(FIMD_A_LOST_ITEM_FORM_ID)
@@ -391,25 +395,21 @@ def build_ticket_routing_payload(
             form_id = safe_int(VEHUICLE_AC_ISSUE_FORM_ID)
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
-            vehicle_tag = VEHICLE_ISSUE_TYPE_TAGS.get(subcategory_key)
             append_custom_field(
                 custom_fields,
                 VEHICLE_ISSUE_TYPE_FIELD_ID,
-                vehicle_tag
+                VEHICLE_ISSUE_TYPE_TAGS.get(subcategory_key)
             )
         elif category_key == "safety related":
             form_id = safe_int(SAFETY_ISSUE_FORM_ID)
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
             append_custom_field(custom_fields, ESCALATION_TO_SAFETY_TEAM_FIELD_ID, True)
-            safety_tag = SAFETY_ISSUE_TYPE_TAGS.get(subcategory_key)
             append_custom_field(
                 custom_fields,
                 SAFETY_ISSUE_TYPE_FIELD_ID,
-                safety_tag
+                SAFETY_ISSUE_TYPE_TAGS.get(subcategory_key)
             )
-        else:
-            pass
 
     if custom_fields:
         ticket_payload["custom_fields"] = custom_fields
@@ -424,9 +424,6 @@ def update_ticket_routing(
     title: Optional[str] = None,
     transcript: Optional[str] = None,
     app_related_sub_category: Optional[Union[str, int]] = None,
-    ride_related_category: Optional[str] = None,
-    ride_related_subcategory: Optional[str] = None,
-    ride_related_detail: Optional[str] = None,
 ) -> bool:
     try:
         payload = build_ticket_routing_payload(
@@ -437,9 +434,6 @@ def update_ticket_routing(
             title=title,
             transcript=transcript,
             app_related_sub_category=app_related_sub_category,
-            ride_related_category=ride_related_category,
-            ride_related_subcategory=ride_related_subcategory,
-            ride_related_detail=ride_related_detail,
         )
         if not payload:
             return True
@@ -451,7 +445,6 @@ def update_ticket_routing(
         succeeded = True
 
         if form_id:
-            logger.info(f"🔄 Updating ticket {ticket_id} form to: {form_id}")
             form_response = requests.put(
                 url,
                 json={"ticket": {"ticket_form_id": form_id}},
@@ -460,15 +453,12 @@ def update_ticket_routing(
             )
             if form_response.status_code != 200:
                 logger.error(
-                    f"❌ Ticket form update FAILED for {ticket_id}: "
+                    f"Ticket form update failed for {ticket_id}: "
                     f"{form_response.status_code} - {form_response.text}"
                 )
                 return False
-            else:
-                logger.info(f"✅ Ticket form update SUCCESS for {ticket_id}")
 
         if custom_fields:
-            logger.info(f"🔄 Updating ticket {ticket_id} custom fields: {len(custom_fields)} fields")
             fields_response = requests.put(
                 url,
                 json={"ticket": {"custom_fields": custom_fields}},
@@ -477,12 +467,10 @@ def update_ticket_routing(
             )
             if fields_response.status_code != 200:
                 logger.error(
-                    f"❌ Ticket custom field update FAILED for {ticket_id}: "
+                    f"Ticket custom field update failed for {ticket_id}: "
                     f"{fields_response.status_code} - {fields_response.text}"
                 )
                 succeeded = False
-            else:
-                logger.info(f"✅ Ticket custom fields update SUCCESS for {ticket_id}")
 
         if payload:
             extra_response = requests.put(
@@ -519,9 +507,6 @@ def add_ticket_transcript_note(
     conversation_id: Optional[str] = None,
     app_user_id: Optional[str] = None,
     app_related_sub_category: Optional[Union[str, int]] = None,
-    ride_related_category: Optional[str] = None,
-    ride_related_subcategory: Optional[str] = None,
-    ride_related_detail: Optional[str] = None,
 ) -> bool:
     try:
         payload = build_ticket_routing_payload(
@@ -531,9 +516,6 @@ def add_ticket_transcript_note(
             title=title,
             transcript=transcript,
             app_related_sub_category=app_related_sub_category,
-            ride_related_category=ride_related_category,
-            ride_related_subcategory=ride_related_subcategory,
-            ride_related_detail=ride_related_detail,
         )
         payload["comment"] = {
             "body": build_conversation_transcript_body(title, transcript),
@@ -618,9 +600,6 @@ def build_pass_control_metadata(
     issue_context: Optional[Dict[str, Any]],
     reason: Optional[str],
     app_related_sub_category: Optional[Union[str, int]] = None,
-    ride_related_category: Optional[str] = None,
-    ride_related_subcategory: Optional[str] = None,
-    ride_related_detail: Optional[str] = None,
 ) -> Dict[str, Any]:
     metadata: Dict[str, Any] = {
         "dataCapture.systemField.tags": "escalated_from_bot",
@@ -632,9 +611,6 @@ def build_pass_control_metadata(
         issue_context=issue_context,
         reason=reason,
         app_related_sub_category=app_related_sub_category,
-        ride_related_category=ride_related_category,
-        ride_related_subcategory=ride_related_subcategory,
-        ride_related_detail=ride_related_detail,
     )
     for field in routing_payload.get("custom_fields", []):
         field_id = field.get("id")
@@ -648,9 +624,6 @@ def silently_pass_conversation_to_agent(
     reason: Optional[str],
     issue_context: Optional[Dict[str, Any]],
     app_related_category: Optional[str],
-    ride_related_category: Optional[str] = None,
-    ride_related_subcategory: Optional[str] = None,
-    ride_related_detail: Optional[str] = None,
 ) -> bool:
     try:
         pending_data = {
@@ -658,17 +631,12 @@ def silently_pass_conversation_to_agent(
             "app_user_id": app_user_id,
             "reason": reason,
             "app_related_category": app_related_category,
-            "ride_related_category": ride_related_category,
-            "ride_related_subcategory": ride_related_subcategory,
-            "ride_related_detail": ride_related_detail,
             "issue_context": issue_context,
             "timestamp": datetime.now().isoformat(),
         }
         cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=300)
         if app_related_category:
             cache.set(f'category_{conversation_id}', app_related_category, timeout=3600)
-        if ride_related_category:
-            cache.set(f'ride_category_{conversation_id}', ride_related_category, timeout=3600)
 
         metadata = build_pass_control_metadata(
             conversation_id=conversation_id,
@@ -676,9 +644,6 @@ def silently_pass_conversation_to_agent(
             issue_context=issue_context,
             reason=reason,
             app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
-            ride_related_category=ride_related_category,
-            ride_related_subcategory=ride_related_subcategory,
-            ride_related_detail=ride_related_detail,
         )
 
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
@@ -709,7 +674,6 @@ def resolve_ticket_id_for_conversation(
     try:
         cached_ticket_id = cache.get(f'conversation_{conversation_id}')
         if cached_ticket_id:
-            logger.info(f"✅ Found cached ticket ID {cached_ticket_id} for conversation {conversation_id}")
             return str(cached_ticket_id)
 
         if not all([ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, ZENDESK_API_TOKEN, ZENDESK_CHAT_CONVERSATION_FIELD_ID]):
@@ -738,15 +702,47 @@ def resolve_ticket_id_for_conversation(
         logger.exception(f"resolve_ticket_id_for_conversation error: {e}")
         return None
 
+def find_recent_pending_escalation(max_age_seconds: int = 180) -> Optional[Dict[str, Any]]:
+    """
+    Find the freshest pending escalation when Zendesk creates a ticket
+    before the conversation-id custom field is written back.
+    """
+    try:
+        if not hasattr(cache, 'keys'):
+            return None
+
+        newest_pending: Optional[Dict[str, Any]] = None
+        newest_timestamp: Optional[datetime] = None
+        now = datetime.now()
+
+        for key in cache.keys('pending_escalation_*'):
+            pending_data = cache.get(key)
+            if not isinstance(pending_data, dict):
+                continue
+            raw_timestamp = pending_data.get('timestamp')
+            if not raw_timestamp:
+                continue
+            try:
+                pending_timestamp = datetime.fromisoformat(str(raw_timestamp))
+            except Exception:
+                continue
+            if (now - pending_timestamp).total_seconds() > max_age_seconds:
+                continue
+            if newest_timestamp is None or pending_timestamp > newest_timestamp:
+                newest_timestamp = pending_timestamp
+                newest_pending = pending_data
+
+        return newest_pending
+    except Exception as e:
+        logger.error(f"find_recent_pending_escalation error: {e}")
+        return None
+
 def apply_ticket_routing_after_handoff(
     conversation_id: str,
     app_user_id: Optional[str],
     reason: Optional[str],
     issue_context: Optional[Dict[str, Any]],
     app_related_category: Optional[str] = None,
-    ride_related_category: Optional[str] = None,
-    ride_related_subcategory: Optional[str] = None,
-    ride_related_detail: Optional[str] = None,
     title: Optional[str] = None,
     transcript: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -767,9 +763,6 @@ def apply_ticket_routing_after_handoff(
         title=title,
         transcript=transcript,
         app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
-        ride_related_category=ride_related_category,
-        ride_related_subcategory=ride_related_subcategory,
-        ride_related_detail=ride_related_detail,
     )
     if routing_updated:
         cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
@@ -957,9 +950,6 @@ def create_zendesk_ticket(
     app_related_sub_category: Optional[Union[str, int]] = None,
     ticket_context: Optional[Dict[str, Any]] = None,
     app_user_id: Optional[str] = None,
-    ride_related_category: Optional[str] = None,
-    ride_related_subcategory: Optional[str] = None,
-    ride_related_detail: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a support ticket in Zendesk and link to conversation.
@@ -972,9 +962,6 @@ def create_zendesk_ticket(
         description (str): Detailed ticket description/body
         conversation_id (str, optional): Sunshine conversation ID to link
         app_related_sub_category (str or int, optional): Category value for custom field
-        ride_related_category (str, optional): Ride-related issue category
-        ride_related_subcategory (str, optional): Ride-related issue subcategory
-        ride_related_detail (str, optional): Ride-related issue detail
     
     Returns:
         Dict[str, Any]: API response containing created ticket data
@@ -995,9 +982,6 @@ def create_zendesk_ticket(
             title=subject,
             transcript=description,
             app_related_sub_category=app_related_sub_category,
-            ride_related_category=ride_related_category,
-            ride_related_subcategory=ride_related_subcategory,
-            ride_related_detail=ride_related_detail,
         )
     )
 
@@ -1289,17 +1273,10 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         app_user_id = data.get("appUserId")
         reason = data.get("reason", "User requested agent support")
         app_related_category = data.get("appRelatedCategory")
-        ride_related_category = data.get("rideRelatedCategory")
-        ride_related_subcategory = data.get("rideRelatedSubcategory")
-        ride_related_detail = data.get("rideRelatedDetail")
-        
         issue_context = build_issue_context(
             issue_context=data.get("issueContext"),
             reason=reason,
-            app_related_category=app_related_category,
-            ride_related_category=ride_related_category,
-            ride_related_subcategory=ride_related_subcategory,
-            ride_related_detail=ride_related_detail
+            app_related_category=app_related_category
         )
         
         if not conversation_id:
@@ -1307,17 +1284,12 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
 
         if app_related_category:
             cache.set(f'category_{conversation_id}', app_related_category, timeout=3600)
-        if ride_related_category:
-            cache.set(f'ride_category_{conversation_id}', ride_related_category, timeout=3600)
 
         pending_data = {
             'conversation_id': conversation_id,
             'app_user_id': app_user_id,
             'reason': reason,
             'app_related_category': app_related_category,
-            'ride_related_category': ride_related_category,
-            'ride_related_subcategory': ride_related_subcategory,
-            'ride_related_detail': ride_related_detail,
             'issue_context': issue_context,
             'timestamp': datetime.now().isoformat()
         }
@@ -1333,9 +1305,6 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             issue_context=issue_context,
             reason=reason,
             app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
-            ride_related_category=ride_related_category,
-            ride_related_subcategory=ride_related_subcategory,
-            ride_related_detail=ride_related_detail,
         )
         for field in routing_payload.get("custom_fields", []):
             field_id = field.get("id")
@@ -1344,15 +1313,11 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
 
         if app_user_id:
             msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/messages"
-            escalation_message = f"Escalation Reason: {reason}\nConversation ID: {conversation_id}"
+            escalation_message = f"Escalation Reason: {reason}\n[Sunshine Conversation: {conversation_id}]"
             
             # Format category with proper display name
             if app_related_category:
-                escalation_message += f"\nCategory: App Related Issues - {app_related_category}"
-            elif ride_related_category:
-                escalation_message += f"\nCategory: Ride Related Issues - {ride_related_category}"
-                if ride_related_subcategory:
-                    escalation_message += f" > {ride_related_subcategory}"
+                escalation_message += f"\nCategory: App related issue"
             
             msg_payload = {"author": {"type": "user", "userId": app_user_id}, "content": {"type": "text", "text": escalation_message}}
             msg_response = requests.post(msg_url, json=msg_payload, auth=auth)
@@ -1364,24 +1329,6 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         pass_control_payload = {"switchboardIntegration": "next", "metadata": metadata}
         pc_response = requests.post(pass_control_url, json=pass_control_payload, auth=auth)
         
-        # Store this escalation in a "recent escalations" queue for quick matching with incoming tickets
-        # When ticket.created webhook arrives, we'll look for this conversation in the queue
-        recent_escalations = cache.get('recent_escalations_queue', []) or []
-        recent_escalations.append({
-            'conversation_id': conversation_id,
-            'app_user_id': app_user_id,
-            'reason': reason,
-            'app_related_category': app_related_category,
-            'ride_related_category': ride_related_category,
-            'ride_related_subcategory': ride_related_subcategory,
-            'ride_related_detail': ride_related_detail,
-            'issue_context': issue_context,
-            'timestamp': time.time(),
-        })
-        # Keep only the last 50 escalations (within ~5 minutes at high volume)
-        recent_escalations = recent_escalations[-50:]
-        cache.set('recent_escalations_queue', recent_escalations, timeout=300)
-        
         if pc_response.status_code != 200:
             return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
 
@@ -1391,17 +1338,13 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             reason=reason,
             issue_context=issue_context,
             app_related_category=app_related_category,
-            ride_related_category=ride_related_category,
-            ride_related_subcategory=ride_related_subcategory,
-            ride_related_detail=ride_related_detail,
             title=reason,
         )
 
         return JsonResponse({
             "status": "escalated",
             "conversation_id": conversation_id,
-            "app_category": app_related_category,
-            "ride_category": ride_related_category,
+            "category": app_related_category,
             "ticket_id": routing_result.get("ticket_id"),
             "routing_updated": routing_result.get("routing_updated", False),
         })
@@ -1422,9 +1365,6 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
         - transcript (str, optional): Full conversation transcript from top to bottom
         - transcriptEntries (list, optional): Structured transcript entries
         - appRelatedCategory (str, optional): App-related category for custom field mapping
-        - rideRelatedCategory (str, optional): Ride-related category (Fare and Payment, Find a Lost Item, etc.)
-        - rideRelatedSubcategory (str, optional): Specific ride issue subcategory
-        - rideRelatedDetail (str, optional): Additional details for ride issue
 
     Returns:
         JsonResponse: {"status": "created" | "existing", "conversation_id": str}
@@ -1440,17 +1380,11 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
         app_user_id = str(data.get("appUserId", "")).strip() or None
         transcript_entries = normalize_transcript_entries(data.get("transcriptEntries"))
         app_related_category = data.get("appRelatedCategory")
-        ride_related_category = data.get("rideRelatedCategory")
-        ride_related_subcategory = data.get("rideRelatedSubcategory")
-        ride_related_detail = data.get("rideRelatedDetail")
         issue_context = build_issue_context(
             issue_context=data.get("issueContext"),
             title=title,
             transcript=transcript,
-            app_related_category=app_related_category,
-            ride_related_category=ride_related_category,
-            ride_related_subcategory=ride_related_subcategory,
-            ride_related_detail=ride_related_detail
+            app_related_category=app_related_category
         )
 
         if not source_conversation_id:
@@ -1479,10 +1413,7 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             app_user_id=app_user_id,
             reason=title,
             issue_context=issue_context,
-            app_related_category=app_related_category,
-            ride_related_category=ride_related_category,
-            ride_related_subcategory=ride_related_subcategory,
-            ride_related_detail=ride_related_detail
+            app_related_category=app_related_category
         )
         if not passed:
             return JsonResponse({"error": "Failed to hand off Sunshine conversation"}, status=500)
@@ -1495,9 +1426,6 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             reason=title,
             issue_context=issue_context,
             app_related_category=app_related_category,
-            ride_related_category=ride_related_category,
-            ride_related_subcategory=ride_related_subcategory,
-            ride_related_detail=ride_related_detail,
             title=title,
             transcript=transcript,
         )
@@ -1967,14 +1895,16 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
                     return None
 
                 app_related_tag = get_app_related_tag_from_text(text)
-                create_zendesk_ticket(
-                    subject=f"Conversation {conversation_id}",
-                    description=f"User {app_user_id} said: {text}",
-                    conversation_id=conversation_id,
-                    app_related_sub_category=app_related_tag,
-                    ticket_context=build_issue_context(reason=text, app_related_category=app_related_tag),
-                    app_user_id=app_user_id,
-                )
+                existing_ticket_id = cache.get(f'conversation_{conversation_id}')
+                if app_related_tag and not existing_ticket_id:
+                    create_zendesk_ticket(
+                        subject=f"Conversation {conversation_id}",
+                        description=f"User {app_user_id} said: {text}",
+                        conversation_id=conversation_id,
+                        app_related_sub_category=app_related_tag,
+                        ticket_context=build_issue_context(reason=text, app_related_category=app_related_tag),
+                        app_user_id=app_user_id,
+                    )
             except Exception as e:
                 logger.error(f"Failed to create ticket: {e}")
     except Exception as e:
@@ -2371,31 +2301,12 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
             if not ticket_id:
                 return JsonResponse({"status": "no_ticket_id_in_created"})
 
-            # Check the recent escalations queue for a matching conversation
-            recent_escalations = cache.get('recent_escalations_queue', []) or []
-            ticket_created_at = time.time()
-            found_escalation = None
-            
-            # Look for the most recent escalation (within last 15 seconds)
-            for escalation in reversed(recent_escalations):
-                time_diff = ticket_created_at - escalation.get('timestamp', 0)
-                if 0 < time_diff < 15:
-                    found_escalation = escalation
-                    break
-            
-            if found_escalation:
-                conversation_id = found_escalation['conversation_id']
-                cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)
-                cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
-                cache.set(f'pending_escalation_{conversation_id}', found_escalation, timeout=3600)
-
             result = update_ticket_routing_from_conversation_mapping(ticket_id)
             if result.get("status") == "ticket_updated":
-                conv_id = result.get("conversation_id")
-                if conv_id:
-                    cache.delete(f'pending_escalation_{conv_id}')
+                conversation_id = result.get("conversation_id")
+                if conversation_id:
+                    cache.delete(f'pending_escalation_{conversation_id}')
                 return JsonResponse(result)
-            
             return JsonResponse(result)
 
         if 'ticket.comment_added' in event_type:
@@ -2590,6 +2501,15 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
     Zendesk form and custom-field mapping for the stored issue context.
     """
     conversation_id = resolve_conversation_id_for_ticket(ticket_id)
+    pending_data = cache.get(f'pending_escalation_{conversation_id}') if conversation_id else None
+
+    if not conversation_id:
+        pending_data = find_recent_pending_escalation()
+        if pending_data:
+            candidate_conversation_id = str(pending_data.get('conversation_id', '')).strip()
+            if candidate_conversation_id:
+                conversation_id = candidate_conversation_id
+
     if not conversation_id:
         return {
             "status": "no_conversation_found",
@@ -2598,24 +2518,18 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
         }
 
     store_conversation_ticket_mapping(conversation_id, ticket_id)
-    pending_data = cache.get(f'pending_escalation_{conversation_id}')
+    if not pending_data:
+        pending_data = cache.get(f'pending_escalation_{conversation_id}')
     app_related_category = None
-    ride_related_category = None
-    ride_related_subcategory = None
-    ride_related_detail = None
     issue_context = None
     app_user_id = None
 
     if pending_data:
         app_related_category = pending_data.get('app_related_category')
-        ride_related_category = pending_data.get('ride_related_category')
-        ride_related_subcategory = pending_data.get('ride_related_subcategory')
-        ride_related_detail = pending_data.get('ride_related_detail')
         issue_context = pending_data.get('issue_context')
         app_user_id = pending_data.get('app_user_id')
     else:
         app_related_category = cache.get(f'category_{conversation_id}')
-        ride_related_category = cache.get(f'ride_category_{conversation_id}')
 
     success = update_ticket_routing(
         ticket_id,
@@ -2624,9 +2538,6 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
         app_user_id=app_user_id,
         reason=pending_data.get('reason') if pending_data else None,
         app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
-        ride_related_category=ride_related_category,
-        ride_related_subcategory=ride_related_subcategory,
-        ride_related_detail=ride_related_detail,
     )
     if success:
         cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
@@ -2635,7 +2546,6 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
             "ticket_id": ticket_id,
             "conversation_id": conversation_id,
             "app_related_category": app_related_category,
-            "ride_related_category": ride_related_category,
             "message": "Ticket routing updated successfully",
         }
 
@@ -2644,7 +2554,6 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
         "ticket_id": ticket_id,
         "conversation_id": conversation_id,
         "app_related_category": app_related_category,
-        "ride_related_category": ride_related_category,
         "error": "update_ticket_routing returned False",
     }
 

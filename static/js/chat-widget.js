@@ -1696,7 +1696,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         files: payload.files,
                         showUserSummary: false,
                         successMessage: getFlowCopy('issueLoggedMessage', "Thanks for sharing the details. We have logged your issue."),
-                        afterSubmit: () => showCsatBubble()
+                        afterSubmit: () => connectToAgentDirect()
                     });
                 }
             });
