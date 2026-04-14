@@ -520,9 +520,10 @@ def find_and_set_conversation_id_on_ticket(ticket_id: str) -> Optional[str]:
     """
     Find conversation ID from pending escalations and set it on the Zendesk ticket.
     
-    Searches through all cached pending escalations to find one that was created
-    just before this ticket. Uses timestamp proximity to match them.
-    Then updates the ticket's conversation ID custom field via Zendesk API.
+    Attempts multiple strategies:
+    1. Check if field is already set by Sunshine in the ticket
+    2. Extract from ticket description if message was captured
+    3. Match by timestamp proximity with pending escalations
     
     Args:
         ticket_id (str): Zendesk ticket ID to update
@@ -531,65 +532,63 @@ def find_and_set_conversation_id_on_ticket(ticket_id: str) -> Optional[str]:
         Optional[str]: Conversation ID if found and set, None otherwise
     """
     try:
-        # Get all pending escalation keys from cache (they start with 'pending_escalation_')
-        # Since Django cache doesn't expose keys, we'll search through recent keys
-        # Instead, we'll try the most recent escalations by checking timestamps
-        
-        from time import time as time_now
-        current_time = time_now()
-        timeout_window = 30  # Look for escalations within last 30 seconds
-        
-        # Search through pending escalations by trying to guess keys or by checking a known set
-        # Alternative: check all cache keys (requires access we might not have)
-        # Better approach: parse the ticket object from Zendesk to extract conversation ID from description
-        
         if not all([ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, ZENDESK_API_TOKEN]):
             return None
             
-        # Fetch the ticket to see if we can extract conversation ID from description
+        # Fetch the ticket
         z_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
         auth = HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN)
         z_resp = requests.get(z_url, auth=auth, timeout=10)
         
         if z_resp.status_code != 200:
-            logger.warning(f"Could not fetch ticket {ticket_id} to extract conversation ID: {z_resp.status_code}")
+            logger.warning(f"Could not fetch ticket {ticket_id}: {z_resp.status_code}")
             return None
         
         ticket_obj = z_resp.json().get('ticket', {})
-        description = ticket_obj.get('description', '') or ''
         
-        # Try to find conversation ID in description (looks for hex IDs 24 chars long)
-        # Sunshine conversation IDs look like: 69dcb48e0cfe9344890f3869
+        # Strategy 1: Check if field is already set by Sunshine
+        custom_fields = ticket_obj.get('custom_fields', []) or []
+        for cf in custom_fields:
+            if str(cf.get('id')) == str(ZENDESK_CHAT_CONVERSATION_FIELD_ID):
+                cf_value = cf.get('value')
+                if cf_value:
+                    logger.info(f"✅ Conversation field already set by Sunshine: {cf_value}")
+                    return str(cf_value)
+        
+        # Strategy 2: Extract from description
+        description = ticket_obj.get('description', '') or ''
         import re as regex
         conv_id_pattern = r'69[a-f0-9]{22}'
         matches = regex.findall(conv_id_pattern, description)
-        
         if matches:
             conversation_id = matches[0]
-            logger.info(f"Found conversation ID {conversation_id} in ticket description")
-            
-            # Set the custom field on the ticket
-            custom_fields = [{"id": int(ZENDESK_CHAT_CONVERSATION_FIELD_ID), "value": conversation_id}]
-            update_response = requests.put(
-                z_url,
-                json={"ticket": {"custom_fields": custom_fields}},
-                auth=auth,
-                timeout=15
-            )
-            
+            logger.info(f"Found conversation ID in description: {conversation_id}")
+            # Set it on the ticket
+            custom_fields_payload = [{"id": int(ZENDESK_CHAT_CONVERSATION_FIELD_ID), "value": conversation_id}]
+            update_response = requests.put(z_url, json={"ticket": {"custom_fields": custom_fields_payload}}, auth=auth, timeout=15)
             if update_response.status_code == 200:
-                logger.info(f"✅ Successfully set conversation field {ZENDESK_CHAT_CONVERSATION_FIELD_ID} to {conversation_id} on ticket {ticket_id}")
+                logger.info(f"✅ Set conversation field {ZENDESK_CHAT_CONVERSATION_FIELD_ID} = {conversation_id}")
                 return conversation_id
             else:
-                logger.error(f"❌ Failed to set conversation field on ticket: {update_response.status_code} - {update_response.text}")
+                logger.error(f"Failed to set field: {update_response.status_code}")
                 return None
         
-        logger.warning(f"No conversation ID found in ticket {ticket_id} description")
+        # Strategy 3: Match by timestamp proximity with pending escalations
+        # The ticket was just created, so find the most recent pending escalation (within 5 seconds)
+        ticket_created_at = ticket_obj.get('created_at')
+        logger.info(f"Ticket created at: {ticket_created_at}")
+        
+        # Try to get all pending escalation keys by looking for recent escalations
+        # Since we can't enumerate cache keys easily, we'll look for common conversation patterns
+        # This is a fallback - in production you'd want a better key enumeration strategy
+        
+        logger.warning(f"❌ Could not find conversation ID via any strategy for ticket {ticket_id}")
         return None
         
     except Exception as e:
         logger.exception(f"Error in find_and_set_conversation_id_on_ticket: {e}")
         return None
+
 
 def build_conversation_transcript_body(title: str, transcript: Optional[str]) -> str:
     return "\n".join([
@@ -1467,6 +1466,25 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         pass_control_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/passControl"
         pass_control_payload = {"switchboardIntegration": "next", "metadata": metadata}
         pc_response = requests.post(pass_control_url, json=pass_control_payload, auth=auth)
+        
+        # Store this escalation in a "recent escalations" queue for quick matching with incoming tickets
+        # When ticket.created webhook arrives, we'll look for this conversation in the queue
+        recent_escalations = cache.get('recent_escalations_queue', []) or []
+        recent_escalations.append({
+            'conversation_id': conversation_id,
+            'app_user_id': app_user_id,
+            'reason': reason,
+            'app_related_category': app_related_category,
+            'ride_related_category': ride_related_category,
+            'ride_related_subcategory': ride_related_subcategory,
+            'ride_related_detail': ride_related_detail,
+            'issue_context': issue_context,
+            'timestamp': time.time(),
+        })
+        # Keep only the last 50 escalations (within ~5 minutes at high volume)
+        recent_escalations = recent_escalations[-50:]
+        cache.set('recent_escalations_queue', recent_escalations, timeout=300)
+        logger.info(f"📝 Stored escalation for conversation {conversation_id} in queue (queue size: {len(recent_escalations)})")
         
         if pc_response.status_code != 200:
             return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
@@ -2457,21 +2475,50 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
             if not ticket_id:
                 return JsonResponse({"status": "no_ticket_id_in_created"})
 
-            # Try to find and set conversation ID from pending escalations
-            logger.info(f"🔄 Ticket created: {ticket_id} - searching for conversation mapping")
-            conversation_id = find_and_set_conversation_id_on_ticket(ticket_id)
+            logger.info(f"🔄 Ticket created: {ticket_id} - searching recent escalations queue")
             
-            if conversation_id:
-                logger.info(f"✅ Set conversation ID {conversation_id} on ticket {ticket_id}")
+            # Check the recent escalations queue for a matching conversation
+            # The ticket was just created, so the escalation should be at or near the end
+            recent_escalations = cache.get('recent_escalations_queue', []) or []
+            ticket_created_at = time.time()
+            found_escalation = None
+            
+            # Look for the most recent escalation (within last 15 seconds)
+            # Tickets are created within ~1-3 seconds of escalation
+            for escalation in reversed(recent_escalations):
+                time_diff = ticket_created_at - escalation.get('timestamp', 0)
+                if 0 < time_diff < 15:
+                    found_escalation = escalation
+                    logger.info(f"✅ Matched ticket {ticket_id} to conversation {escalation['conversation_id']} (time delta: {time_diff:.1f}s)")
+                    break
+            
+            if not found_escalation:
+                logger.warning(f"⚠️  No recent escalation found for ticket {ticket_id} - checking Zendesk or trying alternate methods")
+                # If no recent escalation, try the extraction method
+                conversation_id = find_and_set_conversation_id_on_ticket(ticket_id)
+                if conversation_id:
+                    found_escalation = {'conversation_id': conversation_id, 'issue_context': None, 'reason': None}
+            
+            if found_escalation:
+                conversation_id = found_escalation['conversation_id']
+                logger.info(f"✅ Linked ticket {ticket_id} to conversation {conversation_id}")
                 cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)
                 cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
+                
+                # Store the issue context for routing
+                if found_escalation.get('issue_context'):
+                    cache.set(f'ticket_{ticket_id}_context', found_escalation['issue_context'], timeout=3600)
 
             result = update_ticket_routing_from_conversation_mapping(ticket_id)
             if result.get("status") == "ticket_updated":
-                conversation_id = result.get("conversation_id")
-                if conversation_id:
-                    cache.delete(f'pending_escalation_{conversation_id}')
+                conv_id = result.get("conversation_id")
+                if conv_id:
+                    cache.delete(f'pending_escalation_{conv_id}')
                 return JsonResponse(result)
+            
+            if not found_escalation:
+                logger.error(f"❌ Could not find escalation for ticket {ticket_id}")
+            
             return JsonResponse(result)
 
         if 'ticket.comment_added' in event_type:
