@@ -173,6 +173,11 @@ FARE_AND_PAYMENT_SUBCATEGORY_TAGS = {
     "driver charged extra fare": "driver_charged_extra_fare",
     "charged higher than estimated fare": "charged_higher_than_estimated_fare",
     "cancellation charges": "cancellation_charges",
+    # Normalized keys (with spaces, matching normalize_issue_key output)
+    "multiple debits occurred": "multiple_debits_occured",
+    "driver charged extra fare": "driver_charged_extra_fare",
+    "charged higher than estimated fare": "charged_higher_than_estimated_fare",
+    "cancellation charges": "cancellation_charges",
 }
 
 VEHICLE_ISSUE_TYPE_TAGS = {
@@ -357,6 +362,9 @@ def build_ticket_routing_payload(
     category_key = normalize_issue_key(context.get("category"))
     subcategory_key = normalize_issue_key(context.get("subcategory"))
     detail_key = normalize_issue_key(context.get("detail"))
+    
+    logger.info(f"Ticket routing - main_key={main_key}, category_key={category_key}, subcategory_key={subcategory_key}, detail_key={detail_key}")
+    logger.info(f"Context: {context}")
 
     if main_key == "app related issues" or app_related_sub_category:
         form_id = safe_int(APP_RELATED_ISSUE_FORM_ID)
@@ -369,15 +377,19 @@ def build_ticket_routing_payload(
             form_id = safe_int(FARE_AND_PAYMENT_FORM_ID)
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
+            fare_tag = FARE_AND_PAYMENT_SUBCATEGORY_TAGS.get(subcategory_key)
+            logger.info(f"Fare Payment: subcategory_key='{subcategory_key}' -> tag={fare_tag}")
             append_custom_field(
                 custom_fields,
                 FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID,
-                FARE_AND_PAYMENT_SUBCATEGORY_TAGS.get(subcategory_key)
+                fare_tag
             )
+            payment_tag = PAYMENT_MODE_TAGS.get(detail_key)
+            logger.info(f"Payment Mode: detail_key='{detail_key}' -> tag={payment_tag}")
             append_custom_field(
                 custom_fields,
                 PAYMENT_MODE_FIELD_ID,
-                PAYMENT_MODE_TAGS.get(detail_key)
+                payment_tag
             )
         elif category_key == "find a lost item":
             form_id = safe_int(FIMD_A_LOST_ITEM_FORM_ID)
@@ -411,20 +423,24 @@ def build_ticket_routing_payload(
             form_id = safe_int(VEHUICLE_AC_ISSUE_FORM_ID)
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
+            vehicle_tag = VEHICLE_ISSUE_TYPE_TAGS.get(subcategory_key)
+            logger.info(f"Vehicle Issue: subcategory_key='{subcategory_key}' -> tag={vehicle_tag}")
             append_custom_field(
                 custom_fields,
                 VEHICLE_ISSUE_TYPE_FIELD_ID,
-                VEHICLE_ISSUE_TYPE_TAGS.get(subcategory_key)
+                vehicle_tag
             )
         elif category_key == "safety related":
             form_id = safe_int(SAFETY_ISSUE_FORM_ID)
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
             append_custom_field(custom_fields, ESCALATION_TO_SAFETY_TEAM_FIELD_ID, True)
+            safety_tag = SAFETY_ISSUE_TYPE_TAGS.get(subcategory_key)
+            logger.info(f"Safety Issue: subcategory_key='{subcategory_key}' -> tag={safety_tag}")
             append_custom_field(
                 custom_fields,
                 SAFETY_ISSUE_TYPE_FIELD_ID,
-                SAFETY_ISSUE_TYPE_TAGS.get(subcategory_key)
+                safety_tag
             )
 
     if custom_fields:
