@@ -1269,10 +1269,15 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         - conversationId (str, required): Sunshine conversation ID
         - appUserId (str, optional): Sunshine user ID
         - reason (str, optional): Escalation reason (default: "User requested agent support")
-        - appRelatedCategory (str, optional): Category like "Location Not Found", "Unable to Login", etc.
+        - appRelatedCategory (str, optional): App category like "Location Not Found", "Unable to Login"
+        - issueContext (dict, optional): Nested context with category, subcategory, detail:
+            - For ride issues: {"mainCategory": "Ride Related Issues", "category": "Fare and Payment", 
+              "subcategory": "Driver charged extra fare", "detail": "Cash"}
+            - For app issues: {"mainCategory": "App Related Issues", "category": "Location Not Found"}
     
     Returns:
-        JsonResponse: {"status": "escalated", "conversation_id": str, "category": str}
+        JsonResponse: {"status": "escalated", "conversation_id": str, "category": str, 
+                      "ticket_id": str, "routing_updated": bool}
     
     Status codes:
         - 200: Escalation successful
@@ -1281,10 +1286,8 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         - 500: Escalation failed
     
     Categories supported:
-        - Location Not Found or Inaccurate
-        - Unable to Login
-        - My App is Not Responding
-        - Others
+        App: Location Not Found, Unable to Login, My App is Not Responding, Others
+        Ride: Fare and Payment, Find a Lost Item, Vehicle Related, Safety Related
     """
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
@@ -1295,12 +1298,19 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         app_user_id = data.get("appUserId")
         reason = data.get("reason", "User requested agent support")
         app_related_category = data.get("appRelatedCategory")
-        ride_related_category = data.get("rideRelatedCategory")
-        ride_related_subcategory = data.get("rideRelatedSubcategory")
-        ride_related_detail = data.get("rideRelatedDetail")
+        issue_context = data.get("issueContext", {})
         
-        issue_context = build_issue_context(
-            issue_context=data.get("issueContext"),
+        # Extract ride parameters from top level or from issueContext
+        ride_related_category = data.get("rideRelatedCategory") or issue_context.get("category")
+        ride_related_subcategory = data.get("rideRelatedSubcategory") or issue_context.get("subcategory")
+        ride_related_detail = data.get("rideRelatedDetail") or issue_context.get("detail")
+        
+        # For app issues, check issueContext as well
+        if not app_related_category and issue_context.get("mainCategory") == "App Related Issues":
+            app_related_category = issue_context.get("category")
+        
+        context = build_issue_context(
+            issue_context=issue_context,
             reason=reason,
             app_related_category=app_related_category,
             ride_related_category=ride_related_category,
@@ -1324,7 +1334,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             'ride_related_category': ride_related_category,
             'ride_related_subcategory': ride_related_subcategory,
             'ride_related_detail': ride_related_detail,
-            'issue_context': issue_context,
+            'issue_context': context,
             'timestamp': datetime.now().isoformat()
         }
         cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=300)
