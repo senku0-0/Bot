@@ -1295,10 +1295,17 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         app_user_id = data.get("appUserId")
         reason = data.get("reason", "User requested agent support")
         app_related_category = data.get("appRelatedCategory")
+        ride_related_category = data.get("rideRelatedCategory")
+        ride_related_subcategory = data.get("rideRelatedSubcategory")
+        ride_related_detail = data.get("rideRelatedDetail")
+        
         issue_context = build_issue_context(
             issue_context=data.get("issueContext"),
             reason=reason,
-            app_related_category=app_related_category
+            app_related_category=app_related_category,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail
         )
         
         if not conversation_id:
@@ -1306,12 +1313,17 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
 
         if app_related_category:
             cache.set(f'category_{conversation_id}', app_related_category, timeout=3600)
+        if ride_related_category:
+            cache.set(f'ride_category_{conversation_id}', ride_related_category, timeout=3600)
 
         pending_data = {
             'conversation_id': conversation_id,
             'app_user_id': app_user_id,
             'reason': reason,
             'app_related_category': app_related_category,
+            'ride_related_category': ride_related_category,
+            'ride_related_subcategory': ride_related_subcategory,
+            'ride_related_detail': ride_related_detail,
             'issue_context': issue_context,
             'timestamp': datetime.now().isoformat()
         }
@@ -1327,6 +1339,9 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             issue_context=issue_context,
             reason=reason,
             app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail,
         )
         for field in routing_payload.get("custom_fields", []):
             field_id = field.get("id")
