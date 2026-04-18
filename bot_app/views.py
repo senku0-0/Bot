@@ -212,6 +212,24 @@ def normalize_issue_key(value: Any) -> str:
     text = re.sub(r'[^a-z0-9]+', ' ', text)
     return re.sub(r'\s+', ' ', text).strip()
 
+def extract_conversation_id_from_text(*sources: Any) -> Optional[str]:
+    patterns = [
+        r'Sunshine\s+Conversation\s*:\s*([0-9a-fA-F]{24,36})',
+        r'conversation\s*id\s*[:#-]\s*([0-9a-fA-F]{24,36})',
+        r'\[Sunshine\s+Conversation\s*:\s*([0-9a-fA-F]{24,36})\]',
+    ]
+    for source in sources:
+        if not source:
+            continue
+        text = strip_html_tags(str(source))
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                value = match.group(1).strip()
+                if value:
+                    return value
+    return None
+
 def safe_int(value: Any) -> Optional[int]:
     try:
         if value is None or str(value).strip() == "":
@@ -740,7 +758,7 @@ def silently_pass_conversation_to_agent(
 
 def resolve_ticket_id_for_conversation(
     conversation_id: str,
-    timeout_seconds: float = 10.0,
+    timeout_seconds: float = 20.0,
     poll_interval: float = 0.5,
 ) -> Optional[str]:
     """
@@ -828,6 +846,30 @@ def find_recent_pending_escalation(max_age_seconds: int = 180) -> Optional[Dict[
     except Exception as e:
         logger.error(f"find_recent_pending_escalation error: {e}")
         return None
+
+def count_recent_pending_escalations(max_age_seconds: int = 180) -> int:
+    try:
+        if not hasattr(cache, 'keys'):
+            return 0
+
+        count = 0
+        now = datetime.now()
+        for key in cache.keys('pending_escalation_*'):
+            pending_data = cache.get(key)
+            if not isinstance(pending_data, dict):
+                continue
+            raw_timestamp = pending_data.get('timestamp')
+            if not raw_timestamp:
+                continue
+            try:
+                pending_timestamp = datetime.fromisoformat(str(raw_timestamp))
+            except Exception:
+                continue
+            if (now - pending_timestamp).total_seconds() <= max_age_seconds:
+                count += 1
+        return count
+    except Exception:
+        return 0
 
 def apply_ticket_routing_after_handoff(
     conversation_id: str,
@@ -2616,6 +2658,36 @@ def resolve_conversation_id_for_ticket(ticket_id: str) -> Optional[str]:
                     return conv_id
             except Exception:
                 continue
+
+        # Fallback 1: parse conversation id from ticket subject/description text.
+        from_ticket_text = extract_conversation_id_from_text(
+            ticket_obj.get('subject'),
+            ticket_obj.get('description'),
+            ticket_obj.get('raw_subject')
+        )
+        if from_ticket_text:
+            store_conversation_ticket_mapping(from_ticket_text, str(ticket_id))
+            return from_ticket_text
+
+        # Fallback 2: parse from ticket comments where we include "[Sunshine Conversation: ...]".
+        comments_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}/comments.json"
+        comments_resp = requests.get(
+            comments_url,
+            auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+            timeout=10
+        )
+        if comments_resp.status_code == 200:
+            comments = comments_resp.json().get('comments', []) or []
+            for comment in comments:
+                from_comment = extract_conversation_id_from_text(
+                    comment.get('body'),
+                    comment.get('plain_body'),
+                    comment.get('html_body')
+                )
+                if from_comment:
+                    store_conversation_ticket_mapping(from_comment, str(ticket_id))
+                    return from_comment
+
         return None
     except Exception as e:
         logger.exception(f"resolve_conversation_id_for_ticket error: {e}")
@@ -2632,10 +2704,12 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
 
     if not conversation_id:
         pending_data = find_recent_pending_escalation()
-        if pending_data:
+        if pending_data and count_recent_pending_escalations() == 1:
             candidate_conversation_id = str(pending_data.get('conversation_id', '')).strip()
             if candidate_conversation_id:
                 conversation_id = candidate_conversation_id
+        else:
+            pending_data = None
 
     if not conversation_id:
         return {
