@@ -765,6 +765,9 @@ def apply_ticket_routing_after_handoff(
     reason: Optional[str],
     issue_context: Optional[Dict[str, Any]],
     app_related_category: Optional[str] = None,
+    ride_related_category: Optional[str] = None,
+    ride_related_subcategory: Optional[str] = None,
+    ride_related_detail: Optional[str] = None,
     title: Optional[str] = None,
     transcript: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -785,6 +788,9 @@ def apply_ticket_routing_after_handoff(
         title=title,
         transcript=transcript,
         app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
+        ride_related_category=ride_related_category,
+        ride_related_subcategory=ride_related_subcategory,
+        ride_related_detail=ride_related_detail,
     )
     if routing_updated:
         cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
@@ -1383,8 +1389,11 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             conversation_id=conversation_id,
             app_user_id=app_user_id,
             reason=reason,
-            issue_context=issue_context,
+            issue_context=context,
             app_related_category=app_related_category,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail,
             title=reason,
         )
 
