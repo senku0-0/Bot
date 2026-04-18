@@ -230,6 +230,19 @@ def append_custom_field(custom_fields: List[Dict[str, Any]], field_id: Any, valu
             return
     custom_fields.append({"id": field_int, "value": value})
 
+def should_skip_pass_control_field(field_id: Any) -> bool:
+    field_int = safe_int(field_id)
+    if not field_int:
+        return True
+    risky_field_ids = {
+        safe_int(FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID),
+        safe_int(PAYMENT_MODE_FIELD_ID),
+        safe_int(VEHICLE_ISSUE_TYPE_FIELD_ID),
+        safe_int(SAFETY_ISSUE_TYPE_FIELD_ID),
+    }
+    risky_field_ids.discard(None)
+    return field_int in risky_field_ids
+
 def first_non_empty(*values: Any) -> Optional[Any]:
     for value in values:
         if value is None:
@@ -489,7 +502,7 @@ def update_ticket_routing(
                     f"Ticket form update failed for {ticket_id}: "
                     f"{form_response.status_code} - {form_response.text}"
                 )
-                return False
+                succeeded = False
 
         if custom_fields:
             fields_response = requests.put(
@@ -680,8 +693,9 @@ def build_pass_control_metadata(
     )
     for field in routing_payload.get("custom_fields", []):
         field_id = field.get("id")
-        if field_id:
-            metadata[f"dataCapture.ticketField.{field_id}"] = field.get("value")
+        field_value = field.get("value")
+        if field_id and field_value not in (None, "") and not should_skip_pass_control_field(field_id):
+            metadata[f"dataCapture.ticketField.{field_id}"] = field_value
     return metadata
 
 def silently_pass_conversation_to_agent(
@@ -747,6 +761,7 @@ def resolve_ticket_id_for_conversation(
 
         search_url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/search.json"
         search_query = f"custom_field_{ZENDESK_CHAT_CONVERSATION_FIELD_ID}:{conversation_id}"
+        fallback_query = f'type:ticket "{conversation_id}"'
         auth = HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN)
         deadline = time.time() + max(timeout_seconds, 0)
 
@@ -755,6 +770,17 @@ def resolve_ticket_id_for_conversation(
             if response.status_code == 200:
                 results = response.json().get("results", []) or []
                 for result in results:
+                    ticket_id = str(result.get("id", "")).strip()
+                    if ticket_id:
+                        store_conversation_ticket_mapping(conversation_id, ticket_id)
+                        return ticket_id
+
+            fallback_response = requests.get(search_url, params={"query": fallback_query}, auth=auth, timeout=15)
+            if fallback_response.status_code == 200:
+                fallback_results = fallback_response.json().get("results", []) or []
+                for result in fallback_results:
+                    if str(result.get("result_type", "ticket")).lower() != "ticket":
+                        continue
                     ticket_id = str(result.get("id", "")).strip()
                     if ticket_id:
                         store_conversation_ticket_mapping(conversation_id, ticket_id)
@@ -1405,8 +1431,9 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         )
         for field in routing_payload.get("custom_fields", []):
             field_id = field.get("id")
-            if field_id:
-                metadata[f"dataCapture.ticketField.{field_id}"] = field.get("value")
+            field_value = field.get("value")
+            if field_id and field_value not in (None, "") and not should_skip_pass_control_field(field_id):
+                metadata[f"dataCapture.ticketField.{field_id}"] = field_value
 
         if app_user_id:
             msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/messages"
