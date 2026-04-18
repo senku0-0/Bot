@@ -248,19 +248,6 @@ def append_custom_field(custom_fields: List[Dict[str, Any]], field_id: Any, valu
             return
     custom_fields.append({"id": field_int, "value": value})
 
-def should_skip_pass_control_field(field_id: Any) -> bool:
-    field_int = safe_int(field_id)
-    if not field_int:
-        return True
-    risky_field_ids = {
-        safe_int(FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID),
-        safe_int(PAYMENT_MODE_FIELD_ID),
-        safe_int(VEHICLE_ISSUE_TYPE_FIELD_ID),
-        safe_int(SAFETY_ISSUE_TYPE_FIELD_ID),
-    }
-    risky_field_ids.discard(None)
-    return field_int in risky_field_ids
-
 def first_non_empty(*values: Any) -> Optional[Any]:
     for value in values:
         if value is None:
@@ -712,7 +699,7 @@ def build_pass_control_metadata(
     for field in routing_payload.get("custom_fields", []):
         field_id = field.get("id")
         field_value = field.get("value")
-        if field_id and field_value not in (None, "") and not should_skip_pass_control_field(field_id):
+        if field_id and field_value not in (None, ""):
             metadata[f"dataCapture.ticketField.{field_id}"] = field_value
     return metadata
 
@@ -811,65 +798,6 @@ def resolve_ticket_id_for_conversation(
     except Exception as e:
         logger.exception(f"resolve_ticket_id_for_conversation error: {e}")
         return None
-
-def find_recent_pending_escalation(max_age_seconds: int = 180) -> Optional[Dict[str, Any]]:
-    """
-    Find the freshest pending escalation when Zendesk creates a ticket
-    before the conversation-id custom field is written back.
-    """
-    try:
-        if not hasattr(cache, 'keys'):
-            return None
-
-        newest_pending: Optional[Dict[str, Any]] = None
-        newest_timestamp: Optional[datetime] = None
-        now = datetime.now()
-
-        for key in cache.keys('pending_escalation_*'):
-            pending_data = cache.get(key)
-            if not isinstance(pending_data, dict):
-                continue
-            raw_timestamp = pending_data.get('timestamp')
-            if not raw_timestamp:
-                continue
-            try:
-                pending_timestamp = datetime.fromisoformat(str(raw_timestamp))
-            except Exception:
-                continue
-            if (now - pending_timestamp).total_seconds() > max_age_seconds:
-                continue
-            if newest_timestamp is None or pending_timestamp > newest_timestamp:
-                newest_timestamp = pending_timestamp
-                newest_pending = pending_data
-
-        return newest_pending
-    except Exception as e:
-        logger.error(f"find_recent_pending_escalation error: {e}")
-        return None
-
-def count_recent_pending_escalations(max_age_seconds: int = 180) -> int:
-    try:
-        if not hasattr(cache, 'keys'):
-            return 0
-
-        count = 0
-        now = datetime.now()
-        for key in cache.keys('pending_escalation_*'):
-            pending_data = cache.get(key)
-            if not isinstance(pending_data, dict):
-                continue
-            raw_timestamp = pending_data.get('timestamp')
-            if not raw_timestamp:
-                continue
-            try:
-                pending_timestamp = datetime.fromisoformat(str(raw_timestamp))
-            except Exception:
-                continue
-            if (now - pending_timestamp).total_seconds() <= max_age_seconds:
-                count += 1
-        return count
-    except Exception:
-        return 0
 
 def apply_ticket_routing_after_handoff(
     conversation_id: str,
@@ -1474,7 +1402,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         for field in routing_payload.get("custom_fields", []):
             field_id = field.get("id")
             field_value = field.get("value")
-            if field_id and field_value not in (None, "") and not should_skip_pass_control_field(field_id):
+            if field_id and field_value not in (None, ""):
                 metadata[f"dataCapture.ticketField.{field_id}"] = field_value
 
         if app_user_id:
@@ -1494,6 +1422,22 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         pass_control_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/passControl"
         pass_control_payload = {"switchboardIntegration": "next", "metadata": metadata}
         pc_response = requests.post(pass_control_url, json=pass_control_payload, auth=auth)
+
+        # Keep a short queue so ticket.created can deterministically map to the latest escalation.
+        recent_escalations = cache.get('recent_escalations_queue', []) or []
+        recent_escalations.append({
+            'conversation_id': conversation_id,
+            'app_user_id': app_user_id,
+            'reason': reason,
+            'app_related_category': app_related_category,
+            'ride_related_category': ride_related_category,
+            'ride_related_subcategory': ride_related_subcategory,
+            'ride_related_detail': ride_related_detail,
+            'issue_context': context,
+            'timestamp': time.time(),
+        })
+        recent_escalations = recent_escalations[-50:]
+        cache.set('recent_escalations_queue', recent_escalations, timeout=300)
         
         if pc_response.status_code != 200:
             return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
@@ -2470,6 +2414,23 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
             if not ticket_id:
                 return JsonResponse({"status": "no_ticket_id_in_created"})
 
+            # Deterministic match: use the most recent escalation from the queue (<= 15s old).
+            recent_escalations = cache.get('recent_escalations_queue', []) or []
+            ticket_created_at = time.time()
+            found_escalation = None
+
+            for escalation in reversed(recent_escalations):
+                time_diff = ticket_created_at - escalation.get('timestamp', 0)
+                if 0 < time_diff < 15:
+                    found_escalation = escalation
+                    break
+
+            if found_escalation:
+                conversation_id = found_escalation['conversation_id']
+                cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)
+                cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
+                cache.set(f'pending_escalation_{conversation_id}', found_escalation, timeout=3600)
+
             result = update_ticket_routing_from_conversation_mapping(ticket_id)
             if result.get("status") == "ticket_updated":
                 conversation_id = result.get("conversation_id")
@@ -2700,16 +2661,6 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
     Zendesk form and custom-field mapping for the stored issue context.
     """
     conversation_id = resolve_conversation_id_for_ticket(ticket_id)
-    pending_data = cache.get(f'pending_escalation_{conversation_id}') if conversation_id else None
-
-    if not conversation_id:
-        pending_data = find_recent_pending_escalation()
-        if pending_data and count_recent_pending_escalations() == 1:
-            candidate_conversation_id = str(pending_data.get('conversation_id', '')).strip()
-            if candidate_conversation_id:
-                conversation_id = candidate_conversation_id
-        else:
-            pending_data = None
 
     if not conversation_id:
         return {
@@ -2719,8 +2670,7 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
         }
 
     store_conversation_ticket_mapping(conversation_id, ticket_id)
-    if not pending_data:
-        pending_data = cache.get(f'pending_escalation_{conversation_id}')
+    pending_data = cache.get(f'pending_escalation_{conversation_id}')
     app_related_category = None
     ride_related_category = None
     ride_related_subcategory = None
