@@ -173,11 +173,6 @@ FARE_AND_PAYMENT_SUBCATEGORY_TAGS = {
     "driver charged extra fare": "driver_charged_extra_fare",
     "charged higher than estimated fare": "charged_higher_than_estimated_fare",
     "cancellation charges": "cancellation_charges",
-    # Normalized keys (with spaces, matching normalize_issue_key output)
-    "multiple debits occurred": "multiple_debits_occured",
-    "driver charged extra fare": "driver_charged_extra_fare",
-    "charged higher than estimated fare": "charged_higher_than_estimated_fare",
-    "cancellation charges": "cancellation_charges",
 }
 
 VEHICLE_ISSUE_TYPE_TAGS = {
