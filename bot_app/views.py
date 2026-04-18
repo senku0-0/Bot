@@ -168,8 +168,8 @@ APP_RELATED_CATEGORY_TAGS = {
 }
 
 FARE_AND_PAYMENT_SUBCATEGORY_TAGS = {
-    "multiple debits occurred": "multiple_debits_occured",
-    "multiple debits occured": "multiple_debits_occured",
+    "multiple debits occurred": "multiple_debits_occurred",
+    "multiple debits occured": "multiple_debits_occurred",
     "driver charged extra fare": "driver_charged_extra_fare",
     "charged higher than estimated fare": "charged_higher_than_estimated_fare",
     "cancellation charges": "cancellation_charges",
@@ -503,7 +503,40 @@ def update_ticket_routing(
                     f"Ticket custom field update failed for {ticket_id}: "
                     f"{fields_response.status_code} - {fields_response.text}"
                 )
-                succeeded = False
+                # Retry one field at a time so one invalid dropdown value doesn't block all fields.
+                fare_subcategory_field_id = safe_int(FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID)
+                for field in custom_fields:
+                    field_id = safe_int(field.get("id"))
+                    if not field_id:
+                        continue
+
+                    candidate_values: List[Any] = [field.get("value")]
+                    if field_id == fare_subcategory_field_id:
+                        current_value = str(field.get("value") or "").strip()
+                        if current_value == "multiple_debits_occurred":
+                            candidate_values.append("multiple_debits_occured")
+                        elif current_value == "multiple_debits_occured":
+                            candidate_values.append("multiple_debits_occurred")
+
+                    field_updated = False
+                    for candidate_value in candidate_values:
+                        single_field_payload = {"ticket": {"custom_fields": [{"id": field_id, "value": candidate_value}]}}
+                        single_response = requests.put(
+                            url,
+                            json=single_field_payload,
+                            auth=auth,
+                            timeout=15
+                        )
+                        if single_response.status_code == 200:
+                            field_updated = True
+                            break
+                        logger.error(
+                            f"Ticket custom field partial update failed for {ticket_id}, field {field_id}, "
+                            f"value '{candidate_value}': {single_response.status_code} - {single_response.text}"
+                        )
+
+                    if not field_updated:
+                        succeeded = False
 
         if payload:
             extra_response = requests.put(
