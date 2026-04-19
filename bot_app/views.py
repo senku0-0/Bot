@@ -910,6 +910,28 @@ def apply_ticket_routing_after_handoff(
         cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
     return {"ticket_id": ticket_id, "routing_updated": routing_updated}
 
+def set_ticket_conversation_field(ticket_id: str, conversation_id: str) -> bool:
+    """
+    Persist the Sunshine conversation ID onto the Zendesk ticket so later
+    webhook routing and searches can always find the same ticket.
+    """
+    try:
+        field_id = safe_int(ZENDESK_CHAT_CONVERSATION_FIELD_ID)
+        if not field_id or not ticket_id or not conversation_id:
+            return False
+
+        url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+        response = requests.put(
+            url,
+            json={"ticket": {"custom_fields": [{"id": field_id, "value": conversation_id}]}},
+            auth=HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN),
+            timeout=15
+        )
+        return response.status_code == 200
+    except Exception as e:
+        logger.error(f"set_ticket_conversation_field error: {e}")
+        return False
+
 def forward_agent_message_to_websocket(conversation_id: str, message_text: str, agent_name: str = "Agent", choices: list = None, actions: list = None, received_timestamp: str = None) -> bool:
     """
     Send agent message to WebSocket clients via Django Channels group.
@@ -1542,8 +1564,8 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
 @csrf_exempt
 def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
     """
-    Create a Sunshine handoff conversation from the visible transcript and
-    silently escalate it to Zendesk via passControl.
+    Silently escalate the current Sunshine conversation to Zendesk via
+    passControl so the same conversation becomes the single ticket source.
 
     Request body (POST):
         - conversationId (str, required): Source Sunshine conversation ID
@@ -1565,7 +1587,6 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
         title = strip_html_tags(str(data.get("title", "Support Request"))).strip() or "Support Request"
         transcript = str(data.get("transcript", "")).strip()
         app_user_id = str(data.get("appUserId", "")).strip() or None
-        transcript_entries = normalize_transcript_entries(data.get("transcriptEntries"))
         app_related_category = data.get("appRelatedCategory")
         issue_context = build_issue_context(
             issue_context=data.get("issueContext"),
@@ -1588,27 +1609,22 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
                 "appUserId": app_user_id
             })
 
-        handoff_conversation_id = create_sunshine_conversation_for_user(app_user_id)
-        if not handoff_conversation_id:
-            return JsonResponse({"error": "Failed to create Sunshine handoff conversation"}, status=500)
+        existing_ticket_id = resolve_ticket_id_for_conversation(source_conversation_id)
+        if not existing_ticket_id:
+            passed = silently_pass_conversation_to_agent(
+                conversation_id=source_conversation_id,
+                app_user_id=app_user_id,
+                reason=title,
+                issue_context=issue_context,
+                app_related_category=app_related_category
+            )
+            if not passed:
+                return JsonResponse({"error": "Failed to hand off Sunshine conversation"}, status=500)
 
-        if not sync_transcript_entries_to_sunshine(handoff_conversation_id, app_user_id, transcript_entries):
-            return JsonResponse({"error": "Failed to sync transcript to Sunshine conversation"}, status=500)
-
-        passed = silently_pass_conversation_to_agent(
-            conversation_id=handoff_conversation_id,
-            app_user_id=app_user_id,
-            reason=title,
-            issue_context=issue_context,
-            app_related_category=app_related_category
-        )
-        if not passed:
-            return JsonResponse({"error": "Failed to hand off Sunshine conversation"}, status=500)
-
-        cache.set(f'csat_handoff_{source_conversation_id}', handoff_conversation_id, timeout=604800)
+        cache.set(f'csat_handoff_{source_conversation_id}', source_conversation_id, timeout=604800)
 
         routing_result = apply_ticket_routing_after_handoff(
-            conversation_id=handoff_conversation_id,
+            conversation_id=source_conversation_id,
             app_user_id=app_user_id,
             reason=title,
             issue_context=issue_context,
@@ -1619,7 +1635,7 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
 
         return JsonResponse({
             "status": "created",
-            "conversation_id": handoff_conversation_id,
+            "conversation_id": source_conversation_id,
             "source_conversation_id": source_conversation_id,
             "appUserId": app_user_id,
             "ticket_id": routing_result.get("ticket_id"),
@@ -2743,6 +2759,7 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
             "message": "Ticket created but no conversation mapping found",
         }
 
+    set_ticket_conversation_field(ticket_id, conversation_id)
     store_conversation_ticket_mapping(conversation_id, ticket_id)
     pending_data = cache.get(f'pending_escalation_{conversation_id}')
     app_related_category = None
