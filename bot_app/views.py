@@ -199,6 +199,12 @@ PAYMENT_MODE_TAGS = {
 }
 
 ISSUE_PATH_PREFIXES = ("App Related Issues", "Ride Related Issues")
+RIDE_RELATED_CATEGORY_KEYS = {
+    "fare and payment",
+    "find a lost item",
+    "vehicle related issue",
+    "safety related",
+}
 
 def normalize_issue_key(value: Any) -> str:
     text = strip_html_tags(str(value or "")).lower()
@@ -242,27 +248,32 @@ def append_custom_field(custom_fields: List[Dict[str, Any]], field_id: Any, valu
             return
     custom_fields.append({"id": field_int, "value": value})
 
-def get_ticket_field_options(field_id: Any, auth: HTTPBasicAuth) -> Optional[List[Dict[str, str]]]:
+def get_ticket_field_options(
+    field_id: Any,
+    auth: HTTPBasicAuth,
+    force_refresh: bool = False,
+) -> Optional[List[Dict[str, str]]]:
     field_int = safe_int(field_id)
     if not field_int or not ZENDESK_SUBDOMAIN:
         return None
 
     cache_key = f"zendesk_ticket_field_options_full_{field_int}"
-    cached_options = cache.get(cache_key)
-    if isinstance(cached_options, list):
-        normalized_cached: List[Dict[str, str]] = []
-        for option in cached_options:
-            if not isinstance(option, dict):
-                continue
-            value = str(option.get("value", "")).strip()
-            if not value:
-                continue
-            normalized_cached.append({
-                "name": str(option.get("name", "")).strip(),
-                "value": value,
-            })
-        if normalized_cached:
-            return normalized_cached
+    if not force_refresh:
+        cached_options = cache.get(cache_key)
+        if isinstance(cached_options, list):
+            normalized_cached: List[Dict[str, str]] = []
+            for option in cached_options:
+                if not isinstance(option, dict):
+                    continue
+                value = str(option.get("value", "")).strip()
+                if not value:
+                    continue
+                normalized_cached.append({
+                    "name": str(option.get("name", "")).strip(),
+                    "value": value,
+                })
+            if normalized_cached:
+                return normalized_cached
 
     url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/ticket_fields/{field_int}.json"
     response = requests.get(url, auth=auth, timeout=15)
@@ -290,18 +301,23 @@ def get_ticket_field_options(field_id: Any, auth: HTTPBasicAuth) -> Optional[Lis
     cache.set(cache_key, normalized_options, timeout=3600)
     return normalized_options
 
-def get_ticket_form_field_ids(form_id: Any, auth: HTTPBasicAuth) -> Optional[List[int]]:
+def get_ticket_form_field_ids(
+    form_id: Any,
+    auth: HTTPBasicAuth,
+    force_refresh: bool = False,
+) -> Optional[List[int]]:
     form_int = safe_int(form_id)
     if not form_int or not ZENDESK_SUBDOMAIN:
         return None
 
     cache_key = f"zendesk_ticket_form_field_ids_{form_int}"
-    cached_ids = cache.get(cache_key)
-    if isinstance(cached_ids, list):
-        normalized_cached = [safe_int(field_id) for field_id in cached_ids]
-        normalized_cached = [field_id for field_id in normalized_cached if field_id]
-        if normalized_cached:
-            return normalized_cached
+    if not force_refresh:
+        cached_ids = cache.get(cache_key)
+        if isinstance(cached_ids, list):
+            normalized_cached = [safe_int(field_id) for field_id in cached_ids]
+            normalized_cached = [field_id for field_id in normalized_cached if field_id]
+            if normalized_cached:
+                return normalized_cached
 
     url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/ticket_forms/{form_int}.json"
     response = requests.get(url, auth=auth, timeout=15)
@@ -352,8 +368,12 @@ def resolve_enum_field_id_for_label(
 
     return preferred_int
 
-def get_ticket_field_option_values(field_id: Any, auth: HTTPBasicAuth) -> Optional[Set[str]]:
-    options = get_ticket_field_options(field_id, auth)
+def get_ticket_field_option_values(
+    field_id: Any,
+    auth: HTTPBasicAuth,
+    force_refresh: bool = False,
+) -> Optional[Set[str]]:
+    options = get_ticket_field_options(field_id, auth, force_refresh=force_refresh)
     if not options:
         return None
     return {str(option.get("value", "")).strip() for option in options if str(option.get("value", "")).strip()}
@@ -362,6 +382,7 @@ def get_field_option_value_for_label(
     field_id: Any,
     option_label: Optional[str],
     auth: HTTPBasicAuth,
+    force_refresh: bool = False,
 ) -> Optional[str]:
     if not option_label:
         return None
@@ -370,7 +391,7 @@ def get_field_option_value_for_label(
     if not target_label:
         return None
 
-    options = get_ticket_field_options(field_id, auth)
+    options = get_ticket_field_options(field_id, auth, force_refresh=force_refresh)
     if not options:
         return None
 
@@ -401,7 +422,18 @@ def resolve_enum_field_value(
     if value in option_values:
         return value
 
-    label_based_value = get_field_option_value_for_label(field_id, option_label, auth)
+    fresh_option_values = get_ticket_field_option_values(field_id, auth, force_refresh=True)
+    if fresh_option_values:
+        option_values = fresh_option_values
+    if value in option_values:
+        return value
+
+    label_based_value = get_field_option_value_for_label(
+        field_id,
+        option_label,
+        auth,
+        force_refresh=True,
+    )
     if label_based_value and label_based_value in option_values:
         logger.info(
             f"{field_name} value remapped by option label '{option_label}' -> '{label_based_value}'"
@@ -413,6 +445,51 @@ def resolve_enum_field_value(
         f"value='{value}', options={sorted(option_values)}"
     )
     return field_value
+
+def log_ride_routing_payload_debug(
+    ticket_id: str,
+    category_key: str,
+    form_id: Any,
+    custom_fields: List[Dict[str, Any]],
+    auth: HTTPBasicAuth,
+) -> None:
+    if category_key not in RIDE_RELATED_CATEGORY_KEYS:
+        return
+
+    payload_fields: List[Dict[str, Any]] = []
+    for field in custom_fields:
+        payload_fields.append({
+            "id": safe_int(field.get("id")),
+            "value": field.get("value"),
+        })
+
+    logger.info(
+        f"Ride payload debug - ticket_id={ticket_id}, branch='{category_key}', "
+        f"ticket_form_id={safe_int(form_id)}, custom_fields={payload_fields}"
+    )
+
+    for field in payload_fields:
+        field_id = safe_int(field.get("id"))
+        field_value = field.get("value")
+        if not field_id:
+            continue
+
+        options = get_ticket_field_options(field_id, auth, force_refresh=True) or []
+        option_values = [str(option.get("value", "")).strip() for option in options if str(option.get("value", "")).strip()]
+        option_names = [str(option.get("name", "")).strip() for option in options if str(option.get("name", "")).strip()]
+
+        if option_values:
+            is_match = field_value in option_values
+            logger.info(
+                f"Ride field compare - ticket_id={ticket_id}, branch='{category_key}', "
+                f"field_id={field_id}, value='{field_value}', option_values={option_values}, "
+                f"option_names={option_names}, match={is_match}"
+            )
+        else:
+            logger.info(
+                f"Ride field compare - ticket_id={ticket_id}, branch='{category_key}', "
+                f"field_id={field_id}, value='{field_value}', option_values=unavailable"
+            )
 
 def get_ticket_custom_field_values(ticket_id: str, auth: HTTPBasicAuth) -> Dict[int, Any]:
     try:
@@ -778,10 +855,14 @@ def update_ticket_routing(
         form_id = payload.pop("ticket_form_id", None)
         custom_fields = payload.pop("custom_fields", None) or []
         succeeded = True
+        conversation_field_id = safe_int(ZENDESK_CHAT_CONVERSATION_FIELD_ID)
         fare_subcategory_field_id = safe_int(FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID)
         vehicle_issue_type_field_id = safe_int(VEHICLE_ISSUE_TYPE_FIELD_ID)
         safety_issue_type_field_id = safe_int(SAFETY_ISSUE_TYPE_FIELD_ID)
         payment_mode_field_id = safe_int(PAYMENT_MODE_FIELD_ID)
+
+        if conversation_field_id and conversation_id:
+            append_custom_field(custom_fields, conversation_field_id, str(conversation_id))
 
         if category_key == "fare and payment" and form_id:
             fare_tag = FARE_AND_PAYMENT_SUBCATEGORY_TAGS.get(subcategory_key)
@@ -877,6 +958,14 @@ def update_ticket_routing(
             payment_mode_field_id,
         ] if field_id}
 
+        log_ride_routing_payload_debug(
+            ticket_id=ticket_id,
+            category_key=category_key,
+            form_id=form_id,
+            custom_fields=custom_fields,
+            auth=auth,
+        )
+
         if custom_fields and enum_field_ids:
             enum_preview = [
                 {"id": safe_int(field.get("id")), "value": field.get("value")}
@@ -911,6 +1000,32 @@ def update_ticket_routing(
                     option_label=option_label,
                 )
 
+        if conversation_field_id and conversation_id:
+            conversation_response = requests.put(
+                url,
+                json={"ticket": {"custom_fields": [{"id": conversation_field_id, "value": str(conversation_id)}]}},
+                auth=auth,
+                timeout=15,
+            )
+            if conversation_response.status_code != 200:
+                logger.error(
+                    f"Conversation field update failed for ticket {ticket_id}, field {conversation_field_id}: "
+                    f"{conversation_response.status_code} - {conversation_response.text}"
+                )
+                succeeded = False
+            else:
+                logger.info(
+                    f"Conversation field update success for ticket {ticket_id}, field {conversation_field_id}, "
+                    f"value='{conversation_id}'"
+                )
+
+        custom_fields_to_update = custom_fields
+        if conversation_field_id:
+            custom_fields_to_update = [
+                field for field in custom_fields
+                if safe_int(field.get("id")) != conversation_field_id
+            ]
+
         if form_id:
             form_response = requests.put(
                 url,
@@ -925,10 +1040,10 @@ def update_ticket_routing(
                 )
                 succeeded = False
 
-        if custom_fields:
+        if custom_fields_to_update:
             fields_response = requests.put(
                 url,
-                json={"ticket": {"custom_fields": custom_fields}},
+                json={"ticket": {"custom_fields": custom_fields_to_update}},
                 auth=auth,
                 timeout=15
             )
@@ -938,7 +1053,7 @@ def update_ticket_routing(
                     f"{fields_response.status_code} - {fields_response.text}"
                 )
                 # Retry one field at a time so one invalid dropdown value doesn't block all fields.
-                for field in custom_fields:
+                for field in custom_fields_to_update:
                     field_id = safe_int(field.get("id"))
                     if not field_id:
                         continue
@@ -965,9 +1080,9 @@ def update_ticket_routing(
                     if not field_updated:
                         succeeded = False
 
-        if custom_fields and enum_field_ids:
+        if custom_fields_to_update and enum_field_ids:
             expected_enum_field_values: Dict[int, Any] = {}
-            for field in custom_fields:
+            for field in custom_fields_to_update:
                 field_id = safe_int(field.get("id"))
                 if not field_id or field_id not in enum_field_ids:
                     continue
