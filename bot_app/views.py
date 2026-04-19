@@ -2,7 +2,7 @@ from django.shortcuts import render
 from django.http import JsonResponse, HttpResponseForbidden, HttpRequest, HttpResponse, StreamingHttpResponse
 from django.views.decorators.csrf import csrf_exempt
 import json, hmac, hashlib, os, base64, logging, sys, uuid, re, time, asyncio
-from typing import Optional, Dict, Any, Union, List
+from typing import Optional, Dict, Any, Union, List, Set
 from dotenv import load_dotenv
 import requests
 from requests.auth import HTTPBasicAuth
@@ -248,6 +248,68 @@ def append_custom_field(custom_fields: List[Dict[str, Any]], field_id: Any, valu
             return
     custom_fields.append({"id": field_int, "value": value})
 
+def get_ticket_field_option_values(field_id: Any, auth: HTTPBasicAuth) -> Optional[Set[str]]:
+    field_int = safe_int(field_id)
+    if not field_int or not ZENDESK_SUBDOMAIN:
+        return None
+
+    cache_key = f"zendesk_ticket_field_options_{field_int}"
+    cached_options = cache.get(cache_key)
+    if isinstance(cached_options, list):
+        return {str(option).strip() for option in cached_options if str(option).strip()}
+
+    url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/ticket_fields/{field_int}.json"
+    response = requests.get(url, auth=auth, timeout=15)
+    if response.status_code != 200:
+        logger.warning(
+            f"Ticket field options lookup failed for field {field_int}: "
+            f"{response.status_code} - {response.text}"
+        )
+        return None
+
+    field_data = response.json().get("ticket_field", {})
+    options = field_data.get("custom_field_options", []) or []
+    option_values = sorted(
+        {
+            str(option.get("value", "")).strip()
+            for option in options
+            if isinstance(option, dict) and str(option.get("value", "")).strip()
+        }
+    )
+
+    cache.set(cache_key, option_values, timeout=3600)
+    return set(option_values)
+
+def resolve_fare_subcategory_value(
+    fare_field_id: Any,
+    fare_value: Any,
+    auth: HTTPBasicAuth,
+) -> Any:
+    current_value = str(fare_value or "").strip()
+    if current_value not in {"multiple_debits_occurred", "multiple_debits_occured"}:
+        return fare_value
+
+    option_values = get_ticket_field_option_values(fare_field_id, auth)
+    if not option_values:
+        return fare_value
+
+    if current_value in option_values:
+        return current_value
+
+    if "multiple_debits_occured" in option_values:
+        logger.info("Fare subcategory fallback: using 'multiple_debits_occured' option value")
+        return "multiple_debits_occured"
+
+    if "multiple_debits_occurred" in option_values:
+        logger.info("Fare subcategory fallback: using 'multiple_debits_occurred' option value")
+        return "multiple_debits_occurred"
+
+    logger.warning(
+        "Fare subcategory value did not match available Zendesk options. "
+        f"Current='{current_value}', available={sorted(option_values)}"
+    )
+    return fare_value
+
 def first_non_empty(*values: Any) -> Optional[Any]:
     for value in values:
         if value is None:
@@ -392,6 +454,8 @@ def build_ticket_routing_payload(
                 ticket_payload["ticket_form_id"] = form_id
             fare_tag = FARE_AND_PAYMENT_SUBCATEGORY_TAGS.get(subcategory_key)
             logger.info(f"Fare Payment: subcategory_key='{subcategory_key}' -> tag={fare_tag}")
+            if fare_tag and not safe_int(FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID):
+                logger.error("FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID is not configured. Fare subcategory cannot be populated.")
             append_custom_field(
                 custom_fields,
                 FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID,
@@ -494,6 +558,17 @@ def update_ticket_routing(
         form_id = payload.pop("ticket_form_id", None)
         custom_fields = payload.pop("custom_fields", None)
         succeeded = True
+        fare_subcategory_field_id = safe_int(FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID)
+
+        if custom_fields and fare_subcategory_field_id:
+            for field in custom_fields:
+                if safe_int(field.get("id")) != fare_subcategory_field_id:
+                    continue
+                field["value"] = resolve_fare_subcategory_value(
+                    fare_field_id=fare_subcategory_field_id,
+                    fare_value=field.get("value"),
+                    auth=auth,
+                )
 
         if form_id:
             form_response = requests.put(
@@ -522,7 +597,6 @@ def update_ticket_routing(
                     f"{fields_response.status_code} - {fields_response.text}"
                 )
                 # Retry one field at a time so one invalid dropdown value doesn't block all fields.
-                fare_subcategory_field_id = safe_int(FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID)
                 for field in custom_fields:
                     field_id = safe_int(field.get("id"))
                     if not field_id:
