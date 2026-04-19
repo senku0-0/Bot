@@ -169,7 +169,6 @@ APP_RELATED_CATEGORY_TAGS = {
 
 FARE_AND_PAYMENT_SUBCATEGORY_TAGS = {
     "multiple debits occurred": "multiple_debits_occurred",
-    "multiple debits occured": "multiple_debits_occurred",
     "driver charged extra fare": "driver_charged_extra_fare",
     "charged higher than estimated fare": "charged_higher_than_estimated_fare",
     "cancellation charges": "cancellation_charges",
@@ -186,11 +185,9 @@ SAFETY_ISSUE_TYPE_TAGS = {
     "drunk and drive": "drunk_and_drive",
     "driver was rude or misbehaved": "driver_was_rude_or_misbehaved",
     "other": "other",
-    "others": "other",
     "met with an accident": "met_with_an_accident",
-    "sexual harassment": "sexual_harresment",
+    "sexual harassment": "sexual_harassment",
     "physical fights": "physical_fights",
-    "phyiscal fights": "physical_fights",
     "extra person in the vehicle": "extra_person_in_the_vehicle",
     "rash driving": "rash_driving",
     "vehicle broke down": "vehicle_broke_down",
@@ -293,6 +290,68 @@ def get_ticket_field_options(field_id: Any, auth: HTTPBasicAuth) -> Optional[Lis
     cache.set(cache_key, normalized_options, timeout=3600)
     return normalized_options
 
+def get_ticket_form_field_ids(form_id: Any, auth: HTTPBasicAuth) -> Optional[List[int]]:
+    form_int = safe_int(form_id)
+    if not form_int or not ZENDESK_SUBDOMAIN:
+        return None
+
+    cache_key = f"zendesk_ticket_form_field_ids_{form_int}"
+    cached_ids = cache.get(cache_key)
+    if isinstance(cached_ids, list):
+        normalized_cached = [safe_int(field_id) for field_id in cached_ids]
+        normalized_cached = [field_id for field_id in normalized_cached if field_id]
+        if normalized_cached:
+            return normalized_cached
+
+    url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/ticket_forms/{form_int}.json"
+    response = requests.get(url, auth=auth, timeout=15)
+    if response.status_code != 200:
+        logger.warning(
+            f"Ticket form lookup failed for form {form_int}: "
+            f"{response.status_code} - {response.text}"
+        )
+        return None
+
+    form_data = response.json().get("ticket_form", {})
+    field_ids = form_data.get("ticket_field_ids", []) if isinstance(form_data, dict) else []
+    normalized_ids = [safe_int(field_id) for field_id in field_ids]
+    normalized_ids = [field_id for field_id in normalized_ids if field_id]
+    if not normalized_ids:
+        return None
+
+    cache.set(cache_key, normalized_ids, timeout=3600)
+    return normalized_ids
+
+def resolve_enum_field_id_for_label(
+    form_id: Any,
+    preferred_field_id: Any,
+    option_label: Optional[str],
+    auth: HTTPBasicAuth,
+) -> Optional[int]:
+    preferred_int = safe_int(preferred_field_id)
+    target_label = normalize_issue_key(option_label)
+    if not target_label:
+        return preferred_int
+
+    candidate_field_ids: List[int] = []
+    if preferred_int:
+        candidate_field_ids.append(preferred_int)
+
+    form_field_ids = get_ticket_form_field_ids(form_id, auth) or []
+    for field_id in form_field_ids:
+        if field_id not in candidate_field_ids:
+            candidate_field_ids.append(field_id)
+
+    for field_id in candidate_field_ids:
+        options = get_ticket_field_options(field_id, auth)
+        if not options:
+            continue
+        for option in options:
+            if normalize_issue_key(option.get("name")) == target_label:
+                return field_id
+
+    return preferred_int
+
 def get_ticket_field_option_values(field_id: Any, auth: HTTPBasicAuth) -> Optional[Set[str]]:
     options = get_ticket_field_options(field_id, auth)
     if not options:
@@ -385,48 +444,70 @@ def verify_and_retry_enum_fields(
     ticket_id: str,
     expected_field_values: Dict[int, Any],
     auth: HTTPBasicAuth,
+    max_attempts: int = 3,
+    retry_sleep_seconds: float = 0.8,
 ) -> bool:
     if not expected_field_values:
         return True
 
-    current_values = get_ticket_custom_field_values(ticket_id, auth)
-    if not current_values:
+    url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+
+    for attempt in range(1, max(max_attempts, 1) + 1):
+        current_values = get_ticket_custom_field_values(ticket_id, auth)
+        if not current_values:
+            return True
+
+        mismatches: List[Dict[str, Any]] = []
+        for field_id, expected_value in expected_field_values.items():
+            current_value = current_values.get(field_id)
+            if current_value == expected_value:
+                continue
+            mismatches.append({
+                "field_id": field_id,
+                "expected": expected_value,
+                "current": current_value,
+            })
+
+        if not mismatches:
+            return True
+
+        for mismatch in mismatches:
+            field_id = mismatch["field_id"]
+            expected_value = mismatch["expected"]
+            current_value = mismatch["current"]
+            logger.warning(
+                f"Enum field mismatch for ticket {ticket_id}, field {field_id}: "
+                f"expected '{expected_value}', got '{current_value}'. "
+                f"Retrying attempt {attempt}/{max(max_attempts, 1)}."
+            )
+            retry_response = requests.put(
+                url,
+                json={"ticket": {"custom_fields": [{"id": field_id, "value": expected_value}]}},
+                auth=auth,
+                timeout=15,
+            )
+            if retry_response.status_code != 200:
+                logger.error(
+                    f"Enum field retry failed for ticket {ticket_id}, field {field_id}: "
+                    f"{retry_response.status_code} - {retry_response.text}"
+                )
+
+        if attempt < max(max_attempts, 1):
+            time.sleep(max(retry_sleep_seconds, 0.1))
+
+    final_values = get_ticket_custom_field_values(ticket_id, auth)
+    if not final_values:
         return True
 
-    url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
     all_ok = True
-
     for field_id, expected_value in expected_field_values.items():
-        current_value = current_values.get(field_id)
-        if current_value == expected_value:
+        if final_values.get(field_id) == expected_value:
             continue
-
-        logger.warning(
-            f"Enum field mismatch for ticket {ticket_id}, field {field_id}: "
-            f"expected '{expected_value}', got '{current_value}'. Retrying once."
+        logger.error(
+            f"Enum field still mismatched after retries for ticket {ticket_id}, field {field_id}: "
+            f"expected '{expected_value}', got '{final_values.get(field_id)}'"
         )
-        retry_response = requests.put(
-            url,
-            json={"ticket": {"custom_fields": [{"id": field_id, "value": expected_value}]}},
-            auth=auth,
-            timeout=15,
-        )
-        if retry_response.status_code != 200:
-            logger.error(
-                f"Enum field retry failed for ticket {ticket_id}, field {field_id}: "
-                f"{retry_response.status_code} - {retry_response.text}"
-            )
-            all_ok = False
-
-    refreshed_values = get_ticket_custom_field_values(ticket_id, auth)
-    if refreshed_values:
-        for field_id, expected_value in expected_field_values.items():
-            if refreshed_values.get(field_id) != expected_value:
-                logger.error(
-                    f"Enum field still mismatched after retry for ticket {ticket_id}, field {field_id}: "
-                    f"expected '{expected_value}', got '{refreshed_values.get(field_id)}'"
-                )
-                all_ok = False
+        all_ok = False
 
     return all_ok
 
@@ -671,6 +752,9 @@ def update_ticket_routing(
             ride_related_subcategory=ride_related_subcategory,
             ride_related_detail=ride_related_detail,
         )
+        category_key = normalize_issue_key(context.get("category"))
+        subcategory_key = normalize_issue_key(context.get("subcategory"))
+        detail_key = normalize_issue_key(context.get("detail"))
         subcategory_label = context.get("subcategory")
         detail_label = context.get("detail")
 
@@ -692,18 +776,115 @@ def update_ticket_routing(
         auth = HTTPBasicAuth(f"{ZENDESK_EMAIL}/token", ZENDESK_API_TOKEN)
 
         form_id = payload.pop("ticket_form_id", None)
-        custom_fields = payload.pop("custom_fields", None)
+        custom_fields = payload.pop("custom_fields", None) or []
         succeeded = True
         fare_subcategory_field_id = safe_int(FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID)
         vehicle_issue_type_field_id = safe_int(VEHICLE_ISSUE_TYPE_FIELD_ID)
         safety_issue_type_field_id = safe_int(SAFETY_ISSUE_TYPE_FIELD_ID)
         payment_mode_field_id = safe_int(PAYMENT_MODE_FIELD_ID)
+
+        if category_key == "fare and payment" and form_id:
+            fare_tag = FARE_AND_PAYMENT_SUBCATEGORY_TAGS.get(subcategory_key)
+            if fare_tag and subcategory_label:
+                resolved_fare_field_id = resolve_enum_field_id_for_label(
+                    form_id=form_id,
+                    preferred_field_id=fare_subcategory_field_id,
+                    option_label=subcategory_label,
+                    auth=auth,
+                )
+                if resolved_fare_field_id:
+                    if fare_subcategory_field_id and resolved_fare_field_id != fare_subcategory_field_id:
+                        custom_fields = [
+                            field for field in custom_fields
+                            if safe_int(field.get("id")) != fare_subcategory_field_id
+                        ]
+                        logger.info(
+                            f"Fare subcategory field resolved by form/options: "
+                            f"configured={fare_subcategory_field_id}, resolved={resolved_fare_field_id}"
+                        )
+                    fare_subcategory_field_id = resolved_fare_field_id
+                    append_custom_field(custom_fields, fare_subcategory_field_id, fare_tag)
+
+            payment_tag = PAYMENT_MODE_TAGS.get(detail_key)
+            if payment_tag and detail_label:
+                resolved_payment_field_id = resolve_enum_field_id_for_label(
+                    form_id=form_id,
+                    preferred_field_id=payment_mode_field_id,
+                    option_label=detail_label,
+                    auth=auth,
+                )
+                if resolved_payment_field_id:
+                    if payment_mode_field_id and resolved_payment_field_id != payment_mode_field_id:
+                        custom_fields = [
+                            field for field in custom_fields
+                            if safe_int(field.get("id")) != payment_mode_field_id
+                        ]
+                        logger.info(
+                            f"Payment mode field resolved by form/options: "
+                            f"configured={payment_mode_field_id}, resolved={resolved_payment_field_id}"
+                        )
+                    payment_mode_field_id = resolved_payment_field_id
+                    append_custom_field(custom_fields, payment_mode_field_id, payment_tag)
+
+        if category_key == "vehicle related issue" and form_id:
+            vehicle_tag = VEHICLE_ISSUE_TYPE_TAGS.get(subcategory_key)
+            if vehicle_tag and subcategory_label:
+                resolved_vehicle_field_id = resolve_enum_field_id_for_label(
+                    form_id=form_id,
+                    preferred_field_id=vehicle_issue_type_field_id,
+                    option_label=subcategory_label,
+                    auth=auth,
+                )
+                if resolved_vehicle_field_id:
+                    if vehicle_issue_type_field_id and resolved_vehicle_field_id != vehicle_issue_type_field_id:
+                        custom_fields = [
+                            field for field in custom_fields
+                            if safe_int(field.get("id")) != vehicle_issue_type_field_id
+                        ]
+                        logger.info(
+                            f"Vehicle issue field resolved by form/options: "
+                            f"configured={vehicle_issue_type_field_id}, resolved={resolved_vehicle_field_id}"
+                        )
+                    vehicle_issue_type_field_id = resolved_vehicle_field_id
+                    append_custom_field(custom_fields, vehicle_issue_type_field_id, vehicle_tag)
+
+        if category_key == "safety related" and form_id:
+            safety_tag = SAFETY_ISSUE_TYPE_TAGS.get(subcategory_key)
+            if safety_tag and subcategory_label:
+                resolved_safety_field_id = resolve_enum_field_id_for_label(
+                    form_id=form_id,
+                    preferred_field_id=safety_issue_type_field_id,
+                    option_label=subcategory_label,
+                    auth=auth,
+                )
+                if resolved_safety_field_id:
+                    if safety_issue_type_field_id and resolved_safety_field_id != safety_issue_type_field_id:
+                        custom_fields = [
+                            field for field in custom_fields
+                            if safe_int(field.get("id")) != safety_issue_type_field_id
+                        ]
+                        logger.info(
+                            f"Safety issue field resolved by form/options: "
+                            f"configured={safety_issue_type_field_id}, resolved={resolved_safety_field_id}"
+                        )
+                    safety_issue_type_field_id = resolved_safety_field_id
+                    append_custom_field(custom_fields, safety_issue_type_field_id, safety_tag)
+
         enum_field_ids = {field_id for field_id in [
             fare_subcategory_field_id,
             vehicle_issue_type_field_id,
             safety_issue_type_field_id,
             payment_mode_field_id,
         ] if field_id}
+
+        if custom_fields and enum_field_ids:
+            enum_preview = [
+                {"id": safe_int(field.get("id")), "value": field.get("value")}
+                for field in custom_fields
+                if safe_int(field.get("id")) in enum_field_ids
+            ]
+            if enum_preview:
+                logger.info(f"Enum custom fields prepared for ticket {ticket_id}: {enum_preview}")
 
         if custom_fields and enum_field_ids:
             for field in custom_fields:
@@ -1662,7 +1843,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         routing_payload = build_ticket_routing_payload(
             conversation_id=conversation_id,
             app_user_id=app_user_id,
-            issue_context=issue_context,
+            issue_context=context,
             reason=reason,
             app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
             ride_related_category=ride_related_category,
