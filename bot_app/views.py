@@ -179,7 +179,6 @@ VEHICLE_ISSUE_TYPE_TAGS = {
     "unclean unhygienic vehicle": "unclean/unhygienic_vehicle",
     "vehicle unsafe": "vehicle_unsafe",
     "ac not turned on ac stopped working midway": "ac_not_turned_on_/_ac_stopped_working",
-    "ac not turned on ac stopped working": "ac_not_turned_on_/_ac_stopped_working",
     "vehicle was different": "vehicle_was_different",
 }
 
@@ -190,8 +189,6 @@ SAFETY_ISSUE_TYPE_TAGS = {
     "others": "other",
     "met with an accident": "met_with_an_accident",
     "sexual harassment": "sexual_harresment",
-    "sexual harrasment": "sexual_harresment",
-    "sexual harresment": "sexual_harresment",
     "physical fights": "physical_fights",
     "phyiscal fights": "physical_fights",
     "extra person in the vehicle": "extra_person_in_the_vehicle",
@@ -248,15 +245,27 @@ def append_custom_field(custom_fields: List[Dict[str, Any]], field_id: Any, valu
             return
     custom_fields.append({"id": field_int, "value": value})
 
-def get_ticket_field_option_values(field_id: Any, auth: HTTPBasicAuth) -> Optional[Set[str]]:
+def get_ticket_field_options(field_id: Any, auth: HTTPBasicAuth) -> Optional[List[Dict[str, str]]]:
     field_int = safe_int(field_id)
     if not field_int or not ZENDESK_SUBDOMAIN:
         return None
 
-    cache_key = f"zendesk_ticket_field_options_{field_int}"
+    cache_key = f"zendesk_ticket_field_options_full_{field_int}"
     cached_options = cache.get(cache_key)
     if isinstance(cached_options, list):
-        return {str(option).strip() for option in cached_options if str(option).strip()}
+        normalized_cached: List[Dict[str, str]] = []
+        for option in cached_options:
+            if not isinstance(option, dict):
+                continue
+            value = str(option.get("value", "")).strip()
+            if not value:
+                continue
+            normalized_cached.append({
+                "name": str(option.get("name", "")).strip(),
+                "value": value,
+            })
+        if normalized_cached:
+            return normalized_cached
 
     url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/ticket_fields/{field_int}.json"
     response = requests.get(url, auth=auth, timeout=15)
@@ -269,22 +278,58 @@ def get_ticket_field_option_values(field_id: Any, auth: HTTPBasicAuth) -> Option
 
     field_data = response.json().get("ticket_field", {})
     options = field_data.get("custom_field_options", []) or []
-    option_values = sorted(
-        {
-            str(option.get("value", "")).strip()
-            for option in options
-            if isinstance(option, dict) and str(option.get("value", "")).strip()
-        }
-    )
+    normalized_options: List[Dict[str, str]] = []
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        value = str(option.get("value", "")).strip()
+        if not value:
+            continue
+        normalized_options.append({
+            "name": str(option.get("name", "")).strip(),
+            "value": value,
+        })
 
-    cache.set(cache_key, option_values, timeout=3600)
-    return set(option_values)
+    cache.set(cache_key, normalized_options, timeout=3600)
+    return normalized_options
+
+def get_ticket_field_option_values(field_id: Any, auth: HTTPBasicAuth) -> Optional[Set[str]]:
+    options = get_ticket_field_options(field_id, auth)
+    if not options:
+        return None
+    return {str(option.get("value", "")).strip() for option in options if str(option.get("value", "")).strip()}
+
+def get_field_option_value_for_label(
+    field_id: Any,
+    option_label: Optional[str],
+    auth: HTTPBasicAuth,
+) -> Optional[str]:
+    if not option_label:
+        return None
+
+    target_label = normalize_issue_key(option_label)
+    if not target_label:
+        return None
+
+    options = get_ticket_field_options(field_id, auth)
+    if not options:
+        return None
+
+    for option in options:
+        option_name = normalize_issue_key(option.get("name"))
+        if option_name != target_label:
+            continue
+        value = str(option.get("value", "")).strip()
+        if value:
+            return value
+    return None
 
 def resolve_enum_field_value(
     field_id: Any,
     field_value: Any,
     auth: HTTPBasicAuth,
     field_name: str,
+    option_label: Optional[str] = None,
 ) -> Any:
     value = str(field_value or "").strip()
     if not value:
@@ -296,6 +341,13 @@ def resolve_enum_field_value(
 
     if value in option_values:
         return value
+
+    label_based_value = get_field_option_value_for_label(field_id, option_label, auth)
+    if label_based_value and label_based_value in option_values:
+        logger.info(
+            f"{field_name} value remapped by option label '{option_label}' -> '{label_based_value}'"
+        )
+        return label_based_value
 
     logger.warning(
         f"{field_name} value not found in Zendesk options. "
@@ -610,10 +662,22 @@ def update_ticket_routing(
     ride_related_detail: Optional[str] = None,
 ) -> bool:
     try:
+        context = build_issue_context(
+            issue_context=issue_context,
+            reason=reason,
+            title=title,
+            transcript=transcript,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail,
+        )
+        subcategory_label = context.get("subcategory")
+        detail_label = context.get("detail")
+
         payload = build_ticket_routing_payload(
             conversation_id=conversation_id,
             app_user_id=app_user_id,
-            issue_context=issue_context,
+            issue_context=context,
             reason=reason,
             title=title,
             transcript=transcript,
@@ -633,10 +697,12 @@ def update_ticket_routing(
         fare_subcategory_field_id = safe_int(FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID)
         vehicle_issue_type_field_id = safe_int(VEHICLE_ISSUE_TYPE_FIELD_ID)
         safety_issue_type_field_id = safe_int(SAFETY_ISSUE_TYPE_FIELD_ID)
+        payment_mode_field_id = safe_int(PAYMENT_MODE_FIELD_ID)
         enum_field_ids = {field_id for field_id in [
             fare_subcategory_field_id,
             vehicle_issue_type_field_id,
             safety_issue_type_field_id,
+            payment_mode_field_id,
         ] if field_id}
 
         if custom_fields and enum_field_ids:
@@ -646,15 +712,22 @@ def update_ticket_routing(
                     continue
                 if field_id == fare_subcategory_field_id:
                     field_name = "Fare subcategory"
+                    option_label = subcategory_label
                 elif field_id == vehicle_issue_type_field_id:
                     field_name = "Vehicle issue type"
+                    option_label = subcategory_label
+                elif field_id == payment_mode_field_id:
+                    field_name = "Payment mode"
+                    option_label = detail_label
                 else:
                     field_name = "Safety issue type"
+                    option_label = subcategory_label
                 field["value"] = resolve_enum_field_value(
                     field_id=field_id,
                     field_value=field.get("value"),
                     auth=auth,
                     field_name=field_name,
+                    option_label=option_label,
                 )
 
         if form_id:
