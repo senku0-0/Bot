@@ -192,8 +192,8 @@ SAFETY_ISSUE_TYPE_TAGS = {
     "sexual harassment": "sexual_harresment",
     "sexual harrasment": "sexual_harresment",
     "sexual harresment": "sexual_harresment",
-    "physical fights": "phyiscal_fights",
-    "phyiscal fights": "phyiscal_fights",
+    "physical fights": "physical_fights",
+    "phyiscal fights": "physical_fights",
     "extra person in the vehicle": "extra_person_in_the_vehicle",
     "rash driving": "rash_driving",
     "vehicle broke down": "vehicle_broke_down",
@@ -280,35 +280,103 @@ def get_ticket_field_option_values(field_id: Any, auth: HTTPBasicAuth) -> Option
     cache.set(cache_key, option_values, timeout=3600)
     return set(option_values)
 
-def resolve_fare_subcategory_value(
-    fare_field_id: Any,
-    fare_value: Any,
+def resolve_enum_field_value(
+    field_id: Any,
+    field_value: Any,
     auth: HTTPBasicAuth,
+    field_name: str,
 ) -> Any:
-    current_value = str(fare_value or "").strip()
-    if current_value not in {"multiple_debits_occurred", "multiple_debits_occured"}:
-        return fare_value
+    value = str(field_value or "").strip()
+    if not value:
+        return field_value
 
-    option_values = get_ticket_field_option_values(fare_field_id, auth)
+    option_values = get_ticket_field_option_values(field_id, auth)
     if not option_values:
-        return fare_value
+        return field_value
 
-    if current_value in option_values:
-        return current_value
-
-    if "multiple_debits_occured" in option_values:
-        logger.info("Fare subcategory fallback: using 'multiple_debits_occured' option value")
-        return "multiple_debits_occured"
-
-    if "multiple_debits_occurred" in option_values:
-        logger.info("Fare subcategory fallback: using 'multiple_debits_occurred' option value")
-        return "multiple_debits_occurred"
+    if value in option_values:
+        return value
 
     logger.warning(
-        "Fare subcategory value did not match available Zendesk options. "
-        f"Current='{current_value}', available={sorted(option_values)}"
+        f"{field_name} value not found in Zendesk options. "
+        f"value='{value}', options={sorted(option_values)}"
     )
-    return fare_value
+    return field_value
+
+def get_ticket_custom_field_values(ticket_id: str, auth: HTTPBasicAuth) -> Dict[int, Any]:
+    try:
+        url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+        response = requests.get(url, auth=auth, timeout=15)
+        if response.status_code != 200:
+            logger.warning(
+                f"Ticket fetch failed while verifying custom fields for {ticket_id}: "
+                f"{response.status_code} - {response.text}"
+            )
+            return {}
+
+        ticket = response.json().get("ticket", {}) if isinstance(response.json(), dict) else {}
+        fields = ticket.get("custom_fields", []) if isinstance(ticket, dict) else []
+        resolved: Dict[int, Any] = {}
+        for field in fields or []:
+            if not isinstance(field, dict):
+                continue
+            field_id = safe_int(field.get("id"))
+            if not field_id:
+                continue
+            resolved[field_id] = field.get("value")
+        return resolved
+    except Exception as e:
+        logger.warning(f"Ticket fetch exception while verifying custom fields for {ticket_id}: {e}")
+        return {}
+
+def verify_and_retry_enum_fields(
+    ticket_id: str,
+    expected_field_values: Dict[int, Any],
+    auth: HTTPBasicAuth,
+) -> bool:
+    if not expected_field_values:
+        return True
+
+    current_values = get_ticket_custom_field_values(ticket_id, auth)
+    if not current_values:
+        return True
+
+    url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+    all_ok = True
+
+    for field_id, expected_value in expected_field_values.items():
+        current_value = current_values.get(field_id)
+        if current_value == expected_value:
+            continue
+
+        logger.warning(
+            f"Enum field mismatch for ticket {ticket_id}, field {field_id}: "
+            f"expected '{expected_value}', got '{current_value}'. Retrying once."
+        )
+        retry_response = requests.put(
+            url,
+            json={"ticket": {"custom_fields": [{"id": field_id, "value": expected_value}]}},
+            auth=auth,
+            timeout=15,
+        )
+        if retry_response.status_code != 200:
+            logger.error(
+                f"Enum field retry failed for ticket {ticket_id}, field {field_id}: "
+                f"{retry_response.status_code} - {retry_response.text}"
+            )
+            all_ok = False
+
+    refreshed_values = get_ticket_custom_field_values(ticket_id, auth)
+    if refreshed_values:
+        for field_id, expected_value in expected_field_values.items():
+            if refreshed_values.get(field_id) != expected_value:
+                logger.error(
+                    f"Enum field still mismatched after retry for ticket {ticket_id}, field {field_id}: "
+                    f"expected '{expected_value}', got '{refreshed_values.get(field_id)}'"
+                )
+                all_ok = False
+
+    return all_ok
 
 def first_non_empty(*values: Any) -> Optional[Any]:
     for value in values:
@@ -502,6 +570,8 @@ def build_ticket_routing_payload(
                 ticket_payload["ticket_form_id"] = form_id
             vehicle_tag = VEHICLE_ISSUE_TYPE_TAGS.get(subcategory_key)
             logger.info(f"Vehicle Issue: subcategory_key='{subcategory_key}' -> tag={vehicle_tag}")
+            if vehicle_tag and not safe_int(VEHICLE_ISSUE_TYPE_FIELD_ID):
+                logger.error("VEHICLE_ISSUE_TYPE_FIELD_ID is not configured. Vehicle issue type cannot be populated.")
             append_custom_field(
                 custom_fields,
                 VEHICLE_ISSUE_TYPE_FIELD_ID,
@@ -514,6 +584,8 @@ def build_ticket_routing_payload(
             append_custom_field(custom_fields, ESCALATION_TO_SAFETY_TEAM_FIELD_ID, True)
             safety_tag = SAFETY_ISSUE_TYPE_TAGS.get(subcategory_key)
             logger.info(f"Safety Issue: subcategory_key='{subcategory_key}' -> tag={safety_tag}")
+            if safety_tag and not safe_int(SAFETY_ISSUE_TYPE_FIELD_ID):
+                logger.error("SAFETY_ISSUE_TYPE_FIELD_ID is not configured. Safety issue type cannot be populated.")
             append_custom_field(
                 custom_fields,
                 SAFETY_ISSUE_TYPE_FIELD_ID,
@@ -559,15 +631,30 @@ def update_ticket_routing(
         custom_fields = payload.pop("custom_fields", None)
         succeeded = True
         fare_subcategory_field_id = safe_int(FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID)
+        vehicle_issue_type_field_id = safe_int(VEHICLE_ISSUE_TYPE_FIELD_ID)
+        safety_issue_type_field_id = safe_int(SAFETY_ISSUE_TYPE_FIELD_ID)
+        enum_field_ids = {field_id for field_id in [
+            fare_subcategory_field_id,
+            vehicle_issue_type_field_id,
+            safety_issue_type_field_id,
+        ] if field_id}
 
-        if custom_fields and fare_subcategory_field_id:
+        if custom_fields and enum_field_ids:
             for field in custom_fields:
-                if safe_int(field.get("id")) != fare_subcategory_field_id:
+                field_id = safe_int(field.get("id"))
+                if not field_id or field_id not in enum_field_ids:
                     continue
-                field["value"] = resolve_fare_subcategory_value(
-                    fare_field_id=fare_subcategory_field_id,
-                    fare_value=field.get("value"),
+                if field_id == fare_subcategory_field_id:
+                    field_name = "Fare subcategory"
+                elif field_id == vehicle_issue_type_field_id:
+                    field_name = "Vehicle issue type"
+                else:
+                    field_name = "Safety issue type"
+                field["value"] = resolve_enum_field_value(
+                    field_id=field_id,
+                    field_value=field.get("value"),
                     auth=auth,
+                    field_name=field_name,
                 )
 
         if form_id:
@@ -603,12 +690,6 @@ def update_ticket_routing(
                         continue
 
                     candidate_values: List[Any] = [field.get("value")]
-                    if field_id == fare_subcategory_field_id:
-                        current_value = str(field.get("value") or "").strip()
-                        if current_value == "multiple_debits_occurred":
-                            candidate_values.append("multiple_debits_occured")
-                        elif current_value == "multiple_debits_occured":
-                            candidate_values.append("multiple_debits_occurred")
 
                     field_updated = False
                     for candidate_value in candidate_values:
@@ -629,6 +710,26 @@ def update_ticket_routing(
 
                     if not field_updated:
                         succeeded = False
+
+        if custom_fields and enum_field_ids:
+            expected_enum_field_values: Dict[int, Any] = {}
+            for field in custom_fields:
+                field_id = safe_int(field.get("id"))
+                if not field_id or field_id not in enum_field_ids:
+                    continue
+                expected_value = field.get("value")
+                if expected_value in (None, ""):
+                    continue
+                expected_enum_field_values[field_id] = expected_value
+
+            if expected_enum_field_values:
+                verified = verify_and_retry_enum_fields(
+                    ticket_id=ticket_id,
+                    expected_field_values=expected_enum_field_values,
+                    auth=auth,
+                )
+                if not verified:
+                    succeeded = False
 
         if payload:
             extra_response = requests.put(
