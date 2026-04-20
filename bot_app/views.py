@@ -910,7 +910,7 @@ def silently_pass_conversation_to_agent(
             "issue_context": issue_context,
             "timestamp": datetime.now().isoformat(),
         }
-        cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=3600)
+        cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=300)
         if app_related_category:
             cache.set(f'category_{conversation_id}', app_related_category, timeout=3600)
 
@@ -936,7 +936,7 @@ def silently_pass_conversation_to_agent(
 
 def resolve_ticket_id_for_conversation(
     conversation_id: str,
-    timeout_seconds: float = 30.0,
+    timeout_seconds: float = 8.0,
     poll_interval: float = 1.0,
 ) -> Optional[str]:
     """
@@ -1624,10 +1624,6 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             cache.set(f'category_{conversation_id}', app_related_category, timeout=3600)
         if ride_related_category:
             cache.set(f'ride_category_{conversation_id}', ride_related_category, timeout=3600)
-        if ride_related_subcategory:
-            cache.set(f'ride_subcategory_{conversation_id}', ride_related_subcategory, timeout=3600)
-        if ride_related_detail:
-            cache.set(f'ride_detail_{conversation_id}', ride_related_detail, timeout=3600)
 
         pending_data = {
             'conversation_id': conversation_id,
@@ -1640,7 +1636,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             'issue_context': context,
             'timestamp': datetime.now().isoformat()
         }
-        cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=3600)
+        cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=300)
 
         app_id = SUNSHINE_APP_ID
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
@@ -1921,30 +1917,13 @@ def handle_agent_take_control(event_data: Dict[str, Any]) -> None:
         if ticket_id:
             pending_data = cache.get(f'pending_escalation_{conversation_id}')
             app_related_category = None
-            ride_related_category = None
-            ride_related_subcategory = None
-            ride_related_detail = None
             issue_context = None
             app_user_id = None
             if pending_data:
                 app_related_category = pending_data.get('app_related_category')
-                ride_related_category = pending_data.get('ride_related_category')
-                ride_related_subcategory = pending_data.get('ride_related_subcategory')
-                ride_related_detail = pending_data.get('ride_related_detail')
                 issue_context = pending_data.get('issue_context')
                 app_user_id = pending_data.get('app_user_id')
-            else:
-                # Fallback: pull from the longer-lived per-key caches
-                ride_related_category = cache.get(f'ride_category_{conversation_id}')
-                ride_related_subcategory = cache.get(f'ride_subcategory_{conversation_id}')
-                ride_related_detail = cache.get(f'ride_detail_{conversation_id}')
             store_conversation_ticket_mapping(conversation_id, ticket_id)
-            logger.info(
-                f"[handle_agent_take_control] ticket={ticket_id} conv={conversation_id} "
-                f"ride_category={ride_related_category} ride_subcategory={ride_related_subcategory} "
-                f"ride_detail={ride_related_detail} app_category={app_related_category} "
-                f"issue_context={issue_context}"
-            )
             update_ticket_routing(
                 ticket_id,
                 issue_context=issue_context,
@@ -1952,9 +1931,6 @@ def handle_agent_take_control(event_data: Dict[str, Any]) -> None:
                 app_user_id=app_user_id,
                 reason=pending_data.get('reason') if pending_data else None,
                 app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
-                ride_related_category=ride_related_category,
-                ride_related_subcategory=ride_related_subcategory,
-                ride_related_detail=ride_related_detail,
             )
             cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
 
@@ -2685,28 +2661,86 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
             if not ticket_id:
                 return JsonResponse({"status": "no_ticket_id_in_created"})
 
-            # Deterministic match: use the most recent escalation from the queue (<= 15s old).
+            # Deterministic match: find the most recent unmatched escalation (<=120s old).
             recent_escalations = cache.get('recent_escalations_queue', []) or []
             ticket_created_at = time.time()
             found_escalation = None
 
             for escalation in reversed(recent_escalations):
                 time_diff = ticket_created_at - escalation.get('timestamp', 0)
-                if 0 < time_diff < 15:
+                if 0 < time_diff < 120:
                     found_escalation = escalation
                     break
 
             if found_escalation:
                 conversation_id = found_escalation['conversation_id']
-                cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)
-                cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
+                # Write the mapping immediately so all future lookups find it
+                store_conversation_ticket_mapping(conversation_id, ticket_id)
                 cache.set(f'pending_escalation_{conversation_id}', found_escalation, timeout=3600)
+                # Write conversation field onto the ticket right now
+                set_ticket_conversation_field(ticket_id, conversation_id)
 
+                app_related_category = found_escalation.get('app_related_category')
+                ride_related_category = found_escalation.get('ride_related_category')
+                ride_related_subcategory = found_escalation.get('ride_related_subcategory')
+                ride_related_detail = found_escalation.get('ride_related_detail')
+                issue_context = found_escalation.get('issue_context')
+                app_user_id = found_escalation.get('app_user_id')
+                reason = found_escalation.get('reason')
+
+                logger.info(
+                    f"[ticket.created] ticket={ticket_id} matched escalation conv={conversation_id} "
+                    f"ride_cat={ride_related_category} ride_sub={ride_related_subcategory} "
+                    f"ride_detail={ride_related_detail} app_cat={app_related_category}"
+                )
+
+                success = update_ticket_routing(
+                    ticket_id,
+                    issue_context=issue_context,
+                    conversation_id=conversation_id,
+                    app_user_id=app_user_id,
+                    reason=reason,
+                    app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(
+                        normalize_issue_key(app_related_category)
+                    ) if app_related_category else None,
+                    ride_related_category=ride_related_category,
+                    ride_related_subcategory=ride_related_subcategory,
+                    ride_related_detail=ride_related_detail,
+                )
+                if success:
+                    cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
+                    # Remove from queue so a second ticket.created doesn't re-apply
+                    try:
+                        updated_queue = [
+                            e for e in recent_escalations
+                            if e.get('conversation_id') != conversation_id
+                        ]
+                        cache.set('recent_escalations_queue', updated_queue, timeout=300)
+                    except Exception:
+                        pass
+                    return JsonResponse({
+                        "status": "ticket_updated",
+                        "ticket_id": ticket_id,
+                        "conversation_id": conversation_id,
+                        "ride_related_category": ride_related_category,
+                        "message": "Ticket routing applied directly from escalation queue",
+                    })
+                else:
+                    logger.error(
+                        f"[ticket.created] update_ticket_routing failed for ticket={ticket_id}"
+                    )
+                    return JsonResponse({
+                        "status": "routing_failed",
+                        "ticket_id": ticket_id,
+                        "conversation_id": conversation_id,
+                    })
+
+            # No escalation match — fall back to conversation-mapping lookup
             result = update_ticket_routing_from_conversation_mapping(ticket_id)
             if result.get("status") == "ticket_updated":
-                conversation_id = result.get("conversation_id")
-                if conversation_id:
-                    cache.delete(f'pending_escalation_{conversation_id}')
+                conv_id = result.get("conversation_id")
+                if conv_id:
+                    cache.delete(f'pending_escalation_{conv_id}')
                 return JsonResponse(result)
             return JsonResponse(result)
 
@@ -2960,8 +2994,6 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
     else:
         app_related_category = cache.get(f'category_{conversation_id}')
         ride_related_category = cache.get(f'ride_category_{conversation_id}')
-        ride_related_subcategory = cache.get(f'ride_subcategory_{conversation_id}')
-        ride_related_detail = cache.get(f'ride_detail_{conversation_id}')
 
     success = update_ticket_routing(
         ticket_id,
