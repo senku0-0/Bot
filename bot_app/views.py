@@ -270,7 +270,7 @@ def append_custom_field(custom_fields: List[Dict[str, Any]], field_id: Any, valu
 
 
 RECENT_ESCALATION_QUEUE_KEY = "recent_escalations_queue"
-RECENT_ESCALATION_MATCH_WINDOW_SECONDS = 180
+RECENT_ESCALATION_MATCH_WINDOW_SECONDS = 45
 RECENT_ESCALATION_QUEUE_TTL_SECONDS = 900
 RECENT_ESCALATION_QUEUE_MAX = 100
 ROUTING_CONTEXT_CACHE_PREFIX = "routing_context_"
@@ -300,6 +300,14 @@ def enqueue_recent_escalation(escalation_data: Dict[str, Any]) -> None:
                 continue
             if 0 <= (now - item_ts) <= RECENT_ESCALATION_QUEUE_TTL_SECONDS:
                 filtered.append(item)
+
+        # Keep only the latest context per conversation so stale branch selections
+        # (for example previous AC selection) cannot override a newer selection.
+        filtered = [
+            item
+            for item in filtered
+            if str(item.get("conversation_id", "")).strip() != conversation_id
+        ]
 
         filtered.append(entry)
         filtered = filtered[-RECENT_ESCALATION_QUEUE_MAX:]
@@ -1844,11 +1852,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             if msg_response.status_code in [200, 201]:
                 time.sleep(0.5)
 
-        pass_control_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/passControl"
-        pass_control_payload = {"switchboardIntegration": "next", "metadata": metadata}
-        pc_response = requests.post(pass_control_url, json=pass_control_payload, auth=auth)
-
-        # Keep a short queue so ticket.created can deterministically map to the latest escalation.
+        # Queue before passControl so fast ticket.created events can map correctly.
         enqueue_recent_escalation({
             'conversation_id': conversation_id,
             'app_user_id': app_user_id,
@@ -1860,6 +1864,10 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             'issue_context': context,
             'timestamp': time.time(),
         })
+
+        pass_control_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/passControl"
+        pass_control_payload = {"switchboardIntegration": "next", "metadata": metadata}
+        pc_response = requests.post(pass_control_url, json=pass_control_payload, auth=auth)
         
         if pc_response.status_code != 200:
             return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
@@ -2881,6 +2889,20 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                 ticket_id = extract_ticket_id_from_data(data)
             if not ticket_id:
                 return JsonResponse({"status": "no_ticket_id_in_created"})
+
+            # Prefer a direct conversation lookup from the created ticket itself.
+            # If this succeeds, it is more reliable than queue heuristics.
+            direct_conversation_id = resolve_conversation_id_for_ticket(ticket_id)
+            if direct_conversation_id:
+                logger.info(
+                    f"ticket.created direct mapping conversation={direct_conversation_id} ticket={ticket_id}"
+                )
+                result = update_ticket_routing_from_conversation_mapping(ticket_id)
+                if result.get("status") == "ticket_updated":
+                    conversation_id = result.get("conversation_id")
+                    if conversation_id:
+                        cache.delete(f'pending_escalation_{conversation_id}')
+                return JsonResponse(result)
 
             recent_escalations = cache.get(RECENT_ESCALATION_QUEUE_KEY, []) or []
             ticket_created_at = time.time()
