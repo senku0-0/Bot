@@ -168,35 +168,55 @@ APP_RELATED_CATEGORY_TAGS = {
 }
 
 FARE_AND_PAYMENT_SUBCATEGORY_TAGS = {
+    # Human-readable labels (as sent by frontend or stored in issueContext)
     "multiple debits occurred": "multiple_debits_occurred",
-    "multiple debits occured": "multiple_debits_occurred",
+    "multiple debits occured": "multiple_debits_occurred",      # typo variant
+    "multiple debits occur": "multiple_debits_occurred",        # truncated
     "driver charged extra fare": "driver_charged_extra_fare",
     "charged higher than estimated fare": "charged_higher_than_estimated_fare",
+    "higher than estimated fare": "charged_higher_than_estimated_fare",
     "cancellation charges": "cancellation_charges",
+    "cancellation charge": "cancellation_charges",
 }
 
 VEHICLE_ISSUE_TYPE_TAGS = {
+    # Human-readable labels
     "unclean unhygienic vehicle": "unclean/unhygienic_vehicle",
+    "unclean vehicle": "unclean/unhygienic_vehicle",
+    "unhygienic vehicle": "unclean/unhygienic_vehicle",
     "vehicle unsafe": "vehicle_unsafe",
+    "unsafe vehicle": "vehicle_unsafe",
     "ac not turned on ac stopped working midway": "ac_not_turned_on_/_ac_stopped_working",
     "ac not turned on ac stopped working": "ac_not_turned_on_/_ac_stopped_working",
+    "ac not working": "ac_not_turned_on_/_ac_stopped_working",
+    "ac issue": "ac_not_turned_on_/_ac_stopped_working",
     "vehicle was different": "vehicle_was_different",
+    "different vehicle": "vehicle_was_different",
 }
 
 SAFETY_ISSUE_TYPE_TAGS = {
+    # Human-readable labels
     "drunk and drive": "drunk_and_drive",
+    "drunk driving": "drunk_and_drive",
     "driver was rude or misbehaved": "driver_was_rude_or_misbehaved",
+    "rude driver": "driver_was_rude_or_misbehaved",
+    "driver misbehaved": "driver_was_rude_or_misbehaved",
     "other": "other",
     "others": "other",
     "met with an accident": "met_with_an_accident",
-    "sexual harassment": "sexual_harresment",
+    "accident": "met_with_an_accident",
+    "sexual harassment": "sexual_harresment",   # Zendesk value has typo — preserved
     "sexual harrasment": "sexual_harresment",
     "sexual harresment": "sexual_harresment",
-    "physical fights": "phyiscal_fights",
+    "physical fights": "phyiscal_fights",       # Zendesk value has typo — preserved
     "phyiscal fights": "phyiscal_fights",
+    "physical fight": "phyiscal_fights",
     "extra person in the vehicle": "extra_person_in_the_vehicle",
+    "extra person in vehicle": "extra_person_in_the_vehicle",
     "rash driving": "rash_driving",
+    "rash drive": "rash_driving",
     "vehicle broke down": "vehicle_broke_down",
+    "breakdown": "vehicle_broke_down",
 }
 
 PAYMENT_MODE_TAGS = {
@@ -497,7 +517,11 @@ def build_ticket_routing_payload(
     logger.info(f"Ticket routing - main_key={main_key}, category_key={category_key}, subcategory_key={subcategory_key}, detail_key={detail_key}")
     logger.info(f"Context: {context}")
 
-    if main_key == "app related issues" or app_related_sub_category:
+    # Broaden main-category matching: accept "ride related" even if "issues" is missing
+    is_ride_related = main_key.startswith("ride related")
+    is_app_related = main_key.startswith("app related") or bool(app_related_sub_category)
+
+    if is_app_related:
         form_id = safe_int(APP_RELATED_ISSUE_FORM_ID)
         if form_id:
             ticket_payload["ticket_form_id"] = form_id
@@ -509,7 +533,7 @@ def build_ticket_routing_payload(
         )
         append_custom_field(custom_fields, APP_RELATED_SUB_CATEGORY, tag_value)
 
-    elif main_key == "ride related issues":
+    elif is_ride_related:
         if category_key == "fare and payment":
             form_id = safe_int(FARE_AND_PAYMENT_FORM_ID)
             if form_id:
@@ -560,7 +584,7 @@ def build_ticket_routing_payload(
             append_custom_field(custom_fields, DRIVER_NAME_FIELD_ID, driver_name_val)
             append_custom_field(custom_fields, VEHICLE_NUMBER_FIELD_ID, vehicle_number_val)
 
-        elif category_key == "vehicle related issue":
+        elif category_key in ("vehicle related issue", "vehicle related") or category_key.startswith("vehicle related"):
             form_id = safe_int(VEHUICLE_AC_ISSUE_FORM_ID)
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
@@ -569,11 +593,12 @@ def build_ticket_routing_payload(
                 f"[ROUTING] Vehicle branch: "
                 f"ticket_form_id={form_id} (env={VEHUICLE_AC_ISSUE_FORM_ID}) | "
                 f"VEHICLE_ISSUE_TYPE field={VEHICLE_ISSUE_TYPE_FIELD_ID} | "
+                f"raw_subcategory='{context.get('subcategory')}' "
                 f"subcategory_key='{subcategory_key}' -> tag='{vehicle_tag}'"
             )
             append_custom_field(custom_fields, VEHICLE_ISSUE_TYPE_FIELD_ID, vehicle_tag)
 
-        elif category_key == "safety related":
+        elif category_key in ("safety related", "safety", "safety issue") or category_key.startswith("safety"):
             form_id = safe_int(SAFETY_ISSUE_FORM_ID)
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
@@ -583,6 +608,7 @@ def build_ticket_routing_payload(
                 f"ticket_form_id={form_id} (env={SAFETY_ISSUE_FORM_ID}) | "
                 f"ESCALATION_TO_SAFETY_TEAM field={ESCALATION_TO_SAFETY_TEAM_FIELD_ID} (True) | "
                 f"SAFETY_ISSUE_TYPE field={SAFETY_ISSUE_TYPE_FIELD_ID} | "
+                f"raw_subcategory='{context.get('subcategory')}' "
                 f"subcategory_key='{subcategory_key}' -> tag='{safety_tag}'"
             )
             append_custom_field(custom_fields, ESCALATION_TO_SAFETY_TEAM_FIELD_ID, True)
@@ -2487,27 +2513,7 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
         except json.JSONDecodeError:
             return JsonResponse({"status": "invalid_json"}, status=400)
         
-        # Log the full payload so we can see exactly what Zendesk sends
-        logger.info(f"[zendesk_webhook] keys={list(data.keys())} type={data.get('type')} "
-                    f"payload_preview={json.dumps(data)[:500]}")
-
-        # Detect ticket.created / ticket.comment_added directly at this level
-        # regardless of nesting — Zendesk webhook payload structure varies by
-        # trigger configuration. Handle all known formats.
-        top_type = str(data.get('type', '') or '').lower()
-        event_type_from_event = str((data.get('event') or {}).get('type', '') or '').lower()
-        combined_type = top_type or event_type_from_event
-
-        if 'ticket.created' in combined_type or 'ticket_created' in combined_type:
-            logger.info(f"[zendesk_webhook] routing to handle_notification_webhook as ticket.created")
-            return handle_notification_webhook(data)
-        elif 'ticket.comment' in combined_type or 'ticket_comment' in combined_type:
-            logger.info(f"[zendesk_webhook] routing to handle_notification_webhook as ticket.comment")
-            return handle_notification_webhook(data)
-        elif 'ticket.solved' in combined_type or 'ticket_solved' in combined_type:
-            logger.info(f"[zendesk_webhook] routing to handle_notification_webhook as ticket.solved")
-            return handle_notification_webhook(data)
-        elif 'event' in data:
+        if 'event' in data:
             return handle_notification_webhook(data)
         elif 'ticket' in data and 'comment' in data:
             return handle_ticket_comment_webhook(data)
@@ -2516,35 +2522,7 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
         else:
             ticket_id = extract_ticket_id_from_data(data)
             if ticket_id:
-                # Last resort: if there's a ticket ID and a recent escalation, apply routing
-                recent_escalations = cache.get('recent_escalations_queue', []) or []
-                ticket_created_at = time.time()
-                for escalation in reversed(recent_escalations):
-                    time_diff = ticket_created_at - escalation.get('timestamp', 0)
-                    if 0 < time_diff < 120:
-                        conversation_id = escalation['conversation_id']
-                        store_conversation_ticket_mapping(conversation_id, ticket_id)
-                        set_ticket_conversation_field(ticket_id, conversation_id)
-                        success = update_ticket_routing(
-                            ticket_id,
-                            issue_context=escalation.get('issue_context'),
-                            conversation_id=conversation_id,
-                            app_user_id=escalation.get('app_user_id'),
-                            reason=escalation.get('reason'),
-                            app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(
-                                normalize_issue_key(escalation.get('app_related_category'))
-                            ) if escalation.get('app_related_category') else None,
-                            ride_related_category=escalation.get('ride_related_category'),
-                            ride_related_subcategory=escalation.get('ride_related_subcategory'),
-                            ride_related_detail=escalation.get('ride_related_detail'),
-                        )
-                        logger.info(
-                            f"[zendesk_webhook] unknown format but applied routing: "
-                            f"ticket={ticket_id} conv={conversation_id} success={success}"
-                        )
-                        return JsonResponse({"status": "routing_applied_unknown_format", "ticket_id": ticket_id})
                 return JsonResponse({"status": "unknown_format", "ticket_id": ticket_id, "message": "Received webhook but format not recognized"})
-            logger.warning(f"[zendesk_webhook] completely unrecognized payload: {json.dumps(data)[:300]}")
             return JsonResponse({"status": "unknown_format", "message": "Webhook format not recognized"})
     except Exception as e:
         logger.exception(f"zendesk_webhook error: {e}")
@@ -2695,16 +2673,10 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
         - 500: Error during processing
     """
     try:
+        event_type = data.get('type', '')
         event_data = data.get('event', {})
-        # Accept type from top-level OR from inside event dict
-        event_type = str(
-            data.get('type')
-            or (event_data.get('type') if isinstance(event_data, dict) else None)
-            or ''
-        ).lower()
-        logger.info(f"[handle_notification_webhook] event_type='{event_type}' event_data_keys={list(event_data.keys()) if isinstance(event_data, dict) else type(event_data)}")
 
-        if 'ticket.created' in event_type or 'ticket_created' in event_type:
+        if 'ticket.created' in event_type:
             ticket_id = None
             if 'ticket' in event_data:
                 ticket_id = str(event_data['ticket'].get('id', ''))
@@ -2740,7 +2712,7 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                 return JsonResponse(result)
             return JsonResponse(result)
 
-        if 'ticket.comment_added' in event_type or 'ticket_comment_added' in event_type:
+        if 'ticket.comment_added' in event_type:
             comment = event_data.get('comment', {})
             comment_body = comment.get('body', '')
             comment_author = comment.get('author', {})
@@ -2801,7 +2773,7 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                 "error": response.text,
             })
 
-        elif 'ticket.solved' in event_type or 'ticket_solved' in event_type:
+        elif 'ticket.solved' in event_type:
             ticket_id = None
             if 'ticket' in event_data:
                 ticket_id = str(event_data['ticket'].get('id', ''))
