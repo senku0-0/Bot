@@ -168,55 +168,35 @@ APP_RELATED_CATEGORY_TAGS = {
 }
 
 FARE_AND_PAYMENT_SUBCATEGORY_TAGS = {
-    # Human-readable labels (as sent by frontend or stored in issueContext)
     "multiple debits occurred": "multiple_debits_occurred",
-    "multiple debits occured": "multiple_debits_occurred",      # typo variant
-    "multiple debits occur": "multiple_debits_occurred",        # truncated
+    "multiple debits occured": "multiple_debits_occurred",
     "driver charged extra fare": "driver_charged_extra_fare",
     "charged higher than estimated fare": "charged_higher_than_estimated_fare",
-    "higher than estimated fare": "charged_higher_than_estimated_fare",
     "cancellation charges": "cancellation_charges",
-    "cancellation charge": "cancellation_charges",
 }
 
 VEHICLE_ISSUE_TYPE_TAGS = {
-    # Human-readable labels
     "unclean unhygienic vehicle": "unclean/unhygienic_vehicle",
-    "unclean vehicle": "unclean/unhygienic_vehicle",
-    "unhygienic vehicle": "unclean/unhygienic_vehicle",
     "vehicle unsafe": "vehicle_unsafe",
-    "unsafe vehicle": "vehicle_unsafe",
     "ac not turned on ac stopped working midway": "ac_not_turned_on_/_ac_stopped_working",
     "ac not turned on ac stopped working": "ac_not_turned_on_/_ac_stopped_working",
-    "ac not working": "ac_not_turned_on_/_ac_stopped_working",
-    "ac issue": "ac_not_turned_on_/_ac_stopped_working",
     "vehicle was different": "vehicle_was_different",
-    "different vehicle": "vehicle_was_different",
 }
 
 SAFETY_ISSUE_TYPE_TAGS = {
-    # Human-readable labels
     "drunk and drive": "drunk_and_drive",
-    "drunk driving": "drunk_and_drive",
     "driver was rude or misbehaved": "driver_was_rude_or_misbehaved",
-    "rude driver": "driver_was_rude_or_misbehaved",
-    "driver misbehaved": "driver_was_rude_or_misbehaved",
     "other": "other",
     "others": "other",
     "met with an accident": "met_with_an_accident",
-    "accident": "met_with_an_accident",
-    "sexual harassment": "sexual_harresment",   # Zendesk value has typo — preserved
+    "sexual harassment": "sexual_harresment",
     "sexual harrasment": "sexual_harresment",
     "sexual harresment": "sexual_harresment",
-    "physical fights": "phyiscal_fights",       # Zendesk value has typo — preserved
+    "physical fights": "phyiscal_fights",
     "phyiscal fights": "phyiscal_fights",
-    "physical fight": "phyiscal_fights",
     "extra person in the vehicle": "extra_person_in_the_vehicle",
-    "extra person in vehicle": "extra_person_in_the_vehicle",
     "rash driving": "rash_driving",
-    "rash drive": "rash_driving",
     "vehicle broke down": "vehicle_broke_down",
-    "breakdown": "vehicle_broke_down",
 }
 
 PAYMENT_MODE_TAGS = {
@@ -517,11 +497,7 @@ def build_ticket_routing_payload(
     logger.info(f"Ticket routing - main_key={main_key}, category_key={category_key}, subcategory_key={subcategory_key}, detail_key={detail_key}")
     logger.info(f"Context: {context}")
 
-    # Broaden main-category matching: accept "ride related" even if "issues" is missing
-    is_ride_related = main_key.startswith("ride related")
-    is_app_related = main_key.startswith("app related") or bool(app_related_sub_category)
-
-    if is_app_related:
+    if main_key == "app related issues" or app_related_sub_category:
         form_id = safe_int(APP_RELATED_ISSUE_FORM_ID)
         if form_id:
             ticket_payload["ticket_form_id"] = form_id
@@ -533,7 +509,7 @@ def build_ticket_routing_payload(
         )
         append_custom_field(custom_fields, APP_RELATED_SUB_CATEGORY, tag_value)
 
-    elif is_ride_related:
+    elif main_key == "ride related issues":
         if category_key == "fare and payment":
             form_id = safe_int(FARE_AND_PAYMENT_FORM_ID)
             if form_id:
@@ -584,7 +560,7 @@ def build_ticket_routing_payload(
             append_custom_field(custom_fields, DRIVER_NAME_FIELD_ID, driver_name_val)
             append_custom_field(custom_fields, VEHICLE_NUMBER_FIELD_ID, vehicle_number_val)
 
-        elif category_key in ("vehicle related issue", "vehicle related") or category_key.startswith("vehicle related"):
+        elif category_key == "vehicle related issue":
             form_id = safe_int(VEHUICLE_AC_ISSUE_FORM_ID)
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
@@ -593,12 +569,11 @@ def build_ticket_routing_payload(
                 f"[ROUTING] Vehicle branch: "
                 f"ticket_form_id={form_id} (env={VEHUICLE_AC_ISSUE_FORM_ID}) | "
                 f"VEHICLE_ISSUE_TYPE field={VEHICLE_ISSUE_TYPE_FIELD_ID} | "
-                f"raw_subcategory='{context.get('subcategory')}' "
                 f"subcategory_key='{subcategory_key}' -> tag='{vehicle_tag}'"
             )
             append_custom_field(custom_fields, VEHICLE_ISSUE_TYPE_FIELD_ID, vehicle_tag)
 
-        elif category_key in ("safety related", "safety", "safety issue") or category_key.startswith("safety"):
+        elif category_key == "safety related":
             form_id = safe_int(SAFETY_ISSUE_FORM_ID)
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
@@ -608,7 +583,6 @@ def build_ticket_routing_payload(
                 f"ticket_form_id={form_id} (env={SAFETY_ISSUE_FORM_ID}) | "
                 f"ESCALATION_TO_SAFETY_TEAM field={ESCALATION_TO_SAFETY_TEAM_FIELD_ID} (True) | "
                 f"SAFETY_ISSUE_TYPE field={SAFETY_ISSUE_TYPE_FIELD_ID} | "
-                f"raw_subcategory='{context.get('subcategory')}' "
                 f"subcategory_key='{subcategory_key}' -> tag='{safety_tag}'"
             )
             append_custom_field(custom_fields, ESCALATION_TO_SAFETY_TEAM_FIELD_ID, True)
@@ -936,7 +910,7 @@ def silently_pass_conversation_to_agent(
             "issue_context": issue_context,
             "timestamp": datetime.now().isoformat(),
         }
-        cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=300)
+        cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=3600)
         if app_related_category:
             cache.set(f'category_{conversation_id}', app_related_category, timeout=3600)
 
@@ -1650,6 +1624,10 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             cache.set(f'category_{conversation_id}', app_related_category, timeout=3600)
         if ride_related_category:
             cache.set(f'ride_category_{conversation_id}', ride_related_category, timeout=3600)
+        if ride_related_subcategory:
+            cache.set(f'ride_subcategory_{conversation_id}', ride_related_subcategory, timeout=3600)
+        if ride_related_detail:
+            cache.set(f'ride_detail_{conversation_id}', ride_related_detail, timeout=3600)
 
         pending_data = {
             'conversation_id': conversation_id,
@@ -1662,7 +1640,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             'issue_context': context,
             'timestamp': datetime.now().isoformat()
         }
-        cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=300)
+        cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=3600)
 
         app_id = SUNSHINE_APP_ID
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
@@ -1943,13 +1921,30 @@ def handle_agent_take_control(event_data: Dict[str, Any]) -> None:
         if ticket_id:
             pending_data = cache.get(f'pending_escalation_{conversation_id}')
             app_related_category = None
+            ride_related_category = None
+            ride_related_subcategory = None
+            ride_related_detail = None
             issue_context = None
             app_user_id = None
             if pending_data:
                 app_related_category = pending_data.get('app_related_category')
+                ride_related_category = pending_data.get('ride_related_category')
+                ride_related_subcategory = pending_data.get('ride_related_subcategory')
+                ride_related_detail = pending_data.get('ride_related_detail')
                 issue_context = pending_data.get('issue_context')
                 app_user_id = pending_data.get('app_user_id')
+            else:
+                # Fallback: pull from the longer-lived per-key caches
+                ride_related_category = cache.get(f'ride_category_{conversation_id}')
+                ride_related_subcategory = cache.get(f'ride_subcategory_{conversation_id}')
+                ride_related_detail = cache.get(f'ride_detail_{conversation_id}')
             store_conversation_ticket_mapping(conversation_id, ticket_id)
+            logger.info(
+                f"[handle_agent_take_control] ticket={ticket_id} conv={conversation_id} "
+                f"ride_category={ride_related_category} ride_subcategory={ride_related_subcategory} "
+                f"ride_detail={ride_related_detail} app_category={app_related_category} "
+                f"issue_context={issue_context}"
+            )
             update_ticket_routing(
                 ticket_id,
                 issue_context=issue_context,
@@ -1957,6 +1952,9 @@ def handle_agent_take_control(event_data: Dict[str, Any]) -> None:
                 app_user_id=app_user_id,
                 reason=pending_data.get('reason') if pending_data else None,
                 app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
+                ride_related_category=ride_related_category,
+                ride_related_subcategory=ride_related_subcategory,
+                ride_related_detail=ride_related_detail,
             )
             cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
 
@@ -2962,6 +2960,8 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
     else:
         app_related_category = cache.get(f'category_{conversation_id}')
         ride_related_category = cache.get(f'ride_category_{conversation_id}')
+        ride_related_subcategory = cache.get(f'ride_subcategory_{conversation_id}')
+        ride_related_detail = cache.get(f'ride_detail_{conversation_id}')
 
     success = update_ticket_routing(
         ticket_id,
