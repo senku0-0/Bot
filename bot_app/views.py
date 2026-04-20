@@ -273,6 +273,7 @@ RECENT_ESCALATION_QUEUE_KEY = "recent_escalations_queue"
 RECENT_ESCALATION_MATCH_WINDOW_SECONDS = 180
 RECENT_ESCALATION_QUEUE_TTL_SECONDS = 900
 RECENT_ESCALATION_QUEUE_MAX = 100
+ROUTING_CONTEXT_CACHE_PREFIX = "routing_context_"
 
 
 def enqueue_recent_escalation(escalation_data: Dict[str, Any]) -> None:
@@ -309,6 +310,24 @@ def enqueue_recent_escalation(escalation_data: Dict[str, Any]) -> None:
         )
     except Exception as e:
         logger.warning(f"enqueue_recent_escalation error: {e}")
+
+
+def cache_routing_context(
+    conversation_id: Optional[str],
+    routing_data: Dict[str, Any],
+    timeout: int = 604800,
+) -> None:
+    """
+    Persist latest routing context for a conversation so webhook-side mapping can
+    still apply correct form/custom fields even if short-lived pending cache expires.
+    """
+    try:
+        conv_id = str(conversation_id or "").strip()
+        if not conv_id:
+            return
+        cache.set(f"{ROUTING_CONTEXT_CACHE_PREFIX}{conv_id}", routing_data, timeout=timeout)
+    except Exception as e:
+        logger.warning(f"cache_routing_context error: {e}")
 
 def get_ticket_field_option_values(field_id: Any, auth: HTTPBasicAuth) -> Optional[Set[str]]:
     field_int = safe_int(field_id)
@@ -436,6 +455,16 @@ def resolve_dropdown_value(
             )
             return variant
 
+    # Strong fallback for values with punctuation differences (/, -, _, spaces).
+    desired_norm = normalize_issue_key(current_value.replace("_", " "))
+    for option_value in sorted(option_values):
+        option_norm = normalize_issue_key(str(option_value).replace("_", " "))
+        if option_norm == desired_norm:
+            logger.info(
+                f"resolve_dropdown: field={field_id} normalized '{current_value}' -> '{option_value}'"
+            )
+            return option_value
+
     logger.warning(
         f"resolve_dropdown: field={field_id} value '{current_value}' not in Zendesk options "
         f"{sorted(option_values)}"
@@ -522,6 +551,31 @@ def build_issue_context(
         if ride_related_detail and not context.get("detail"):
             context["detail"] = ride_related_detail
     return context
+
+
+def extract_routing_categories_from_context(context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    resolved_context = build_issue_context(issue_context=context)
+    main_key = normalize_issue_key(resolved_context.get("mainCategory"))
+
+    app_related_category: Optional[str] = None
+    ride_related_category: Optional[str] = None
+    ride_related_subcategory: Optional[str] = None
+    ride_related_detail: Optional[str] = None
+
+    if main_key.startswith("app related"):
+        app_related_category = resolved_context.get("category")
+    elif main_key.startswith("ride related"):
+        ride_related_category = resolved_context.get("category")
+        ride_related_subcategory = resolved_context.get("subcategory")
+        ride_related_detail = resolved_context.get("detail")
+
+    return {
+        "issue_context": resolved_context,
+        "app_related_category": app_related_category,
+        "ride_related_category": ride_related_category,
+        "ride_related_subcategory": ride_related_subcategory,
+        "ride_related_detail": ride_related_detail,
+    }
 
 def build_ticket_routing_payload(
     conversation_id: Optional[str] = None,
@@ -1010,7 +1064,8 @@ def silently_pass_conversation_to_agent(
             "issue_context": context,
             "timestamp": datetime.now().isoformat(),
         }
-        cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=300)
+        cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=900)
+        cache_routing_context(conversation_id, pending_data)
         if app_related_category:
             cache.set(f'category_{conversation_id}', app_related_category, timeout=3600)
         if ride_related_category:
@@ -1752,7 +1807,8 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             'issue_context': context,
             'timestamp': datetime.now().isoformat()
         }
-        cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=300)
+        cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=900)
+        cache_routing_context(conversation_id, pending_data)
 
         app_id = SUNSHINE_APP_ID
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
@@ -1864,19 +1920,68 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             transcript=transcript,
             app_related_category=app_related_category
         )
+        routing_parts = extract_routing_categories_from_context(issue_context)
+        issue_context = routing_parts.get("issue_context") or issue_context
+        app_related_category = app_related_category or routing_parts.get("app_related_category")
+        ride_related_category = routing_parts.get("ride_related_category")
+        ride_related_subcategory = routing_parts.get("ride_related_subcategory")
+        ride_related_detail = routing_parts.get("ride_related_detail")
 
         if not source_conversation_id:
             return JsonResponse({"error": "Missing conversationId"}, status=400)
         if not app_user_id:
             return JsonResponse({"error": "Missing appUserId"}, status=400)
 
+        pending_data = {
+            "conversation_id": source_conversation_id,
+            "app_user_id": app_user_id,
+            "reason": title,
+            "app_related_category": app_related_category,
+            "ride_related_category": ride_related_category,
+            "ride_related_subcategory": ride_related_subcategory,
+            "ride_related_detail": ride_related_detail,
+            "issue_context": issue_context,
+            "timestamp": datetime.now().isoformat(),
+        }
+        cache.set(f'pending_escalation_{source_conversation_id}', pending_data, timeout=900)
+        cache_routing_context(source_conversation_id, pending_data)
+        if app_related_category:
+            cache.set(f'category_{source_conversation_id}', app_related_category, timeout=3600)
+        if ride_related_category:
+            cache.set(f'ride_category_{source_conversation_id}', ride_related_category, timeout=3600)
+        enqueue_recent_escalation({
+            "conversation_id": source_conversation_id,
+            "app_user_id": app_user_id,
+            "reason": title,
+            "app_related_category": app_related_category,
+            "ride_related_category": ride_related_category,
+            "ride_related_subcategory": ride_related_subcategory,
+            "ride_related_detail": ride_related_detail,
+            "issue_context": issue_context,
+            "timestamp": time.time(),
+        })
+
         existing_handoff_conversation_id = cache.get(f'csat_handoff_{source_conversation_id}')
         if existing_handoff_conversation_id:
+            routing_result = apply_ticket_routing_after_handoff(
+                conversation_id=source_conversation_id,
+                app_user_id=app_user_id,
+                reason=title,
+                issue_context=issue_context,
+                app_related_category=app_related_category,
+                ride_related_category=ride_related_category,
+                ride_related_subcategory=ride_related_subcategory,
+                ride_related_detail=ride_related_detail,
+                title=title,
+                transcript=transcript,
+            )
             return JsonResponse({
                 "status": "existing",
                 "conversation_id": existing_handoff_conversation_id,
                 "source_conversation_id": source_conversation_id,
-                "appUserId": app_user_id
+                "appUserId": app_user_id,
+                "ticket_id": routing_result.get("ticket_id"),
+                "routing_updated": routing_result.get("routing_updated", False),
             })
 
         existing_ticket_id = resolve_ticket_id_for_conversation(source_conversation_id)
@@ -1899,6 +2004,9 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             reason=title,
             issue_context=issue_context,
             app_related_category=app_related_category,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail,
             title=title,
             transcript=transcript,
         )
@@ -2799,8 +2907,6 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                     continue
                 if age < 0 or age > RECENT_ESCALATION_MATCH_WINDOW_SECONDS:
                     continue
-                if cache.get(f'conversation_{conversation_id}'):
-                    continue
                 found_escalation = escalation
                 break
 
@@ -2809,6 +2915,7 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                 cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)
                 cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
                 cache.set(f'pending_escalation_{conversation_id}', found_escalation, timeout=3600)
+                cache_routing_context(conversation_id, found_escalation)
                 valid_escalations = [e for e in valid_escalations if e is not found_escalation]
                 logger.info(
                     f"ticket.created matched queue conversation={conversation_id} ticket={ticket_id}"
@@ -3023,6 +3130,7 @@ def cancellation_charges_waive_off(request: HttpRequest) -> JsonResponse:
             }
         )
         cache.set(f'pending_escalation_{conversation_id}', existing_pending, timeout=900)
+        cache_routing_context(conversation_id, existing_pending)
         cache.set(f'ride_category_{conversation_id}', "Fare and Payment", timeout=3600)
         enqueue_recent_escalation(
             {
@@ -3143,6 +3251,7 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
     set_ticket_conversation_field(ticket_id, conversation_id)
     store_conversation_ticket_mapping(conversation_id, ticket_id)
     pending_data = cache.get(f'pending_escalation_{conversation_id}')
+    cached_routing_context = cache.get(f'{ROUTING_CONTEXT_CACHE_PREFIX}{conversation_id}') or {}
     app_related_category = None
     ride_related_category = None
     ride_related_subcategory = None
@@ -3160,6 +3269,23 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
     else:
         app_related_category = cache.get(f'category_{conversation_id}')
         ride_related_category = cache.get(f'ride_category_{conversation_id}')
+
+    if cached_routing_context:
+        app_related_category = app_related_category or cached_routing_context.get('app_related_category')
+        ride_related_category = ride_related_category or cached_routing_context.get('ride_related_category')
+        ride_related_subcategory = ride_related_subcategory or cached_routing_context.get('ride_related_subcategory')
+        ride_related_detail = ride_related_detail or cached_routing_context.get('ride_related_detail')
+        issue_context = issue_context or cached_routing_context.get('issue_context')
+        app_user_id = app_user_id or cached_routing_context.get('app_user_id')
+
+    if not issue_context:
+        issue_context = build_issue_context(
+            issue_context=None,
+            app_related_category=app_related_category,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail,
+        )
 
     success = update_ticket_routing(
         ticket_id,
