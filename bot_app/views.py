@@ -205,12 +205,12 @@ SAFETY_ISSUE_TYPE_TAGS = {
     "others": "other",
     "met with an accident": "met_with_an_accident",
     "accident": "met_with_an_accident",
-    "sexual harassment": "sexual_harresment",   # Zendesk value has typo — preserved
-    "sexual harrasment": "sexual_harresment",
-    "sexual harresment": "sexual_harresment",
-    "physical fights": "phyiscal_fights",       # Zendesk value has typo — preserved
-    "phyiscal fights": "phyiscal_fights",
-    "physical fight": "phyiscal_fights",
+    "sexual harassment": "sexual_harassment",
+    "sexual harrasment": "sexual_harassment",
+    "sexual harresment": "sexual_harassment",
+    "physical fights": "physical_fights",
+    "phyiscal fights": "physical_fights",
+    "physical fight": "physical_fights",
     "extra person in the vehicle": "extra_person_in_the_vehicle",
     "extra person in vehicle": "extra_person_in_the_vehicle",
     "rash driving": "rash_driving",
@@ -462,6 +462,20 @@ def resolve_dropdown_value(
                 f"resolve_dropdown: field={field_id} normalised '{current_value}' -> '{variant}'"
             )
             return variant
+
+    # Backward-compat alias handling for legacy typo tags still present in some setups.
+    alias_fallbacks = {
+        "sexual_harresment": ["sexual_harassment"],
+        "sexual_harassment": ["sexual_harresment"],
+        "phyiscal_fights": ["physical_fights"],
+        "physical_fights": ["phyiscal_fights"],
+    }
+    for candidate in alias_fallbacks.get(current_value, []):
+        if candidate in option_values:
+            logger.info(
+                f"resolve_dropdown: field={field_id} alias '{current_value}' -> '{candidate}'"
+            )
+            return candidate
 
     # Strong fallback for values with punctuation differences (/, -, _, spaces).
     desired_norm = normalize_issue_key(current_value.replace("_", " "))
