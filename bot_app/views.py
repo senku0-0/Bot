@@ -936,7 +936,7 @@ def silently_pass_conversation_to_agent(
 
 def resolve_ticket_id_for_conversation(
     conversation_id: str,
-    timeout_seconds: float = 8.0,
+    timeout_seconds: float = 30.0,
     poll_interval: float = 1.0,
 ) -> Optional[str]:
     """
@@ -2487,7 +2487,27 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
         except json.JSONDecodeError:
             return JsonResponse({"status": "invalid_json"}, status=400)
         
-        if 'event' in data:
+        # Log the full payload so we can see exactly what Zendesk sends
+        logger.info(f"[zendesk_webhook] keys={list(data.keys())} type={data.get('type')} "
+                    f"payload_preview={json.dumps(data)[:500]}")
+
+        # Detect ticket.created / ticket.comment_added directly at this level
+        # regardless of nesting — Zendesk webhook payload structure varies by
+        # trigger configuration. Handle all known formats.
+        top_type = str(data.get('type', '') or '').lower()
+        event_type_from_event = str((data.get('event') or {}).get('type', '') or '').lower()
+        combined_type = top_type or event_type_from_event
+
+        if 'ticket.created' in combined_type or 'ticket_created' in combined_type:
+            logger.info(f"[zendesk_webhook] routing to handle_notification_webhook as ticket.created")
+            return handle_notification_webhook(data)
+        elif 'ticket.comment' in combined_type or 'ticket_comment' in combined_type:
+            logger.info(f"[zendesk_webhook] routing to handle_notification_webhook as ticket.comment")
+            return handle_notification_webhook(data)
+        elif 'ticket.solved' in combined_type or 'ticket_solved' in combined_type:
+            logger.info(f"[zendesk_webhook] routing to handle_notification_webhook as ticket.solved")
+            return handle_notification_webhook(data)
+        elif 'event' in data:
             return handle_notification_webhook(data)
         elif 'ticket' in data and 'comment' in data:
             return handle_ticket_comment_webhook(data)
@@ -2496,7 +2516,35 @@ def zendesk_webhook(request: HttpRequest) -> JsonResponse:
         else:
             ticket_id = extract_ticket_id_from_data(data)
             if ticket_id:
+                # Last resort: if there's a ticket ID and a recent escalation, apply routing
+                recent_escalations = cache.get('recent_escalations_queue', []) or []
+                ticket_created_at = time.time()
+                for escalation in reversed(recent_escalations):
+                    time_diff = ticket_created_at - escalation.get('timestamp', 0)
+                    if 0 < time_diff < 120:
+                        conversation_id = escalation['conversation_id']
+                        store_conversation_ticket_mapping(conversation_id, ticket_id)
+                        set_ticket_conversation_field(ticket_id, conversation_id)
+                        success = update_ticket_routing(
+                            ticket_id,
+                            issue_context=escalation.get('issue_context'),
+                            conversation_id=conversation_id,
+                            app_user_id=escalation.get('app_user_id'),
+                            reason=escalation.get('reason'),
+                            app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(
+                                normalize_issue_key(escalation.get('app_related_category'))
+                            ) if escalation.get('app_related_category') else None,
+                            ride_related_category=escalation.get('ride_related_category'),
+                            ride_related_subcategory=escalation.get('ride_related_subcategory'),
+                            ride_related_detail=escalation.get('ride_related_detail'),
+                        )
+                        logger.info(
+                            f"[zendesk_webhook] unknown format but applied routing: "
+                            f"ticket={ticket_id} conv={conversation_id} success={success}"
+                        )
+                        return JsonResponse({"status": "routing_applied_unknown_format", "ticket_id": ticket_id})
                 return JsonResponse({"status": "unknown_format", "ticket_id": ticket_id, "message": "Received webhook but format not recognized"})
+            logger.warning(f"[zendesk_webhook] completely unrecognized payload: {json.dumps(data)[:300]}")
             return JsonResponse({"status": "unknown_format", "message": "Webhook format not recognized"})
     except Exception as e:
         logger.exception(f"zendesk_webhook error: {e}")
@@ -2647,10 +2695,16 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
         - 500: Error during processing
     """
     try:
-        event_type = data.get('type', '')
         event_data = data.get('event', {})
+        # Accept type from top-level OR from inside event dict
+        event_type = str(
+            data.get('type')
+            or (event_data.get('type') if isinstance(event_data, dict) else None)
+            or ''
+        ).lower()
+        logger.info(f"[handle_notification_webhook] event_type='{event_type}' event_data_keys={list(event_data.keys()) if isinstance(event_data, dict) else type(event_data)}")
 
-        if 'ticket.created' in event_type:
+        if 'ticket.created' in event_type or 'ticket_created' in event_type:
             ticket_id = None
             if 'ticket' in event_data:
                 ticket_id = str(event_data['ticket'].get('id', ''))
@@ -2661,90 +2715,32 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
             if not ticket_id:
                 return JsonResponse({"status": "no_ticket_id_in_created"})
 
-            # Deterministic match: find the most recent unmatched escalation (<=120s old).
+            # Deterministic match: use the most recent escalation from the queue (<= 15s old).
             recent_escalations = cache.get('recent_escalations_queue', []) or []
             ticket_created_at = time.time()
             found_escalation = None
 
             for escalation in reversed(recent_escalations):
                 time_diff = ticket_created_at - escalation.get('timestamp', 0)
-                if 0 < time_diff < 120:
+                if 0 < time_diff < 15:
                     found_escalation = escalation
                     break
 
             if found_escalation:
                 conversation_id = found_escalation['conversation_id']
-                # Write the mapping immediately so all future lookups find it
-                store_conversation_ticket_mapping(conversation_id, ticket_id)
+                cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)
+                cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
                 cache.set(f'pending_escalation_{conversation_id}', found_escalation, timeout=3600)
-                # Write conversation field onto the ticket right now
-                set_ticket_conversation_field(ticket_id, conversation_id)
 
-                app_related_category = found_escalation.get('app_related_category')
-                ride_related_category = found_escalation.get('ride_related_category')
-                ride_related_subcategory = found_escalation.get('ride_related_subcategory')
-                ride_related_detail = found_escalation.get('ride_related_detail')
-                issue_context = found_escalation.get('issue_context')
-                app_user_id = found_escalation.get('app_user_id')
-                reason = found_escalation.get('reason')
-
-                logger.info(
-                    f"[ticket.created] ticket={ticket_id} matched escalation conv={conversation_id} "
-                    f"ride_cat={ride_related_category} ride_sub={ride_related_subcategory} "
-                    f"ride_detail={ride_related_detail} app_cat={app_related_category}"
-                )
-
-                success = update_ticket_routing(
-                    ticket_id,
-                    issue_context=issue_context,
-                    conversation_id=conversation_id,
-                    app_user_id=app_user_id,
-                    reason=reason,
-                    app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(
-                        normalize_issue_key(app_related_category)
-                    ) if app_related_category else None,
-                    ride_related_category=ride_related_category,
-                    ride_related_subcategory=ride_related_subcategory,
-                    ride_related_detail=ride_related_detail,
-                )
-                if success:
-                    cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
-                    # Remove from queue so a second ticket.created doesn't re-apply
-                    try:
-                        updated_queue = [
-                            e for e in recent_escalations
-                            if e.get('conversation_id') != conversation_id
-                        ]
-                        cache.set('recent_escalations_queue', updated_queue, timeout=300)
-                    except Exception:
-                        pass
-                    return JsonResponse({
-                        "status": "ticket_updated",
-                        "ticket_id": ticket_id,
-                        "conversation_id": conversation_id,
-                        "ride_related_category": ride_related_category,
-                        "message": "Ticket routing applied directly from escalation queue",
-                    })
-                else:
-                    logger.error(
-                        f"[ticket.created] update_ticket_routing failed for ticket={ticket_id}"
-                    )
-                    return JsonResponse({
-                        "status": "routing_failed",
-                        "ticket_id": ticket_id,
-                        "conversation_id": conversation_id,
-                    })
-
-            # No escalation match — fall back to conversation-mapping lookup
             result = update_ticket_routing_from_conversation_mapping(ticket_id)
             if result.get("status") == "ticket_updated":
-                conv_id = result.get("conversation_id")
-                if conv_id:
-                    cache.delete(f'pending_escalation_{conv_id}')
+                conversation_id = result.get("conversation_id")
+                if conversation_id:
+                    cache.delete(f'pending_escalation_{conversation_id}')
                 return JsonResponse(result)
             return JsonResponse(result)
 
-        if 'ticket.comment_added' in event_type:
+        if 'ticket.comment_added' in event_type or 'ticket_comment_added' in event_type:
             comment = event_data.get('comment', {})
             comment_body = comment.get('body', '')
             comment_author = comment.get('author', {})
@@ -2805,7 +2801,7 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                 "error": response.text,
             })
 
-        elif 'ticket.solved' in event_type:
+        elif 'ticket.solved' in event_type or 'ticket_solved' in event_type:
             ticket_id = None
             if 'ticket' in event_data:
                 ticket_id = str(event_data['ticket'].get('id', ''))
