@@ -268,6 +268,48 @@ def append_custom_field(custom_fields: List[Dict[str, Any]], field_id: Any, valu
             return
     custom_fields.append({"id": field_int, "value": value})
 
+
+RECENT_ESCALATION_QUEUE_KEY = "recent_escalations_queue"
+RECENT_ESCALATION_MATCH_WINDOW_SECONDS = 180
+RECENT_ESCALATION_QUEUE_TTL_SECONDS = 900
+RECENT_ESCALATION_QUEUE_MAX = 100
+
+
+def enqueue_recent_escalation(escalation_data: Dict[str, Any]) -> None:
+    """
+    Keep a short, time-bounded queue of latest handoffs so ticket.created
+    can deterministically map back to the originating conversation.
+    """
+    try:
+        conversation_id = str(escalation_data.get("conversation_id", "")).strip()
+        if not conversation_id:
+            return
+
+        entry = dict(escalation_data)
+        entry["conversation_id"] = conversation_id
+        entry["timestamp"] = float(entry.get("timestamp") or time.time())
+
+        now = time.time()
+        recent = cache.get(RECENT_ESCALATION_QUEUE_KEY, []) or []
+        filtered: List[Dict[str, Any]] = []
+        for item in recent:
+            try:
+                item_ts = float(item.get("timestamp") or 0)
+            except Exception:
+                continue
+            if 0 <= (now - item_ts) <= RECENT_ESCALATION_QUEUE_TTL_SECONDS:
+                filtered.append(item)
+
+        filtered.append(entry)
+        filtered = filtered[-RECENT_ESCALATION_QUEUE_MAX:]
+        cache.set(
+            RECENT_ESCALATION_QUEUE_KEY,
+            filtered,
+            timeout=RECENT_ESCALATION_QUEUE_TTL_SECONDS,
+        )
+    except Exception as e:
+        logger.warning(f"enqueue_recent_escalation error: {e}")
+
 def get_ticket_field_option_values(field_id: Any, auth: HTTPBasicAuth) -> Optional[Set[str]]:
     field_int = safe_int(field_id)
     if not field_int or not ZENDESK_SUBDOMAIN:
@@ -306,7 +348,7 @@ def resolve_fare_subcategory_value(
     auth: HTTPBasicAuth,
 ) -> Any:
     current_value = str(fare_value or "").strip()
-    if current_value not in {"multiple_debits_occurred", "multiple_debits_occured"}:
+    if not current_value:
         return fare_value
 
     option_values = get_ticket_field_option_values(fare_field_id, auth)
@@ -316,13 +358,27 @@ def resolve_fare_subcategory_value(
     if current_value in option_values:
         return current_value
 
-    if "multiple_debits_occured" in option_values:
-        logger.info("Fare subcategory fallback: using 'multiple_debits_occured' option value")
-        return "multiple_debits_occured"
+    alias_fallbacks = {
+        "multiple_debits_occurred": ["multiple_debits_occured"],
+        "multiple_debits_occured": ["multiple_debits_occurred"],
+        "cancellation_charges": ["cancellation_charge"],
+        "cancellation_charge": ["cancellation_charges"],
+    }
+    for candidate in alias_fallbacks.get(current_value, []):
+        if candidate in option_values:
+            logger.info(
+                f"Fare subcategory fallback: using alias '{candidate}' for '{current_value}'"
+            )
+            return candidate
 
-    if "multiple_debits_occurred" in option_values:
-        logger.info("Fare subcategory fallback: using 'multiple_debits_occurred' option value")
-        return "multiple_debits_occurred"
+    desired_norm = normalize_issue_key(current_value.replace("_", " "))
+    for option_value in sorted(option_values):
+        option_norm = normalize_issue_key(str(option_value).replace("_", " "))
+        if option_norm == desired_norm:
+            logger.info(
+                f"Fare subcategory normalized fallback: '{current_value}' -> '{option_value}'"
+            )
+            return option_value
 
     logger.warning(
         "Fare subcategory value did not match available Zendesk options. "
@@ -928,22 +984,56 @@ def silently_pass_conversation_to_agent(
     app_related_category: Optional[str],
 ) -> bool:
     try:
+        context = build_issue_context(
+            issue_context=issue_context,
+            reason=reason,
+            app_related_category=app_related_category,
+        )
+
+        main_key = normalize_issue_key(context.get("mainCategory"))
+        ride_related_category = None
+        ride_related_subcategory = None
+        ride_related_detail = None
+        if main_key.startswith("ride related"):
+            ride_related_category = context.get("category")
+            ride_related_subcategory = context.get("subcategory")
+            ride_related_detail = context.get("detail")
+
         pending_data = {
             "conversation_id": conversation_id,
             "app_user_id": app_user_id,
             "reason": reason,
             "app_related_category": app_related_category,
-            "issue_context": issue_context,
+            "ride_related_category": ride_related_category,
+            "ride_related_subcategory": ride_related_subcategory,
+            "ride_related_detail": ride_related_detail,
+            "issue_context": context,
             "timestamp": datetime.now().isoformat(),
         }
         cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=300)
         if app_related_category:
             cache.set(f'category_{conversation_id}', app_related_category, timeout=3600)
+        if ride_related_category:
+            cache.set(f'ride_category_{conversation_id}', ride_related_category, timeout=3600)
+
+        enqueue_recent_escalation(
+            {
+                "conversation_id": conversation_id,
+                "app_user_id": app_user_id,
+                "reason": reason,
+                "app_related_category": app_related_category,
+                "ride_related_category": ride_related_category,
+                "ride_related_subcategory": ride_related_subcategory,
+                "ride_related_detail": ride_related_detail,
+                "issue_context": context,
+                "timestamp": time.time(),
+            }
+        )
 
         metadata = build_pass_control_metadata(
             conversation_id=conversation_id,
             app_user_id=app_user_id,
-            issue_context=issue_context,
+            issue_context=context,
             reason=reason,
             app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
         )
@@ -1703,8 +1793,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         pc_response = requests.post(pass_control_url, json=pass_control_payload, auth=auth)
 
         # Keep a short queue so ticket.created can deterministically map to the latest escalation.
-        recent_escalations = cache.get('recent_escalations_queue', []) or []
-        recent_escalations.append({
+        enqueue_recent_escalation({
             'conversation_id': conversation_id,
             'app_user_id': app_user_id,
             'reason': reason,
@@ -1715,8 +1804,6 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             'issue_context': context,
             'timestamp': time.time(),
         })
-        recent_escalations = recent_escalations[-50:]
-        cache.set('recent_escalations_queue', recent_escalations, timeout=300)
         
         if pc_response.status_code != 200:
             return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
@@ -2687,29 +2774,59 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
             if not ticket_id:
                 return JsonResponse({"status": "no_ticket_id_in_created"})
 
-            # Deterministic match: use the most recent escalation from the queue (<= 15s old).
-            recent_escalations = cache.get('recent_escalations_queue', []) or []
+            recent_escalations = cache.get(RECENT_ESCALATION_QUEUE_KEY, []) or []
             ticket_created_at = time.time()
             found_escalation = None
+            valid_escalations: List[Dict[str, Any]] = []
 
-            for escalation in reversed(recent_escalations):
-                time_diff = ticket_created_at - escalation.get('timestamp', 0)
-                if 0 < time_diff < 15:
-                    found_escalation = escalation
-                    break
+            for escalation in recent_escalations:
+                try:
+                    conv_id = str(escalation.get('conversation_id', '')).strip()
+                    ts = float(escalation.get('timestamp') or 0)
+                except Exception:
+                    continue
+                if not conv_id:
+                    continue
+                age = ticket_created_at - ts
+                if 0 <= age <= RECENT_ESCALATION_QUEUE_TTL_SECONDS:
+                    valid_escalations.append(escalation)
+
+            for escalation in reversed(valid_escalations):
+                conversation_id = str(escalation.get('conversation_id', '')).strip()
+                ts = float(escalation.get('timestamp') or 0)
+                age = ticket_created_at - ts
+                if not conversation_id:
+                    continue
+                if age < 0 or age > RECENT_ESCALATION_MATCH_WINDOW_SECONDS:
+                    continue
+                if cache.get(f'conversation_{conversation_id}'):
+                    continue
+                found_escalation = escalation
+                break
 
             if found_escalation:
-                conversation_id = found_escalation['conversation_id']
+                conversation_id = str(found_escalation.get('conversation_id', '')).strip()
                 cache.set(f'conversation_{conversation_id}', ticket_id, timeout=86400)
                 cache.set(f'ticket_{ticket_id}', conversation_id, timeout=86400)
                 cache.set(f'pending_escalation_{conversation_id}', found_escalation, timeout=3600)
+                valid_escalations = [e for e in valid_escalations if e is not found_escalation]
+                logger.info(
+                    f"ticket.created matched queue conversation={conversation_id} ticket={ticket_id}"
+                )
+            else:
+                logger.info(f"ticket.created had no queue match for ticket={ticket_id}")
+
+            cache.set(
+                RECENT_ESCALATION_QUEUE_KEY,
+                valid_escalations[-RECENT_ESCALATION_QUEUE_MAX:],
+                timeout=RECENT_ESCALATION_QUEUE_TTL_SECONDS,
+            )
 
             result = update_ticket_routing_from_conversation_mapping(ticket_id)
             if result.get("status") == "ticket_updated":
                 conversation_id = result.get("conversation_id")
                 if conversation_id:
                     cache.delete(f'pending_escalation_{conversation_id}')
-                return JsonResponse(result)
             return JsonResponse(result)
 
         if 'ticket.comment_added' in event_type:
@@ -2717,7 +2834,7 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
             comment_body = comment.get('body', '')
             comment_author = comment.get('author', {})
             is_staff = comment_author.get('is_staff', False)
-            
+
             if not is_staff:
                 return JsonResponse({"status": "ignored_user_comment"})
             if is_conversation_log_entry(comment_body):
@@ -2773,7 +2890,7 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                 "error": response.text,
             })
 
-        elif 'ticket.solved' in event_type:
+        if 'ticket.solved' in event_type:
             ticket_id = None
             if 'ticket' in event_data:
                 ticket_id = str(event_data['ticket'].get('id', ''))
@@ -2783,36 +2900,34 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
                 ticket_id = extract_ticket_id_from_data(data)
             if not ticket_id:
                 return JsonResponse({"status": "no_ticket_id"})
-            
+
             conversation_id = resolve_conversation_id_for_ticket(ticket_id)
             if conversation_id:
                 auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
                 url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
-                payload = {"author": {"type": "business", "displayName": "System"}, "content": {"type": "text", "text": "The agent has ended the session. Type a message to start a new ticket."}}
+                payload = {
+                    "author": {"type": "business", "displayName": "System"},
+                    "content": {"type": "text", "text": "The agent has ended the session. Type a message to start a new ticket."}
+                }
                 requests.post(url, json=payload, auth=auth)
             return JsonResponse({"status": "ticket_solved_processed", "ticket_id": ticket_id})
-        
+
         return JsonResponse({"status": "processed_notification"})
     except Exception as e:
         logger.exception(f"handle_notification_webhook error: {e}")
         return JsonResponse({"error": str(e)}, status=500)
 
+
 def extract_ticket_id_from_data(data: Dict[str, Any]) -> Optional[str]:
     """
     Extract ticket ID from various Zendesk webhook payload formats.
-    
+
     Attempts extraction in order of preference:
     1. Direct ticket object id
     2. ticket_id in event data
     3. detail.id
     4. events[].ticket_id
     5. JSON string regex pattern matching
-    
-    Args:
-        data (Dict[str, Any]): Zendesk webhook payload
-    
-    Returns:
-        Optional[str]: Extracted ticket ID as string, or None if not found
     """
     ticket_id = None
     if 'ticket' in data:
@@ -2845,6 +2960,89 @@ def extract_ticket_id_from_data(data: Dict[str, Any]) -> Optional[str]:
             if matches:
                 ticket_id = matches[-1]
     return ticket_id
+
+
+@csrf_exempt
+def cancellation_charges_waive_off(request: HttpRequest) -> JsonResponse:
+    """
+    Evaluate cancellation-waiver reason and persist ride context so the later
+    create-ticket flow has deterministic data for routing.
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    conversation_id = str(data.get("conversationId", "")).strip()
+    app_user_id = str(data.get("appUserId", "")).strip() or None
+    reason = strip_html_tags(str(data.get("reason", ""))).strip()
+    normalized_reason = normalize_issue_key(reason)
+
+    approved_reasons = {
+        "driver not moving",
+        "driver asked to cancel",
+        "could not connect with driver",
+        "driver was impolite",
+    }
+    waived_off = normalized_reason in approved_reasons
+
+    current_path = "Ride Related Issues > Fare and Payment > Cancellation Charges"
+    if reason:
+        current_path = f"{current_path} > {reason}"
+
+    issue_context = build_issue_context(
+        issue_context={
+            "mainCategory": "Ride Related Issues",
+            "category": "Fare and Payment",
+            "subcategory": "Cancellation Charges",
+            "detail": reason,
+            "currentPath": current_path,
+        },
+        reason=reason,
+        ride_related_category="Fare and Payment",
+        ride_related_subcategory="Cancellation Charges",
+        ride_related_detail=reason,
+    )
+
+    if conversation_id:
+        existing_pending = cache.get(f'pending_escalation_{conversation_id}') or {}
+        existing_pending.update(
+            {
+                "conversation_id": conversation_id,
+                "app_user_id": app_user_id,
+                "reason": reason or existing_pending.get("reason") or "Cancellation Charges",
+                "app_related_category": None,
+                "ride_related_category": "Fare and Payment",
+                "ride_related_subcategory": "Cancellation Charges",
+                "ride_related_detail": reason,
+                "issue_context": issue_context,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+        cache.set(f'pending_escalation_{conversation_id}', existing_pending, timeout=900)
+        cache.set(f'ride_category_{conversation_id}', "Fare and Payment", timeout=3600)
+        enqueue_recent_escalation(
+            {
+                "conversation_id": conversation_id,
+                "app_user_id": app_user_id,
+                "reason": reason,
+                "app_related_category": None,
+                "ride_related_category": "Fare and Payment",
+                "ride_related_subcategory": "Cancellation Charges",
+                "ride_related_detail": reason,
+                "issue_context": issue_context,
+                "timestamp": time.time(),
+            }
+        )
+
+    logger.info(
+        f"Cancellation waive-off evaluated conv={conversation_id or 'n/a'} "
+        f"reason='{reason}' waived={waived_off}"
+    )
+    return JsonResponse({"waivedOffSuccess": waived_off, "reason": reason})
 
 def resolve_conversation_id_for_ticket(ticket_id: str) -> Optional[str]:
     """

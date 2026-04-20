@@ -7,6 +7,7 @@ urlpatterns = [
     path('hooks/sunshine/message', views.webhook_message, name='sunshine_webhook'),
     path('api/chat/init', views.init_conversation, name='init_conversation'),
     path('api/chat/send', views.send_message_to_sunshine, name='send_message_to_sunshine'),
+    path('api/chat/cancellation-charges/waive-off', views.cancellation_charges_waive_off, name='cancellation_charges_waive_off'),
     path('api/chat/escalate', views.escalate_to_agent, name='escalate_to_agent'),
     path('api/chat/create-ticket', views.create_conversation_ticket, name='create_conversation_ticket'),
     path('api/chat/messages', views.get_conversation_messages, name='get_conversation_messages'),
