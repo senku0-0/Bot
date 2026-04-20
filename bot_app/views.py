@@ -168,35 +168,55 @@ APP_RELATED_CATEGORY_TAGS = {
 }
 
 FARE_AND_PAYMENT_SUBCATEGORY_TAGS = {
+    # Human-readable labels (as sent by frontend or stored in issueContext)
     "multiple debits occurred": "multiple_debits_occurred",
-    "multiple debits occured": "multiple_debits_occurred",
+    "multiple debits occured": "multiple_debits_occurred",      # typo variant
+    "multiple debits occur": "multiple_debits_occurred",        # truncated
     "driver charged extra fare": "driver_charged_extra_fare",
     "charged higher than estimated fare": "charged_higher_than_estimated_fare",
+    "higher than estimated fare": "charged_higher_than_estimated_fare",
     "cancellation charges": "cancellation_charges",
+    "cancellation charge": "cancellation_charges",
 }
 
 VEHICLE_ISSUE_TYPE_TAGS = {
+    # Human-readable labels
     "unclean unhygienic vehicle": "unclean/unhygienic_vehicle",
+    "unclean vehicle": "unclean/unhygienic_vehicle",
+    "unhygienic vehicle": "unclean/unhygienic_vehicle",
     "vehicle unsafe": "vehicle_unsafe",
+    "unsafe vehicle": "vehicle_unsafe",
     "ac not turned on ac stopped working midway": "ac_not_turned_on_/_ac_stopped_working",
     "ac not turned on ac stopped working": "ac_not_turned_on_/_ac_stopped_working",
+    "ac not working": "ac_not_turned_on_/_ac_stopped_working",
+    "ac issue": "ac_not_turned_on_/_ac_stopped_working",
     "vehicle was different": "vehicle_was_different",
+    "different vehicle": "vehicle_was_different",
 }
 
 SAFETY_ISSUE_TYPE_TAGS = {
+    # Human-readable labels
     "drunk and drive": "drunk_and_drive",
+    "drunk driving": "drunk_and_drive",
     "driver was rude or misbehaved": "driver_was_rude_or_misbehaved",
+    "rude driver": "driver_was_rude_or_misbehaved",
+    "driver misbehaved": "driver_was_rude_or_misbehaved",
     "other": "other",
     "others": "other",
     "met with an accident": "met_with_an_accident",
-    "sexual harassment": "sexual_harresment",
+    "accident": "met_with_an_accident",
+    "sexual harassment": "sexual_harresment",   # Zendesk value has typo — preserved
     "sexual harrasment": "sexual_harresment",
     "sexual harresment": "sexual_harresment",
-    "physical fights": "phyiscal_fights",
+    "physical fights": "phyiscal_fights",       # Zendesk value has typo — preserved
     "phyiscal fights": "phyiscal_fights",
+    "physical fight": "phyiscal_fights",
     "extra person in the vehicle": "extra_person_in_the_vehicle",
+    "extra person in vehicle": "extra_person_in_the_vehicle",
     "rash driving": "rash_driving",
+    "rash drive": "rash_driving",
     "vehicle broke down": "vehicle_broke_down",
+    "breakdown": "vehicle_broke_down",
 }
 
 PAYMENT_MODE_TAGS = {
@@ -497,7 +517,11 @@ def build_ticket_routing_payload(
     logger.info(f"Ticket routing - main_key={main_key}, category_key={category_key}, subcategory_key={subcategory_key}, detail_key={detail_key}")
     logger.info(f"Context: {context}")
 
-    if main_key == "app related issues" or app_related_sub_category:
+    # Broaden main-category matching: accept "ride related" even if "issues" is missing
+    is_ride_related = main_key.startswith("ride related")
+    is_app_related = main_key.startswith("app related") or bool(app_related_sub_category)
+
+    if is_app_related:
         form_id = safe_int(APP_RELATED_ISSUE_FORM_ID)
         if form_id:
             ticket_payload["ticket_form_id"] = form_id
@@ -509,7 +533,7 @@ def build_ticket_routing_payload(
         )
         append_custom_field(custom_fields, APP_RELATED_SUB_CATEGORY, tag_value)
 
-    elif main_key == "ride related issues":
+    elif is_ride_related:
         if category_key == "fare and payment":
             form_id = safe_int(FARE_AND_PAYMENT_FORM_ID)
             if form_id:
@@ -560,7 +584,7 @@ def build_ticket_routing_payload(
             append_custom_field(custom_fields, DRIVER_NAME_FIELD_ID, driver_name_val)
             append_custom_field(custom_fields, VEHICLE_NUMBER_FIELD_ID, vehicle_number_val)
 
-        elif category_key == "vehicle related issue":
+        elif category_key in ("vehicle related issue", "vehicle related") or category_key.startswith("vehicle related"):
             form_id = safe_int(VEHUICLE_AC_ISSUE_FORM_ID)
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
@@ -569,11 +593,12 @@ def build_ticket_routing_payload(
                 f"[ROUTING] Vehicle branch: "
                 f"ticket_form_id={form_id} (env={VEHUICLE_AC_ISSUE_FORM_ID}) | "
                 f"VEHICLE_ISSUE_TYPE field={VEHICLE_ISSUE_TYPE_FIELD_ID} | "
+                f"raw_subcategory='{context.get('subcategory')}' "
                 f"subcategory_key='{subcategory_key}' -> tag='{vehicle_tag}'"
             )
             append_custom_field(custom_fields, VEHICLE_ISSUE_TYPE_FIELD_ID, vehicle_tag)
 
-        elif category_key == "safety related":
+        elif category_key in ("safety related", "safety", "safety issue") or category_key.startswith("safety"):
             form_id = safe_int(SAFETY_ISSUE_FORM_ID)
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
@@ -583,6 +608,7 @@ def build_ticket_routing_payload(
                 f"ticket_form_id={form_id} (env={SAFETY_ISSUE_FORM_ID}) | "
                 f"ESCALATION_TO_SAFETY_TEAM field={ESCALATION_TO_SAFETY_TEAM_FIELD_ID} (True) | "
                 f"SAFETY_ISSUE_TYPE field={SAFETY_ISSUE_TYPE_FIELD_ID} | "
+                f"raw_subcategory='{context.get('subcategory')}' "
                 f"subcategory_key='{subcategory_key}' -> tag='{safety_tag}'"
             )
             append_custom_field(custom_fields, ESCALATION_TO_SAFETY_TEAM_FIELD_ID, True)
