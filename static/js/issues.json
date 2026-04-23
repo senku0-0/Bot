@@ -6,7 +6,10 @@
     },
     "mainOptions": [
         "App Related Issues",
-        "Ride Related Issues"
+        "Fare and Payment",
+        "Find a lost item",
+        "Vehicle related issue",
+        "Safety related"
     ],
     "appRelatedOptions": [
         "Location Not Found or Inaccurate",

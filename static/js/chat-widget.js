@@ -82,7 +82,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const isViewingConversation=c=>!!(c&&isChatOpen&&currentView==='chat'&&conversationId===c);
     const setLS=(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}};
     const getLS=k=>{try{return localStorage.getItem(k);}catch(e){}};
-    const CHAT_FLOW_VERSION = 'international-flow-2026-04-06-v12';
+    const CHAT_FLOW_VERSION = 'international-flow-2026-04-23-v13';
     let sseConnection = null;
     let sseReconnectAttempts = 0;
     const sseMaxReconnectAttempts = 10;
@@ -1333,31 +1333,100 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
+    function isRideRootOption(option) {
+        const normalizedOption = String(option || '').trim().toLowerCase();
+        const normalizedRideOptions = (rideRelatedOptions.length > 0
+            ? rideRelatedOptions
+            : ["Fare and Payment", "Find a lost item", "Vehicle related issue", "Safety related"]
+        ).map(item => String(item || '').trim().toLowerCase());
+        return normalizedRideOptions.includes(normalizedOption);
+    }
+
+    function selectRideRelatedCategory(option, { showUserMessage = true } = {}) {
+        if (showUserMessage) {
+            appendMessage(option, 'user-message');
+        }
+
+        updateFlowState({
+            mainCategory: "Ride Related Issues",
+            category: option,
+            subcategory: null,
+            detail: null
+        });
+
+        if (option === "Fare and Payment") {
+            setTimeout(() => {
+                appendMessage(getFlowCopy('farePaymentPrompt', "Choose one from the below options."), 'bot-message');
+                showFarePaymentOptions();
+            }, 500);
+            return;
+        }
+
+        if (option === "Find a lost item") {
+            handleLostItemFlow();
+            return;
+        }
+
+        if (option === "Vehicle related issue") {
+            setTimeout(() => {
+                appendMessage("Choose one from the below options.", 'bot-message');
+                showVehicleRelatedOptions();
+            }, 500);
+            return;
+        }
+
+        if (option === "Safety related") {
+            setTimeout(() => {
+                appendMessage(getFlowCopy('safetyIssuePrompt', "Choose one from the below options."), 'bot-message');
+                showSafetyRelatedOptions();
+            }, 500);
+            return;
+        }
+
+        askForFeedback();
+    }
+
     function showMainOptions() {
-        const options = mainOptions.length > 0 ? mainOptions : ["App Related Issues", "Ride Related Issues"];
+        const options = mainOptions.length > 0
+            ? mainOptions
+            : ["App Related Issues", "Fare and Payment", "Find a lost item", "Vehicle related issue", "Safety related"];
         appendOptions(options, handleMainOptionClick);
     }
 
     function handleMainOptionClick(option) {
         appendMessage(option, 'user-message');
-        updateFlowState({
-            mainCategory: option,
-            category: null,
-            subcategory: null,
-            detail: null
-        });
 
         if (option === "App Related Issues") {
+            updateFlowState({
+                mainCategory: option,
+                category: null,
+                subcategory: null,
+                detail: null
+            });
             setTimeout(() => {
                 appendMessage(getFlowCopy('appPrompt', "Choose one from the below options."), 'bot-message');
                 showAppRelatedOptions();
             }, 500);
         } else if (option === "Ride Related Issues") {
+            updateFlowState({
+                mainCategory: option,
+                category: null,
+                subcategory: null,
+                detail: null
+            });
             setTimeout(() => {
                 appendMessage(getFlowCopy('rideCategoryPrompt', "Choose your concern."), 'bot-message');
                 showRideRelatedOptions();
             }, 500);
+        } else if (isRideRootOption(option)) {
+            selectRideRelatedCategory(option, { showUserMessage: false });
         } else {
+            updateFlowState({
+                mainCategory: option,
+                category: null,
+                subcategory: null,
+                detail: null
+            });
             setTimeout(() => {
                 appendMessage("I'm sorry, I don't have information on that yet.", 'bot-message');
                 askForFeedback();
@@ -1519,43 +1588,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function handleRideRelatedOptionClick(option) {
-        appendMessage(option, 'user-message');
-        updateFlowState({
-            category: option,
-            subcategory: null,
-            detail: null
-        });
-
-        if (option === "Fare and Payment") {
-            setTimeout(() => {
-                appendMessage(getFlowCopy('farePaymentPrompt', "Choose one from the below options."), 'bot-message');
-                showFarePaymentOptions();
-            }, 500);
-            return;
-        }
-
-        if (option === "Find a lost item") {
-            handleLostItemFlow();
-            return;
-        }
-
-        if (option === "Vehicle related issue") {
-            setTimeout(() => {
-                appendMessage("Choose one from the below options.", 'bot-message');
-                showVehicleRelatedOptions();
-            }, 500);
-            return;
-        }
-
-        if (option === "Safety related") {
-            setTimeout(() => {
-                appendMessage(getFlowCopy('safetyIssuePrompt', "Choose one from the below options."), 'bot-message');
-                showSafetyRelatedOptions();
-            }, 500);
-            return;
-        }
-
-        askForFeedback();
+        selectRideRelatedCategory(option);
     }
 
     function showFarePaymentOptions() {
