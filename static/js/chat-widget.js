@@ -30,6 +30,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const FORCE_NEW_CONVERSATION_KEY = 'chat_force_new_conversation';
     let shouldForceNewConversation = localStorage.getItem(FORCE_NEW_CONVERSATION_KEY) === 'true';
     const csatTicketRequestedConversations = new Set();
+    const issueReportRequestedFlowKeys = new Set();
     const DEFAULT_TROUBLESHOOTING_STEPS = {
         "Location Not Found or Inaccurate": "There could be multiple reasons why the location is inaccurate. Please try the following:\n\nCheck location settings: Ensure GPS / Location is turned ON.\n\nEnable app permissions: Go to Settings -> Apps -> Namma Yatri -> Permissions -> Location and make sure it is set to Allow all the time or While using the app.\n\nTurn location off and on: Switch off GPS, wait a few seconds, then turn it back on.\n\nCheck for app and OS updates: Update the Namma Yatri app and your phone's operating system to the latest version.\n\nRestart your device: A restart helps refresh location services.",
         "Unable to Login": "There could be multiple reasons why you are unable to log in. Please try the following:\n\nCheck internet connection: Ensure you have a stable Wi-Fi or mobile data connection.\n\nClear cache and data: Go to your device settings, clear the app cache and data, and try logging in again.\n\nCheck for app updates: Make sure you are using the latest version of the app and update it if needed.",
@@ -434,6 +435,7 @@ document.addEventListener('DOMContentLoaded', function () {
         closeActiveModals();
         conversationId = null;
         appUserId = null;
+        issueReportRequestedFlowKeys.clear();
         setForceNewConversation(true);
         displayedMessageIds.clear();
         displayedImageFileNames.clear();
@@ -900,6 +902,7 @@ document.addEventListener('DOMContentLoaded', function () {
         isAgentConnected = false;
         agentJoinAnnounced = false;
         sessionEnded = true;
+        issueReportRequestedFlowKeys.clear();
 
         if (sunshineSocket) {
             sunshineSocket.disconnect();
@@ -1156,6 +1159,39 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function triggerCsatTicketCreation(options = {}) {
         void createConversationTicketSilently(options);
+    }
+
+    function getIssueReportFlowKey(title = null) {
+        return [
+            conversationId || 'pending',
+            title || getCurrentFlowPath() || lastContext || 'Support Request'
+        ].filter(Boolean).join('::');
+    }
+
+    function createIssueReport(options = {}) {
+        const ticketTitle = options.title || getCurrentFlowPath() || lastContext || 'Support Request';
+        const flowKey = options.flowKey || getIssueReportFlowKey(ticketTitle);
+
+        if (flowKey && issueReportRequestedFlowKeys.has(flowKey)) {
+            return Promise.resolve(null);
+        }
+
+        if (flowKey) {
+            issueReportRequestedFlowKeys.add(flowKey);
+        }
+
+        return createConversationTicketSilently({ title: ticketTitle })
+            .catch(error => {
+                if (flowKey) {
+                    issueReportRequestedFlowKeys.delete(flowKey);
+                }
+                throw error;
+            });
+    }
+
+    function createIssueReportAndEndFlow(options = {}) {
+        chatInputArea.style.display = 'none';
+        void createIssueReport(options);
     }
 
     function ensureConversationInitialized({ forceNew = false, title = 'Support Request' } = {}) {
@@ -1697,7 +1733,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         handleAgentConnect();
                         return;
                     }
-                    showCsatBubble();
+                    createIssueReportAndEndFlow();
                 });
                 return;
             }
@@ -1729,7 +1765,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         files: payload.files,
                         showUserSummary: false,
                         successMessage: getFlowCopy('issueLoggedMessage', "Thanks for sharing the details. We have logged your issue."),
-                        afterSubmit: () => connectToAgentDirect()
+                        afterSubmit: () => askVerificationProceed()
                     });
                 }
             });
@@ -1747,7 +1783,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
                 setTimeout(() => {
                     appendMessage(getFlowCopy('verificationDeclinedMessage', "Okay, we will not proceed with this request right now."), 'bot-message');
-                    askFarePaymentFurtherHelp();
+                    createIssueReportAndEndFlow();
                 }, 500);
             });
         }, 500);
@@ -1757,7 +1793,7 @@ document.addEventListener('DOMContentLoaded', function () {
         askForFurtherHelp({
             prompt: "Do you need any further help?",
             onYes: () => connectToAgentDirect(),
-            onNo: () => showCsatBubble(),
+            onNo: () => createIssueReportAndEndFlow(),
             layout: 'row'
         });
     }
@@ -1861,7 +1897,7 @@ document.addEventListener('DOMContentLoaded', function () {
                             return;
                         }
 
-                        showCsatBubble();
+                        createIssueReportAndEndFlow();
                     }, { layout: 'row' });
                 }, 500);
             }, 500);
@@ -1941,7 +1977,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 askForFurtherHelp({
                     prompt: getFlowCopy('vehicleFurtherHelpPrompt', "Do you need any further help?"),
                     onYes: () => promptAgentTransfer(),
-                    onNo: () => showCsatBubble(),
+                    onNo: () => createIssueReportAndEndFlow(),
                     layout: 'row'
                 });
             }, 500);
@@ -2033,7 +2069,7 @@ document.addEventListener('DOMContentLoaded', function () {
                             askForFurtherHelp({
                                 prompt: getFlowCopy('drunkDriveFurtherHelpPrompt', "Do you need further help?"),
                                 onYes: () => promptSafetySosFlow("Safety Other SOS"),
-                                onNo: () => showCsatBubble(),
+                                onNo: () => createIssueReportAndEndFlow(),
                                 layout: 'row'
                             });
                         }, 500);
@@ -2093,7 +2129,7 @@ document.addEventListener('DOMContentLoaded', function () {
             askForFurtherHelp({
                 prompt: getFlowCopy('drunkDriveFurtherHelpPrompt', "Do you need further help?"),
                 onYes: () => promptSafetySosFlow("Drunk and drive SOS"),
-                onNo: () => showCsatBubble(),
+                onNo: () => createIssueReportAndEndFlow(),
                 layout: 'row'
             });
         }, 500);
@@ -2116,7 +2152,7 @@ document.addEventListener('DOMContentLoaded', function () {
             askForFurtherHelp({
                 prompt: getFlowCopy('drunkDriveFurtherHelpPrompt', "Do you need further help?"),
                 onYes: () => promptSafetySosFlow("Driver was rude or misbehaved SOS"),
-                onNo: () => showCsatBubble(),
+                onNo: () => createIssueReportAndEndFlow(),
                 layout: 'row'
             });
         }, 500);
