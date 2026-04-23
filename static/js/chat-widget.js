@@ -1103,6 +1103,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function createConversationTicketSilently({ title = null } = {}) {
         const ticketTitle = title || getCurrentFlowPath() || lastContext || 'Support Request';
+        const hadExistingConversation = Boolean(conversationId);
 
         return ensureConversationInitialized({ title: ticketTitle })
             .then(({ conversationId: activeConversationId, appUserId: activeAppUserId }) => {
@@ -1124,7 +1125,8 @@ document.addEventListener('DOMContentLoaded', function () {
                     appRelatedCategory: flowState.mainCategory === "App Related Issues"
                         ? (flowState.category || window.lastAppRelatedCategory)
                         : null,
-                    issueContext: getIssueContextPayload()
+                    issueContext: getIssueContextPayload(),
+                    seedTranscript: !hadExistingConversation
                 };
 
                 return fetch('/api/chat/create-ticket', {
@@ -1181,6 +1183,13 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         return createConversationTicketSilently({ title: ticketTitle })
+            .then(data => {
+                const isCreated = data && ['created', 'existing', 'updated', 'already_requested'].includes(data.status);
+                if (!isCreated && flowKey) {
+                    issueReportRequestedFlowKeys.delete(flowKey);
+                }
+                return data;
+            })
             .catch(error => {
                 if (flowKey) {
                     issueReportRequestedFlowKeys.delete(flowKey);

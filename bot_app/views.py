@@ -924,20 +924,13 @@ def update_ticket_routing(
         logger.error(f"Ticket routing update error: {e}")
         return False
 
-def build_conversation_transcript_body(
-    title: str,
-    transcript: Optional[str],
-    conversation_id: Optional[str] = None
-) -> str:
-    lines = [f"Issue Path: {title}"]
-    if conversation_id:
-        lines.extend(["", f"Conversation ID: {conversation_id}"])
-    lines.extend([
+def build_conversation_transcript_body(title: str, transcript: Optional[str]) -> str:
+    return "\n".join([
+        f"Issue Path: {title}",
         "",
         "Conversation Transcript:",
         transcript or "No transcript captured."
     ])
-    return "\n".join(lines)
 
 def add_ticket_transcript_note(
     ticket_id: str,
@@ -958,7 +951,7 @@ def add_ticket_transcript_note(
             app_related_sub_category=app_related_sub_category,
         )
         payload["comment"] = {
-            "body": build_conversation_transcript_body(title, transcript, conversation_id=conversation_id),
+            "body": build_conversation_transcript_body(title, transcript),
             "public": False
         }
         url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
@@ -1263,32 +1256,9 @@ def apply_ticket_routing_after_handoff(
         ride_related_subcategory=ride_related_subcategory,
         ride_related_detail=ride_related_detail,
     )
-    transcript_note_added = False
-    transcript_text = (transcript or "").strip()
-    if transcript_text:
-        transcript_note_key = hashlib.sha256(
-            f"{conversation_id}:{ticket_id}:{transcript_text}".encode("utf-8")
-        ).hexdigest()
-        cache_key = f"ticket_transcript_note_{transcript_note_key}"
-        if not cache.get(cache_key):
-            transcript_note_added = add_ticket_transcript_note(
-                ticket_id=ticket_id,
-                title=title or reason or conversation_id,
-                transcript=transcript_text,
-                issue_context=issue_context,
-                conversation_id=conversation_id,
-                app_user_id=app_user_id,
-                app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
-            )
-            if transcript_note_added:
-                cache.set(cache_key, True, timeout=604800)
     if routing_updated:
         cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
-    return {
-        "ticket_id": ticket_id,
-        "routing_updated": routing_updated,
-        "transcript_note_added": transcript_note_added
-    }
+    return {"ticket_id": ticket_id, "routing_updated": routing_updated}
 
 def set_ticket_conversation_field(ticket_id: str, conversation_id: str) -> bool:
     """
@@ -1965,6 +1935,7 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
         title = strip_html_tags(str(data.get("title", "Support Request"))).strip() or "Support Request"
         transcript = str(data.get("transcript", "")).strip()
         transcript_entries = normalize_transcript_entries(data.get("transcriptEntries"))
+        seed_transcript = bool(data.get("seedTranscript"))
         if not transcript and transcript_entries:
             transcript = "\n\n".join(
                 f"{entry.get('speaker', 'Bot')}: {entry.get('text', '')}"
@@ -2045,6 +2016,12 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
 
         existing_ticket_id = resolve_ticket_id_for_conversation(source_conversation_id)
         if not existing_ticket_id:
+            if seed_transcript and transcript_entries:
+                sync_transcript_entries_to_sunshine(
+                    source_conversation_id,
+                    app_user_id,
+                    transcript_entries
+                )
             passed = silently_pass_conversation_to_agent(
                 conversation_id=source_conversation_id,
                 app_user_id=app_user_id,
