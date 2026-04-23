@@ -270,7 +270,7 @@ def append_custom_field(custom_fields: List[Dict[str, Any]], field_id: Any, valu
 
 
 RECENT_ESCALATION_QUEUE_KEY = "recent_escalations_queue"
-RECENT_ESCALATION_MATCH_WINDOW_SECONDS = 45
+RECENT_ESCALATION_MATCH_WINDOW_SECONDS = 20
 RECENT_ESCALATION_QUEUE_TTL_SECONDS = 900
 RECENT_ESCALATION_QUEUE_MAX = 100
 ROUTING_CONTEXT_CACHE_PREFIX = "routing_context_"
@@ -2907,6 +2907,17 @@ def handle_notification_webhook(data: Dict[str, Any]) -> JsonResponse:
             # Prefer a direct conversation lookup from the created ticket itself.
             # If this succeeds, it is more reliable than queue heuristics.
             direct_conversation_id = resolve_conversation_id_for_ticket(ticket_id)
+            if not direct_conversation_id:
+                # Zendesk may apply custom fields slightly after ticket.created; retry briefly.
+                for attempt in range(1, 4):
+                    time.sleep(1.0)
+                    direct_conversation_id = resolve_conversation_id_for_ticket(ticket_id)
+                    if direct_conversation_id:
+                        logger.info(
+                            f"ticket.created direct mapping resolved on retry={attempt} "
+                            f"conversation={direct_conversation_id} ticket={ticket_id}"
+                        )
+                        break
             if direct_conversation_id:
                 logger.info(
                     f"ticket.created direct mapping conversation={direct_conversation_id} ticket={ticket_id}"
