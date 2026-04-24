@@ -225,12 +225,41 @@ PAYMENT_MODE_TAGS = {
 }
 
 ISSUE_PATH_PREFIXES = ("App Related Issues", "Ride Related Issues")
+SEEDED_TRANSCRIPT_PREFIX = "\u2063\u2063\u2063\u2063"
 
 def normalize_issue_key(value: Any) -> str:
     text = strip_html_tags(str(value or "")).lower()
     text = text.replace("&", " and ")
     text = re.sub(r'[^a-z0-9]+', ' ', text)
     return re.sub(r'\s+', ' ', text).strip()
+
+def strip_seeded_transcript_prefix(text: Any) -> str:
+    value = str(text or "")
+    if value.startswith(SEEDED_TRANSCRIPT_PREFIX):
+        return value[len(SEEDED_TRANSCRIPT_PREFIX):]
+    return value
+
+def is_seeded_transcript_message(message: Any, text: Optional[str] = None) -> bool:
+    if not isinstance(message, dict):
+        return str(text or "").startswith(SEEDED_TRANSCRIPT_PREFIX)
+
+    metadata_candidates = [message.get("metadata")]
+    content = message.get("content")
+    if isinstance(content, dict):
+        metadata_candidates.append(content.get("metadata"))
+
+    for metadata in metadata_candidates:
+        if isinstance(metadata, dict) and metadata.get("seededTranscript"):
+            return True
+
+    actual_text = str(
+        text
+        if text is not None
+        else message.get("text")
+        or (content.get("text") if isinstance(content, dict) else "")
+        or ""
+    )
+    return actual_text.startswith(SEEDED_TRANSCRIPT_PREFIX)
 
 def extract_conversation_id_from_text(*sources: Any) -> Optional[str]:
     patterns = [
@@ -1017,7 +1046,11 @@ def sync_transcript_entries_to_sunshine(
                 author = {"type": "business", "displayName": "System"}
             else:
                 author = {"type": "business", "displayName": "Yatri Bandhu"}
-            payload = {"author": author, "content": {"type": "text", "text": text}}
+            payload = {
+                "author": author,
+                "content": {"type": "text", "text": f"{SEEDED_TRANSCRIPT_PREFIX}{text}"},
+                "metadata": {"seededTranscript": True}
+            }
             response = requests.post(msg_url, json=payload, auth=auth, timeout=15)
             if response.status_code not in [200, 201]:
                 logger.error(f"Transcript sync failed for {conversation_id}: {response.status_code} - {response.text}")
@@ -2016,31 +2049,12 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
 
         existing_ticket_id = resolve_ticket_id_for_conversation(source_conversation_id)
         if not existing_ticket_id:
-            if seed_transcript:
-                issue_path = ""
-                if isinstance(issue_context, dict):
-                    issue_path = str(issue_context.get("currentPath", "") or "").strip()
-                seed_lines = [
-                    f"Escalation Reason: {title}",
-                    f"[Sunshine Conversation: {source_conversation_id}]",
-                ]
-                if issue_path:
-                    seed_lines.append(f"Issue Path: {issue_path}")
-                if transcript:
-                    seed_lines.extend(["", "Conversation Transcript:", transcript])
-
-                auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
-                msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{source_conversation_id}/messages"
-                seed_payload = {
-                    "author": {"type": "user", "userId": app_user_id},
-                    "content": {"type": "text", "text": "\n".join(seed_lines)}
-                }
-                seed_response = requests.post(msg_url, json=seed_payload, auth=auth, timeout=15)
-                if seed_response.status_code not in [200, 201]:
-                    logger.error(
-                        f"Seed escalation message failed for {source_conversation_id}: "
-                        f"{seed_response.status_code} - {seed_response.text}"
-                    )
+            if seed_transcript and transcript_entries:
+                sync_transcript_entries_to_sunshine(
+                    source_conversation_id,
+                    app_user_id,
+                    transcript_entries
+                )
             passed = silently_pass_conversation_to_agent(
                 conversation_id=source_conversation_id,
                 app_user_id=app_user_id,
@@ -2454,6 +2468,9 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
                 text = content.get("text")
         if not text:
             return
+        if is_seeded_transcript_message(message, text):
+            return
+        text = strip_seeded_transcript_prefix(text)
         
         content = message.get("content", {})
         choices = content.get("choices") or message.get("choices") or []
@@ -3567,6 +3584,9 @@ def parse_conversation_log_event(event: Dict[str, Any]) -> Optional[Dict[str, An
         
         if not text and not media_url and not attachments_array:
             return None
+        if is_seeded_transcript_message(event, text):
+            return None
+        text = strip_seeded_transcript_prefix(text)
         if author_name == "System" and "Connecting to agent" in (text or ""):
             return None
         
@@ -3648,6 +3668,9 @@ def get_sunshine_messages_list(conversation_id: str) -> List[Dict[str, Any]]:
             author_name = author.get("displayName", "")
             content = msg.get("content", {})
             text = msg.get("text") or content.get("text", "")
+            if is_seeded_transcript_message(msg, text):
+                continue
+            text = strip_seeded_transcript_prefix(text)
             
             if text and is_conversation_log_entry(text):
                 continue
@@ -3735,6 +3758,9 @@ def get_sunshine_messages_fallback(conversation_id: str) -> JsonResponse:
             author_name = author.get("displayName", "")
             content = msg.get("content", {})
             text = msg.get("text") or content.get("text", "")
+            if is_seeded_transcript_message(msg, text):
+                continue
+            text = strip_seeded_transcript_prefix(text)
             
             if author_type == "user":
                 message_class = "user"
