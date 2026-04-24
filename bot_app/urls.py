@@ -4,6 +4,7 @@ from . import views
 
 urlpatterns = [
     path('', views.index, name='index'),
+    path('api/chat/runtime-log', views.runtime_log, name='runtime_log'),
     path('hooks/sunshine/message', views.webhook_message, name='sunshine_webhook'),
     path('api/chat/init', views.init_conversation, name='init_conversation'),
     path('api/chat/send', views.send_message_to_sunshine, name='send_message_to_sunshine'),
