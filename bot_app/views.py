@@ -2016,12 +2016,31 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
 
         existing_ticket_id = resolve_ticket_id_for_conversation(source_conversation_id)
         if not existing_ticket_id:
-            if seed_transcript and transcript_entries:
-                sync_transcript_entries_to_sunshine(
-                    source_conversation_id,
-                    app_user_id,
-                    transcript_entries
-                )
+            if seed_transcript:
+                issue_path = ""
+                if isinstance(issue_context, dict):
+                    issue_path = str(issue_context.get("currentPath", "") or "").strip()
+                seed_lines = [
+                    f"Escalation Reason: {title}",
+                    f"[Sunshine Conversation: {source_conversation_id}]",
+                ]
+                if issue_path:
+                    seed_lines.append(f"Issue Path: {issue_path}")
+                if transcript:
+                    seed_lines.extend(["", "Conversation Transcript:", transcript])
+
+                auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
+                msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{source_conversation_id}/messages"
+                seed_payload = {
+                    "author": {"type": "user", "userId": app_user_id},
+                    "content": {"type": "text", "text": "\n".join(seed_lines)}
+                }
+                seed_response = requests.post(msg_url, json=seed_payload, auth=auth, timeout=15)
+                if seed_response.status_code not in [200, 201]:
+                    logger.error(
+                        f"Seed escalation message failed for {source_conversation_id}: "
+                        f"{seed_response.status_code} - {seed_response.text}"
+                    )
             passed = silently_pass_conversation_to_agent(
                 conversation_id=source_conversation_id,
                 app_user_id=app_user_id,
