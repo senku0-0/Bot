@@ -1566,6 +1566,47 @@ def apply_ticket_routing_after_handoff(
         ride_related_subcategory=ride_related_subcategory,
         ride_related_detail=ride_related_detail,
     )
+
+    if not routing_updated:
+        for attempt, delay_seconds in enumerate([1.0, 2.0], start=1):
+            time.sleep(delay_seconds)
+            retry_updated = update_ticket_routing(
+                ticket_id,
+                issue_context=issue_context,
+                conversation_id=conversation_id,
+                app_user_id=app_user_id,
+                reason=reason,
+                title=title,
+                transcript=transcript,
+                app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
+                ride_related_category=ride_related_category,
+                ride_related_subcategory=ride_related_subcategory,
+                ride_related_detail=ride_related_detail,
+            )
+            trace_runtime(
+                "python.apply_ticket_routing_after_handoff.retry",
+                conversation_id=conversation_id,
+                ticket_id=ticket_id,
+                attempt=attempt,
+                delay_seconds=delay_seconds,
+                retry_updated=retry_updated,
+            )
+            if retry_updated:
+                routing_updated = True
+                break
+
+    if not routing_updated:
+        fallback_result = update_ticket_routing_from_conversation_mapping(ticket_id)
+        fallback_updated = fallback_result.get("status") == "ticket_updated"
+        trace_runtime(
+            "python.apply_ticket_routing_after_handoff.fallback_mapping",
+            conversation_id=conversation_id,
+            ticket_id=ticket_id,
+            fallback_result=fallback_result,
+            fallback_updated=fallback_updated,
+        )
+        routing_updated = fallback_updated
+
     if routing_updated:
         cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
     result = {"ticket_id": ticket_id, "routing_updated": routing_updated}
@@ -2363,18 +2404,24 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             ).strip()
         app_user_id = str(data.get("appUserId", "")).strip() or None
         app_related_category = data.get("appRelatedCategory")
+        ride_related_category_input = data.get("rideRelatedCategory")
+        ride_related_subcategory_input = data.get("rideRelatedSubcategory")
+        ride_related_detail_input = data.get("rideRelatedDetail")
         issue_context = build_issue_context(
             issue_context=data.get("issueContext"),
             title=title,
             transcript=transcript,
-            app_related_category=app_related_category
+            app_related_category=app_related_category,
+            ride_related_category=ride_related_category_input,
+            ride_related_subcategory=ride_related_subcategory_input,
+            ride_related_detail=ride_related_detail_input,
         )
         routing_parts = extract_routing_categories_from_context(issue_context)
         issue_context = routing_parts.get("issue_context") or issue_context
         app_related_category = app_related_category or routing_parts.get("app_related_category")
-        ride_related_category = routing_parts.get("ride_related_category")
-        ride_related_subcategory = routing_parts.get("ride_related_subcategory")
-        ride_related_detail = routing_parts.get("ride_related_detail")
+        ride_related_category = routing_parts.get("ride_related_category") or ride_related_category_input
+        ride_related_subcategory = routing_parts.get("ride_related_subcategory") or ride_related_subcategory_input
+        ride_related_detail = routing_parts.get("ride_related_detail") or ride_related_detail_input
 
         main_key = normalize_issue_key((issue_context or {}).get("mainCategory"))
         ride_category_key = normalize_issue_key(

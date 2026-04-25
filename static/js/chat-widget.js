@@ -1316,6 +1316,15 @@ document.addEventListener('DOMContentLoaded', function () {
                     appRelatedCategory: flowState.mainCategory === "App Related Issues"
                         ? (flowState.category || window.lastAppRelatedCategory)
                         : null,
+                    rideRelatedCategory: flowState.mainCategory === "Ride Related Issues"
+                        ? (flowState.category || null)
+                        : null,
+                    rideRelatedSubcategory: flowState.mainCategory === "Ride Related Issues"
+                        ? (flowState.subcategory || null)
+                        : null,
+                    rideRelatedDetail: flowState.mainCategory === "Ride Related Issues"
+                        ? (flowState.detail || null)
+                        : null,
                     issueContext: getIssueContextPayload(),
                     seedTranscript: !hadExistingConversation || isVehicleRelatedIssueFlow
                 };
