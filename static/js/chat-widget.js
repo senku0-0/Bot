@@ -54,6 +54,9 @@ document.addEventListener('DOMContentLoaded', function () {
     let surveyMessageShown = false;
     let lastMessageDate = null;
     let flowState = createEmptyFlowState();
+    let runtimeTranscriptEntries = [];
+    let transcriptEntrySequence = 0;
+    let conversationInitPromise = null;
     let unreadCounts = new Map(); // conversationId -> count
     let totalUnread = 0;
     const TRACE_RUNTIME_ENABLED = true;
@@ -525,6 +528,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
         displayedMessageIds.clear();
         displayedImageFileNames.clear();
+        resetRuntimeTranscript();
         lastMessageDate = null; // Reset daily separator for new conversation
         const convState = localStorage.getItem(`chat_conv_state_${convId}`);
         let restoredAgentName = 'Agent';
@@ -602,10 +606,12 @@ document.addEventListener('DOMContentLoaded', function () {
         closeActiveModals();
         conversationId = null;
         appUserId = null;
+        conversationInitPromise = null;
         issueReportRequestedFlowKeys.clear();
         setForceNewConversation(true);
         displayedMessageIds.clear();
         displayedImageFileNames.clear();
+        resetRuntimeTranscript();
         surveyMessageShown = false; // Reset survey flag
         lastMessageDate = null; // Reset daily separator tracking
         isAgentConnected = false;
@@ -683,6 +689,7 @@ document.addEventListener('DOMContentLoaded', function () {
     function performEscalation(reason, category) {
         removeLoadingIndicator();
         showLoadingIndicator();
+        const isRideRelatedFlow = flowState.mainCategory === "Ride Related Issues";
         
         fetch('/api/chat/escalate', {
             method: 'POST',
@@ -692,6 +699,9 @@ document.addEventListener('DOMContentLoaded', function () {
                 appUserId: appUserId,
                 reason: reason || lastContext,
                 appRelatedCategory: category || window.lastAppRelatedCategory,
+                rideRelatedCategory: isRideRelatedFlow ? (flowState.category || null) : null,
+                rideRelatedSubcategory: isRideRelatedFlow ? (flowState.subcategory || null) : null,
+                rideRelatedDetail: isRideRelatedFlow ? (flowState.detail || null) : null,
                 issueContext: {
                     mainCategory: flowState.mainCategory,
                     category: flowState.category,
@@ -1160,6 +1170,41 @@ document.addEventListener('DOMContentLoaded', function () {
             .trim();
     }
 
+    function resetRuntimeTranscript() {
+        runtimeTranscriptEntries = [];
+        transcriptEntrySequence = 0;
+    }
+
+    function getTranscriptSpeakerFromClassName(className = '') {
+        const classNames = String(className || '').split(/\s+/).filter(Boolean);
+        if (classNames.includes('user-message')) {
+            return 'User';
+        }
+        if (classNames.includes('system-message') || classNames.includes('agent-announcement')) {
+            return 'System';
+        }
+        return 'Bot';
+    }
+
+    function recordTranscriptEntry({ speaker = 'Bot', text = '' } = {}) {
+        const cleanedSpeaker = cleanTranscriptText(speaker) || 'Bot';
+        const cleanedText = cleanTranscriptText(text);
+        if (!cleanedText) {
+            return;
+        }
+
+        const lastEntry = runtimeTranscriptEntries[runtimeTranscriptEntries.length - 1];
+        if (lastEntry && lastEntry.speaker === cleanedSpeaker && lastEntry.text === cleanedText) {
+            return;
+        }
+
+        runtimeTranscriptEntries.push({
+            speaker: cleanedSpeaker,
+            text: cleanedText,
+            seq: ++transcriptEntrySequence
+        });
+    }
+
     function getTranscriptSpeaker(messageElement) {
         if (messageElement.classList.contains('user-message')) {
             return 'User';
@@ -1191,6 +1236,10 @@ document.addEventListener('DOMContentLoaded', function () {
             pushPart(node.textContent);
         });
 
+        messageElement.querySelectorAll('[data-transcript-text]').forEach(node => {
+            pushPart(node.getAttribute('data-transcript-text'));
+        });
+
         const fileNameNode = messageElement.querySelector('.file-name, .filename, .name');
         if (fileNameNode) {
             pushPart(`[Attachment: ${fileNameNode.textContent}]`);
@@ -1211,19 +1260,14 @@ document.addEventListener('DOMContentLoaded', function () {
         return parts.join('\n');
     }
 
-    function getConversationTranscript() {
-        const lines = [];
-        messagesContainer.querySelectorAll('.message').forEach(messageElement => {
-            const text = getTranscriptMessageText(messageElement);
-            if (!text) {
-                return;
-            }
-            lines.push(`${getTranscriptSpeaker(messageElement)}: ${text}`);
-        });
-        return lines.join('\n\n');
-    }
-
     function getConversationTranscriptEntries() {
+        if (runtimeTranscriptEntries.length > 0) {
+            return runtimeTranscriptEntries.map(entry => ({
+                speaker: entry.speaker,
+                text: entry.text
+            }));
+        }
+
         const entries = [];
         messagesContainer.querySelectorAll('.message').forEach(messageElement => {
             const text = getTranscriptMessageText(messageElement);
@@ -1236,6 +1280,12 @@ document.addEventListener('DOMContentLoaded', function () {
             });
         });
         return entries;
+    }
+
+    function getConversationTranscript() {
+        return getConversationTranscriptEntries()
+            .map(entry => `${entry.speaker}: ${entry.text}`)
+            .join('\n\n');
     }
 
     function adoptSilentHandoffConversation(newConversationId, newAppUserId, title = null) {
@@ -1280,11 +1330,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function createConversationTicketSilently({ title = null } = {}) {
         const ticketTitle = title || getCurrentFlowPath() || lastContext || 'Support Request';
-        const hadExistingConversation = Boolean(conversationId);
         traceRuntime('js.createConversationTicketSilently.start', {
             title,
             ticketTitle,
-            hadExistingConversation,
             state: getTraceStateSnapshot()
         });
 
@@ -1304,9 +1352,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
                 const transcript = getConversationTranscript();
                 const transcriptEntries = getConversationTranscriptEntries();
-                const isVehicleRelatedIssueFlow =
-                    flowState.mainCategory === "Ride Related Issues" &&
-                    String(flowState.category || '').trim().toLowerCase().startsWith('vehicle related');
                 const payload = {
                     conversationId: activeConversationId,
                     appUserId: activeAppUserId,
@@ -1326,13 +1371,14 @@ document.addEventListener('DOMContentLoaded', function () {
                         ? (flowState.detail || null)
                         : null,
                     issueContext: getIssueContextPayload(),
-                    seedTranscript: !hadExistingConversation || isVehicleRelatedIssueFlow
+                    // Always seed the visible transcript for auto-created issue tickets
+                    // so Zendesk shows separate message boxes instead of a single blob.
+                    seedTranscript: true
                 };
                 traceRuntime('js.createConversationTicketSilently.payload', {
                     payload,
                     transcript,
                     transcriptEntries,
-                    isVehicleRelatedIssueFlow,
                     state: getTraceStateSnapshot()
                 });
 
@@ -1442,34 +1488,43 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function ensureConversationInitialized({ forceNew = false, title = 'Support Request' } = {}) {
+        const effectiveForceNew = forceNew || shouldForceNewConversation;
         traceRuntime('js.ensureConversationInitialized.start', {
             forceNew,
+            effectiveForceNew,
             title,
             state: getTraceStateSnapshot()
         });
-        return new Promise((resolve, reject) => {
-            const effectiveForceNew = forceNew || shouldForceNewConversation;
+        if (conversationInitPromise) {
+            traceRuntime('js.ensureConversationInitialized.reuseInFlight', {
+                effectiveForceNew,
+                title,
+                conversationId,
+                appUserId
+            });
+            return conversationInitPromise;
+        }
 
-            if (!effectiveForceNew && conversationId) {
-                if (!appUserId) {
-                    const storedAppUserId = localStorage.getItem(`chat_appUserId_${conversationId}`)
-                        || localStorage.getItem('chat_user_id');
-                    if (storedAppUserId) {
-                        appUserId = storedAppUserId;
-                    }
-                }
-                if (appUserId) {
-                    traceRuntime('js.ensureConversationInitialized.reuseExisting', {
-                        effectiveForceNew,
-                        conversationId,
-                        appUserId,
-                        title
-                    });
-                    resolve({ appUserId, conversationId });
-                    return;
+        if (!effectiveForceNew && conversationId) {
+            if (!appUserId) {
+                const storedAppUserId = localStorage.getItem(`chat_appUserId_${conversationId}`)
+                    || localStorage.getItem('chat_user_id');
+                if (storedAppUserId) {
+                    appUserId = storedAppUserId;
                 }
             }
+            if (appUserId) {
+                traceRuntime('js.ensureConversationInitialized.reuseExisting', {
+                    effectiveForceNew,
+                    conversationId,
+                    appUserId,
+                    title
+                });
+                return Promise.resolve({ appUserId, conversationId });
+            }
+        }
 
+        conversationInitPromise = new Promise((resolve, reject) => {
             const storedUserId = localStorage.getItem('chat_user_id');
             const payload = {
                 userId: storedUserId || null,
@@ -1527,7 +1582,10 @@ document.addEventListener('DOMContentLoaded', function () {
                     });
                     reject(error);
                 });
+        }).finally(() => {
+            conversationInitPromise = null;
         });
+        return conversationInitPromise;
     }
 
     function connectToAgentDirect({ optionLabel = null, forceNewConversation = false } = {}) {
@@ -2232,7 +2290,11 @@ document.addEventListener('DOMContentLoaded', function () {
             "AC not turned on / AC stopped working midway",
             "Vehicle was different"
         ];
-        appendOptions(options, handleVehicleRelatedOptionClick);
+        appendOptions(options, handleVehicleRelatedOptionClick, {
+            wrapInBubble: true,
+            recordTranscript: true,
+            transcriptText: options.join('\n')
+        });
     }
 
     function handleVehicleRelatedOptionClick(option) {
@@ -2330,6 +2392,10 @@ document.addEventListener('DOMContentLoaded', function () {
                 );
                 showCsatBubble();
             }, 500);
+        }, {
+            wrapInBubble: true,
+            recordTranscript: true,
+            transcriptText: options.join('\n')
         });
     }
 
@@ -2345,7 +2411,11 @@ document.addEventListener('DOMContentLoaded', function () {
             "Rash Driving",
             "Vehicle Broke down"
         ];
-        appendOptions(options, handleSafetyRelatedOptionClick);
+        appendOptions(options, handleSafetyRelatedOptionClick, {
+            wrapInBubble: true,
+            recordTranscript: true,
+            transcriptText: options.join('\n')
+        });
     }
 
     function handleSafetyRelatedOptionClick(option) {
@@ -3049,6 +3119,10 @@ document.addEventListener('DOMContentLoaded', function () {
         d.appendChild(contentDiv);
         
         messagesContainer.appendChild(d);
+        recordTranscriptEntry({
+            speaker: getTranscriptSpeakerFromClassName(c),
+            text: t
+        });
         ensureScrollToBottom();
     };
 
@@ -3094,6 +3168,10 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         messagesContainer.appendChild(messageDiv);
+        recordTranscriptEntry({
+            speaker: getTranscriptSpeakerFromClassName(className),
+            text: caption ? `[Image attachment]\n${caption}` : '[Image attachment]'
+        });
         ensureScrollToBottom();
     }
 
@@ -3156,6 +3234,10 @@ document.addEventListener('DOMContentLoaded', function () {
         bubble.appendChild(fileContainer);
 
         messagesContainer.appendChild(bubble);
+        recordTranscriptEntry({
+            speaker: getTranscriptSpeakerFromClassName(className),
+            text: caption ? `[Attachment: ${fileName}]\n${caption}` : `[Attachment: ${fileName}]`
+        });
         ensureScrollToBottom();
     }
 
@@ -3170,6 +3252,25 @@ document.addEventListener('DOMContentLoaded', function () {
         if (config.layout === 'row') {
             optionsDiv.classList.add('options-row');
         }
+        const transcriptText = cleanTranscriptText(config.transcriptText || options.join('\n'));
+        if (transcriptText) {
+            optionsDiv.dataset.transcriptText = transcriptText;
+        }
+        const wrapperDiv = config.wrapInBubble
+            ? (() => {
+                const bubble = document.createElement('div');
+                bubble.classList.add('message', 'bot-message', 'interactive-options-message');
+                bubble.appendChild(optionsDiv);
+                return bubble;
+            })()
+            : null;
+
+        if (config.recordTranscript !== false && transcriptText) {
+            recordTranscriptEntry({
+                speaker: config.transcriptSpeaker || 'Bot',
+                text: transcriptText
+            });
+        }
 
         options.forEach(option => {
             const btn = document.createElement('button');
@@ -3182,20 +3283,43 @@ document.addEventListener('DOMContentLoaded', function () {
                     config,
                     state: getTraceStateSnapshot()
                 });
-                optionsDiv.remove();
+                if (wrapperDiv) {
+                    wrapperDiv.remove();
+                } else {
+                    optionsDiv.remove();
+                }
                 callback(option);
             });
             optionsDiv.appendChild(btn);
         });
 
-        messagesContainer.appendChild(optionsDiv);
+        messagesContainer.appendChild(wrapperDiv || optionsDiv);
         setTimeout(() => scrollToBottom(), 50);
-        return optionsDiv;
+        return wrapperDiv || optionsDiv;
     }
 
     function appendMultiSelectOptions(options, onSubmit, config = {}) {
         const multiSelectDiv = document.createElement('div');
         multiSelectDiv.classList.add('multi-select-container');
+        const transcriptText = cleanTranscriptText(config.transcriptText || options.join('\n'));
+        if (transcriptText) {
+            multiSelectDiv.dataset.transcriptText = transcriptText;
+        }
+        const wrapperDiv = config.wrapInBubble
+            ? (() => {
+                const bubble = document.createElement('div');
+                bubble.classList.add('message', 'bot-message', 'interactive-multi-select-message');
+                bubble.appendChild(multiSelectDiv);
+                return bubble;
+            })()
+            : null;
+
+        if (config.recordTranscript !== false && transcriptText) {
+            recordTranscriptEntry({
+                speaker: config.transcriptSpeaker || 'Bot',
+                text: transcriptText
+            });
+        }
 
         const optionsList = document.createElement('div');
         optionsList.classList.add('multi-select-list');
@@ -3237,15 +3361,19 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             }
 
-            multiSelectDiv.remove();
+            if (wrapperDiv) {
+                wrapperDiv.remove();
+            } else {
+                multiSelectDiv.remove();
+            }
             onSubmit(selections);
         });
 
         multiSelectDiv.appendChild(optionsList);
         multiSelectDiv.appendChild(submitBtn);
-        messagesContainer.appendChild(multiSelectDiv);
+        messagesContainer.appendChild(wrapperDiv || multiSelectDiv);
         setTimeout(() => scrollToBottom(), 50);
-        return multiSelectDiv;
+        return wrapperDiv || multiSelectDiv;
     }
 
     function appendChoicesMessage(choices, className, msg) {

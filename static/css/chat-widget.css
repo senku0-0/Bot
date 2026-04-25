@@ -341,6 +341,20 @@
     text-align: center;
 }
 
+.interactive-options-message,
+.interactive-multi-select-message {
+    padding: 12px;
+}
+
+.interactive-options-message .options-container,
+.interactive-multi-select-message .multi-select-container {
+    width: 100%;
+    margin-top: 0;
+    align-self: stretch;
+    opacity: 1;
+    animation: none;
+}
+
 .multi-select-container {
     display: flex;
     flex-direction: column;
@@ -354,6 +368,12 @@
     opacity: 0;
     animation: messageSlide 0.3s ease-out forwards;
     animation-delay: 0.1s;
+}
+
+.interactive-multi-select-message .multi-select-container {
+    padding: 0;
+    background: transparent;
+    box-shadow: none;
 }
 
 .multi-select-list {
