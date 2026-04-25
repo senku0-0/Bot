@@ -229,10 +229,10 @@ VEHICLE_ISSUE_TYPE_TAGS = {
     "unhygienic vehicle": "unclean/unhygienic_vehicle",
     "vehicle unsafe": "vehicle_unsafe",
     "unsafe vehicle": "vehicle_unsafe",
-    "ac not turned on ac stopped working midway": "ac_not_turned_on_/_ac_stopped_working",
-    "ac not turned on ac stopped working": "ac_not_turned_on_/_ac_stopped_working",
-    "ac not working": "ac_not_turned_on_/_ac_stopped_working",
-    "ac issue": "ac_not_turned_on_/_ac_stopped_working",
+    "ac not turned on ac stopped working midway": "ac_not_turned_on_/_ac_stopped_working_midway",
+    "ac not turned on ac stopped working": "ac_not_turned_on_/_ac_stopped_working_midway",
+    "ac not working": "ac_not_turned_on_/_ac_stopped_working_midway",
+    "ac issue": "ac_not_turned_on_/_ac_stopped_working_midway",
     "vehicle was different": "vehicle_was_different",
     "different vehicle": "vehicle_was_different",
 }
@@ -587,6 +587,27 @@ def resolve_dropdown_value(
         "sexual_harassment": ["sexual_harresment"],
         "phyiscal_fights": ["physical_fights"],
         "physical_fights": ["phyiscal_fights"],
+        # Vehicle AC issue values differ between Zendesk instances.
+        "ac_not_turned_on_/_ac_stopped_working": [
+            "ac_not_turned_on_/_ac_stopped_working_midway",
+            "ac_not_turned_on_ac_stopped_working_midway",
+            "ac_not_turned_on_ac_stopped_working",
+        ],
+        "ac_not_turned_on_/_ac_stopped_working_midway": [
+            "ac_not_turned_on_/_ac_stopped_working",
+            "ac_not_turned_on_ac_stopped_working_midway",
+            "ac_not_turned_on_ac_stopped_working",
+        ],
+        "ac_not_turned_on_ac_stopped_working_midway": [
+            "ac_not_turned_on_/_ac_stopped_working_midway",
+            "ac_not_turned_on_/_ac_stopped_working",
+            "ac_not_turned_on_ac_stopped_working",
+        ],
+        "ac_not_turned_on_ac_stopped_working": [
+            "ac_not_turned_on_/_ac_stopped_working",
+            "ac_not_turned_on_/_ac_stopped_working_midway",
+            "ac_not_turned_on_ac_stopped_working_midway",
+        ],
     }
     for candidate in alias_fallbacks.get(current_value, []):
         if candidate in option_values:
