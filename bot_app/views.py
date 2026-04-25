@@ -1990,6 +1990,17 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
         ride_related_subcategory = routing_parts.get("ride_related_subcategory")
         ride_related_detail = routing_parts.get("ride_related_detail")
 
+        main_key = normalize_issue_key((issue_context or {}).get("mainCategory"))
+        ride_category_key = normalize_issue_key(ride_related_category or (issue_context or {}).get("category"))
+        is_vehicle_related_flow = (
+            main_key.startswith("ride related")
+            and (
+                ride_category_key in ("vehicle related issue", "vehicle related")
+                or ride_category_key.startswith("vehicle related")
+            )
+        )
+        should_seed_transcript = seed_transcript or is_vehicle_related_flow
+
         if not source_conversation_id:
             return JsonResponse({"error": "Missing conversationId"}, status=400)
         if not app_user_id:
@@ -2049,7 +2060,7 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
 
         existing_ticket_id = resolve_ticket_id_for_conversation(source_conversation_id)
         if not existing_ticket_id:
-            if seed_transcript and transcript_entries:
+            if should_seed_transcript and transcript_entries:
                 sync_transcript_entries_to_sunshine(
                     source_conversation_id,
                     app_user_id,
