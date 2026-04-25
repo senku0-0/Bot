@@ -2375,6 +2375,19 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
         ride_related_category = routing_parts.get("ride_related_category")
         ride_related_subcategory = routing_parts.get("ride_related_subcategory")
         ride_related_detail = routing_parts.get("ride_related_detail")
+
+        main_key = normalize_issue_key((issue_context or {}).get("mainCategory"))
+        ride_category_key = normalize_issue_key(
+            ride_related_category or (issue_context or {}).get("category")
+        )
+        is_vehicle_related_flow = (
+            main_key.startswith("ride related")
+            and (
+                ride_category_key in ("vehicle related issue", "vehicle related")
+                or ride_category_key.startswith("vehicle related")
+            )
+        )
+        should_seed_transcript = seed_transcript or is_vehicle_related_flow
         trace_runtime(
             "python.create_conversation_ticket.routing",
             source_conversation_id=source_conversation_id,
@@ -2382,6 +2395,8 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             transcript=transcript,
             transcript_entries=transcript_entries,
             seed_transcript=seed_transcript,
+            should_seed_transcript=should_seed_transcript,
+            is_vehicle_related_flow=is_vehicle_related_flow,
             issue_context=issue_context,
             app_related_category=app_related_category,
             ride_related_category=ride_related_category,
@@ -2393,6 +2408,46 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             return JsonResponse({"error": "Missing conversationId"}, status=400)
         if not app_user_id:
             return JsonResponse({"error": "Missing appUserId"}, status=400)
+
+        def seed_transcript_entries_if_needed() -> bool:
+            if not should_seed_transcript or not transcript_entries:
+                trace_runtime(
+                    "python.create_conversation_ticket.seed.skip",
+                    source_conversation_id=source_conversation_id,
+                    should_seed_transcript=should_seed_transcript,
+                    transcript_entry_count=len(transcript_entries or []),
+                )
+                return True
+
+            seeded_key = f"seeded_transcript_done_{source_conversation_id}"
+            if cache.get(seeded_key):
+                trace_runtime(
+                    "python.create_conversation_ticket.seed.already_done",
+                    source_conversation_id=source_conversation_id,
+                    transcript_entry_count=len(transcript_entries or []),
+                )
+                return True
+
+            synced = sync_transcript_entries_to_sunshine(
+                source_conversation_id,
+                app_user_id,
+                transcript_entries,
+            )
+            if synced:
+                cache.set(seeded_key, True, timeout=604800)
+                trace_runtime(
+                    "python.create_conversation_ticket.seed.success",
+                    source_conversation_id=source_conversation_id,
+                    transcript_entry_count=len(transcript_entries or []),
+                )
+                return True
+
+            trace_runtime(
+                "python.create_conversation_ticket.seed.failed",
+                source_conversation_id=source_conversation_id,
+                transcript_entry_count=len(transcript_entries or []),
+            )
+            return False
 
         pending_data = {
             "conversation_id": source_conversation_id,
@@ -2422,6 +2477,13 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             "issue_context": issue_context,
             "timestamp": time.time(),
         })
+
+        transcript_seeded = seed_transcript_entries_if_needed()
+        if not transcript_seeded:
+            logger.warning(
+                f"create_conversation_ticket: transcript seeding failed for conversation {source_conversation_id}; "
+                "continuing with handoff/routing"
+            )
 
         existing_handoff_conversation_id = cache.get(f'csat_handoff_{source_conversation_id}')
         if existing_handoff_conversation_id:
@@ -2459,14 +2521,9 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
                 "python.create_conversation_ticket.no_existing_ticket",
                 source_conversation_id=source_conversation_id,
                 seed_transcript=seed_transcript,
+                should_seed_transcript=should_seed_transcript,
                 transcript_entries=transcript_entries,
             )
-            if seed_transcript and transcript_entries:
-                sync_transcript_entries_to_sunshine(
-                    source_conversation_id,
-                    app_user_id,
-                    transcript_entries
-                )
             passed = silently_pass_conversation_to_agent(
                 conversation_id=source_conversation_id,
                 app_user_id=app_user_id,

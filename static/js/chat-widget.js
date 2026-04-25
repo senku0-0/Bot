@@ -1281,10 +1281,13 @@ document.addEventListener('DOMContentLoaded', function () {
     function createConversationTicketSilently({ title = null } = {}) {
         const ticketTitle = title || getCurrentFlowPath() || lastContext || 'Support Request';
         const hadExistingConversation = Boolean(conversationId);
+        const isVehicleRelatedFlow = String(flowState.mainCategory || '').trim().toLowerCase() === 'ride related issues'
+            && String(flowState.category || '').trim().toLowerCase().startsWith('vehicle related');
         traceRuntime('js.createConversationTicketSilently.start', {
             title,
             ticketTitle,
             hadExistingConversation,
+            isVehicleRelatedFlow,
             state: getTraceStateSnapshot()
         });
 
@@ -1314,7 +1317,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         ? (flowState.category || window.lastAppRelatedCategory)
                         : null,
                     issueContext: getIssueContextPayload(),
-                    seedTranscript: !hadExistingConversation
+                    seedTranscript: !hadExistingConversation || isVehicleRelatedFlow
                 };
                 traceRuntime('js.createConversationTicketSilently.payload', {
                     payload,
