@@ -19,6 +19,49 @@ logger.addHandler(handler)
 
 load_dotenv()
 
+TRACE_RUNTIME_ENABLED = str(os.getenv("BOT_RUNTIME_TRACE", "1")).strip().lower() not in ("0", "false", "no", "off")
+TRACE_RUNTIME_PREFIX = "[BOT_RUNTIME_TRACE]"
+
+def trace_sanitize(value: Any, depth: int = 0, max_depth: int = 6) -> Any:
+    if depth >= max_depth:
+        return f"<max_depth:{type(value).__name__}>"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= 2000 else f"{value[:2000]}...(truncated {len(value) - 2000} chars)"
+    if isinstance(value, dict):
+        items = list(value.items())
+        sanitized = {str(k): trace_sanitize(v, depth + 1, max_depth) for k, v in items[:100]}
+        if len(items) > 100:
+            sanitized["__truncated_items__"] = len(items) - 100
+        return sanitized
+    if isinstance(value, (list, tuple, set)):
+        seq = list(value)
+        sanitized = [trace_sanitize(item, depth + 1, max_depth) for item in seq[:100]]
+        if len(seq) > 100:
+            sanitized.append(f"... truncated {len(seq) - 100} items")
+        return sanitized
+    if hasattr(value, "name") and hasattr(value, "size"):
+        return {
+            "name": getattr(value, "name", None),
+            "size": getattr(value, "size", None),
+            "content_type": getattr(value, "content_type", None),
+        }
+    return str(value)
+
+def trace_runtime(event: str, **details: Any) -> None:
+    if not TRACE_RUNTIME_ENABLED:
+        return
+    try:
+        payload = {
+            "event": event,
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "details": trace_sanitize(details),
+        }
+        logger.info(f"{TRACE_RUNTIME_PREFIX} {json.dumps(payload, ensure_ascii=False, sort_keys=True)}")
+    except Exception as e:
+        logger.error(f"{TRACE_RUNTIME_PREFIX} logging_failed event={event} error={e}")
+
 def get_env_any(*names: str, default: Optional[str] = None) -> Optional[str]:
     """
     Return the first non-empty environment value from a list of possible keys.
@@ -226,6 +269,52 @@ PAYMENT_MODE_TAGS = {
 
 ISSUE_PATH_PREFIXES = ("App Related Issues", "Ride Related Issues")
 SEEDED_TRANSCRIPT_PREFIX = "\u2063\u2063\u2063\u2063"
+
+trace_runtime(
+    "python.startup.configuration",
+    sunshine={
+        "app_id": SUNSHINE_APP_ID,
+        "api_base_url": SUNSHINE_API_BASE_URL,
+        "api_key_id_present": bool(SUNSHINE_API_KEY_ID),
+        "api_key_secret_present": bool(SUNSHINE_API_KEY_SECRET),
+    },
+    zendesk={
+        "subdomain": ZENDESK_SUBDOMAIN,
+        "email": ZENDESK_EMAIL,
+        "api_token_present": bool(ZENDESK_API_TOKEN),
+        "conversation_field_id": ZENDESK_CHAT_CONVERSATION_FIELD_ID,
+    },
+    field_ids={
+        "app_related_sub_category": APP_RELATED_SUB_CATEGORY,
+        "name": NAME_FIELD_ID,
+        "email": EMAIL_ID_FIELD_ID,
+        "fare_and_payment_subcategory": FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID,
+        "ride_id": RIDE_ID_FIELD_ID,
+        "driver_name": DRIVER_NAME_FIELD_ID,
+        "payment_mode": PAYMENT_MODE_FIELD_ID,
+        "contact": CONTACT_FIELD_ID,
+        "vehicle_number": VEHICLE_NUMBER_FIELD_ID,
+        "vehicle_issue_type": VEHICLE_ISSUE_TYPE_FIELD_ID,
+        "escalation_to_safety_team": ESCALATION_TO_SAFETY_TEAM_FIELD_ID,
+        "safety_issue_type": SAFETY_ISSUE_TYPE_FIELD_ID,
+    },
+    form_ids={
+        "fare_and_payment": FARE_AND_PAYMENT_FORM_ID,
+        "find_a_lost_item": FIMD_A_LOST_ITEM_FORM_ID,
+        "app_related_issue": APP_RELATED_ISSUE_FORM_ID,
+        "vehicle_issue": VEHUICLE_AC_ISSUE_FORM_ID,
+        "safety_issue": SAFETY_ISSUE_FORM_ID,
+    },
+    tag_maps={
+        "app_related": APP_RELATED_CATEGORY_TAGS,
+        "fare_and_payment": FARE_AND_PAYMENT_SUBCATEGORY_TAGS,
+        "vehicle_issue_type": VEHICLE_ISSUE_TYPE_TAGS,
+        "safety_issue_type": SAFETY_ISSUE_TYPE_TAGS,
+        "payment_mode": PAYMENT_MODE_TAGS,
+    },
+    issue_path_prefixes=ISSUE_PATH_PREFIXES,
+    seeded_transcript_prefix=SEEDED_TRANSCRIPT_PREFIX,
+)
 
 def normalize_issue_key(value: Any) -> str:
     text = strip_html_tags(str(value or "")).lower()
@@ -578,6 +667,17 @@ def build_issue_context(
     ride_related_subcategory: Optional[str] = None,
     ride_related_detail: Optional[str] = None
 ) -> Dict[str, Any]:
+    trace_runtime(
+        "python.build_issue_context.start",
+        issue_context=issue_context,
+        reason=reason,
+        title=title,
+        transcript=transcript,
+        app_related_category=app_related_category,
+        ride_related_category=ride_related_category,
+        ride_related_subcategory=ride_related_subcategory,
+        ride_related_detail=ride_related_detail,
+    )
     context = dict(issue_context) if isinstance(issue_context, dict) else {}
     current_path = first_non_empty(context.get("currentPath"), extract_issue_path_from_text(reason, title, transcript))
     if current_path:
@@ -601,6 +701,7 @@ def build_issue_context(
             context["subcategory"] = ride_related_subcategory
         if ride_related_detail and not context.get("detail"):
             context["detail"] = ride_related_detail
+    trace_runtime("python.build_issue_context.result", context=context)
     return context
 
 
@@ -620,13 +721,15 @@ def extract_routing_categories_from_context(context: Optional[Dict[str, Any]]) -
         ride_related_subcategory = resolved_context.get("subcategory")
         ride_related_detail = resolved_context.get("detail")
 
-    return {
+    result = {
         "issue_context": resolved_context,
         "app_related_category": app_related_category,
         "ride_related_category": ride_related_category,
         "ride_related_subcategory": ride_related_subcategory,
         "ride_related_detail": ride_related_detail,
     }
+    trace_runtime("python.extract_routing_categories_from_context.result", input_context=context, result=result)
+    return result
 
 def build_ticket_routing_payload(
     conversation_id: Optional[str] = None,
@@ -640,6 +743,19 @@ def build_ticket_routing_payload(
     ride_related_subcategory: Optional[str] = None,
     ride_related_detail: Optional[str] = None,
 ) -> Dict[str, Any]:
+    trace_runtime(
+        "python.build_ticket_routing_payload.start",
+        conversation_id=conversation_id,
+        app_user_id=app_user_id,
+        issue_context=issue_context,
+        reason=reason,
+        title=title,
+        transcript=transcript,
+        app_related_sub_category=app_related_sub_category,
+        ride_related_category=ride_related_category,
+        ride_related_subcategory=ride_related_subcategory,
+        ride_related_detail=ride_related_detail,
+    )
     context = build_issue_context(
         issue_context=issue_context,
         reason=reason,
@@ -687,6 +803,14 @@ def build_ticket_routing_payload(
         if form_id:
             ticket_payload["ticket_form_id"] = form_id
         tag_value = str(app_related_sub_category) if app_related_sub_category else APP_RELATED_CATEGORY_TAGS.get(category_key)
+        trace_runtime(
+            "python.build_ticket_routing_payload.branch",
+            branch="app_related",
+            form_id=form_id,
+            category_key=category_key,
+            tag_value=tag_value,
+            context=context,
+        )
         logger.info(
             f"[ROUTING] App branch: form_id={form_id} "
             f"APP_RELATED_SUB_CATEGORY field={APP_RELATED_SUB_CATEGORY} "
@@ -702,6 +826,19 @@ def build_ticket_routing_payload(
             fare_tag = FARE_AND_PAYMENT_SUBCATEGORY_TAGS.get(subcategory_key)
             fare_field_id = safe_int(FARE_AND_PAYMENT_SUBCATEGORY_FIELD_ID)
             payment_tag = PAYMENT_MODE_TAGS.get(detail_key)
+            trace_runtime(
+                "python.build_ticket_routing_payload.branch",
+                branch="fare_and_payment",
+                form_id=form_id,
+                fare_field_id=fare_field_id,
+                payment_field_id=safe_int(PAYMENT_MODE_FIELD_ID),
+                category_key=category_key,
+                subcategory_key=subcategory_key,
+                detail_key=detail_key,
+                fare_tag=fare_tag,
+                payment_tag=payment_tag,
+                context=context,
+            )
             logger.info(
                 f"[ROUTING] Fare+Payment branch: "
                 f"ticket_form_id={form_id} (env={FARE_AND_PAYMENT_FORM_ID}) | "
@@ -734,6 +871,15 @@ def build_ticket_routing_payload(
                 context.get("vehicleNumber"),
                 extract_named_value([r'vehicle\s*(?:number|no)\s*[:#-]\s*([A-Za-z0-9 -]+)'], title, reason, transcript)
             )
+            trace_runtime(
+                "python.build_ticket_routing_payload.branch",
+                branch="find_a_lost_item",
+                form_id=form_id,
+                ride_id=ride_id_val,
+                driver_name=driver_name_val,
+                vehicle_number=vehicle_number_val,
+                context=context,
+            )
             logger.info(
                 f"[ROUTING] Lost Item branch: "
                 f"ticket_form_id={form_id} (env={FIMD_A_LOST_ITEM_FORM_ID}) | "
@@ -750,6 +896,14 @@ def build_ticket_routing_payload(
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
             vehicle_tag = VEHICLE_ISSUE_TYPE_TAGS.get(subcategory_key)
+            trace_runtime(
+                "python.build_ticket_routing_payload.branch",
+                branch="vehicle_related",
+                form_id=form_id,
+                subcategory_key=subcategory_key,
+                vehicle_tag=vehicle_tag,
+                context=context,
+            )
             logger.info(
                 f"[ROUTING] Vehicle branch: "
                 f"ticket_form_id={form_id} (env={VEHUICLE_AC_ISSUE_FORM_ID}) | "
@@ -764,6 +918,14 @@ def build_ticket_routing_payload(
             if form_id:
                 ticket_payload["ticket_form_id"] = form_id
             safety_tag = SAFETY_ISSUE_TYPE_TAGS.get(subcategory_key)
+            trace_runtime(
+                "python.build_ticket_routing_payload.branch",
+                branch="safety_related",
+                form_id=form_id,
+                subcategory_key=subcategory_key,
+                safety_tag=safety_tag,
+                context=context,
+            )
             logger.info(
                 f"[ROUTING] Safety branch: "
                 f"ticket_form_id={form_id} (env={SAFETY_ISSUE_FORM_ID}) | "
@@ -776,6 +938,13 @@ def build_ticket_routing_payload(
             append_custom_field(custom_fields, SAFETY_ISSUE_TYPE_FIELD_ID, safety_tag)
 
         else:
+            trace_runtime(
+                "python.build_ticket_routing_payload.branch",
+                branch="ride_unmatched",
+                main_key=main_key,
+                category_key=category_key,
+                context=context,
+            )
             logger.warning(
                 f"[ROUTING] Ride branch: unmatched category_key='{category_key}' "
                 f"(main_key='{main_key}') – no form or fields applied"
@@ -783,6 +952,12 @@ def build_ticket_routing_payload(
 
     if custom_fields:
         ticket_payload["custom_fields"] = custom_fields
+    trace_runtime(
+        "python.build_ticket_routing_payload.result",
+        context=context,
+        custom_fields=custom_fields,
+        ticket_payload=ticket_payload,
+    )
     return ticket_payload
 
 def update_ticket_routing(
@@ -1030,15 +1205,29 @@ def sync_transcript_entries_to_sunshine(
     app_user_id: str,
     transcript_entries: List[Dict[str, str]]
 ) -> bool:
+    trace_runtime(
+        "python.sync_transcript_entries_to_sunshine.start",
+        conversation_id=conversation_id,
+        app_user_id=app_user_id,
+        transcript_entries=transcript_entries,
+        transcript_entry_count=len(transcript_entries or []),
+    )
     if not transcript_entries:
+        trace_runtime("python.sync_transcript_entries_to_sunshine.no_entries", conversation_id=conversation_id)
         return True
     try:
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
         msg_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
-        for entry in transcript_entries:
+        for index, entry in enumerate(transcript_entries):
             speaker = normalize_issue_key(entry.get("speaker"))
             text = entry.get("text", "")
             if not text:
+                trace_runtime(
+                    "python.sync_transcript_entries_to_sunshine.skip_empty",
+                    conversation_id=conversation_id,
+                    index=index,
+                    entry=entry,
+                )
                 continue
             if speaker == "user":
                 author = {"type": "user", "userId": app_user_id}
@@ -1051,12 +1240,30 @@ def sync_transcript_entries_to_sunshine(
                 "content": {"type": "text", "text": f"{SEEDED_TRANSCRIPT_PREFIX}{text}"},
                 "metadata": {"seededTranscript": True}
             }
+            trace_runtime(
+                "python.sync_transcript_entries_to_sunshine.entry",
+                conversation_id=conversation_id,
+                index=index,
+                speaker=speaker,
+                author=author,
+                text=text,
+                payload=payload,
+            )
             response = requests.post(msg_url, json=payload, auth=auth, timeout=15)
             if response.status_code not in [200, 201]:
+                trace_runtime(
+                    "python.sync_transcript_entries_to_sunshine.failure",
+                    conversation_id=conversation_id,
+                    index=index,
+                    status_code=response.status_code,
+                    response_text=response.text,
+                )
                 logger.error(f"Transcript sync failed for {conversation_id}: {response.status_code} - {response.text}")
                 return False
+        trace_runtime("python.sync_transcript_entries_to_sunshine.success", conversation_id=conversation_id)
         return True
     except Exception as e:
+        trace_runtime("python.sync_transcript_entries_to_sunshine.exception", conversation_id=conversation_id, error=str(e))
         logger.error(f"Transcript sync error: {e}")
         return False
 
@@ -1093,6 +1300,14 @@ def silently_pass_conversation_to_agent(
     app_related_category: Optional[str],
 ) -> bool:
     try:
+        trace_runtime(
+            "python.silently_pass_conversation_to_agent.start",
+            conversation_id=conversation_id,
+            app_user_id=app_user_id,
+            reason=reason,
+            issue_context=issue_context,
+            app_related_category=app_related_category,
+        )
         context = build_issue_context(
             issue_context=issue_context,
             reason=reason,
@@ -1147,16 +1362,33 @@ def silently_pass_conversation_to_agent(
             reason=reason,
             app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
         )
+        trace_runtime(
+            "python.silently_pass_conversation_to_agent.pre_pass_control",
+            conversation_id=conversation_id,
+            context=context,
+            pending_data=pending_data,
+            metadata=metadata,
+        )
 
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
         pass_control_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/passControl"
         pass_control_payload = {"switchboardIntegration": "next", "metadata": metadata}
         response = requests.post(pass_control_url, json=pass_control_payload, auth=auth, timeout=15)
+        trace_runtime(
+            "python.silently_pass_conversation_to_agent.pass_control_response",
+            conversation_id=conversation_id,
+            pass_control_url=pass_control_url,
+            pass_control_payload=pass_control_payload,
+            status_code=response.status_code,
+            response_text=response.text,
+        )
         if response.status_code != 200:
             logger.error(f"Silent passControl failed: {response.status_code} - {response.text}")
             return False
+        trace_runtime("python.silently_pass_conversation_to_agent.success", conversation_id=conversation_id)
         return True
     except Exception as e:
+        trace_runtime("python.silently_pass_conversation_to_agent.exception", conversation_id=conversation_id, error=str(e))
         logger.error(f"Silent passControl error: {e}")
         return False
 
@@ -1177,8 +1409,19 @@ def resolve_ticket_id_for_conversation(
       3. Full-text fallback search   (type:ticket "<conv_id>")
     """
     try:
+        trace_runtime(
+            "python.resolve_ticket_id_for_conversation.start",
+            conversation_id=conversation_id,
+            timeout_seconds=timeout_seconds,
+            poll_interval=poll_interval,
+        )
         cached_ticket_id = cache.get(f'conversation_{conversation_id}')
         if cached_ticket_id:
+            trace_runtime(
+                "python.resolve_ticket_id_for_conversation.cache_hit",
+                conversation_id=conversation_id,
+                ticket_id=cached_ticket_id,
+            )
             logger.info(
                 f"resolve_ticket: cache hit conversation={conversation_id} ticket={cached_ticket_id}"
             )
@@ -1212,6 +1455,13 @@ def resolve_ticket_id_for_conversation(
                     for result in (response.json().get("results", []) or []):
                         ticket_id = str(result.get("id", "")).strip()
                         if ticket_id:
+                            trace_runtime(
+                                "python.resolve_ticket_id_for_conversation.field_search_hit",
+                                conversation_id=conversation_id,
+                                ticket_id=ticket_id,
+                                attempt=attempt,
+                                result=result,
+                            )
                             logger.info(f"resolve_ticket: found ticket={ticket_id} via field search")
                             store_conversation_ticket_mapping(conversation_id, ticket_id)
                             return ticket_id
@@ -1226,11 +1476,23 @@ def resolve_ticket_id_for_conversation(
                         continue
                     ticket_id = str(result.get("id", "")).strip()
                     if ticket_id:
+                        trace_runtime(
+                            "python.resolve_ticket_id_for_conversation.fallback_search_hit",
+                            conversation_id=conversation_id,
+                            ticket_id=ticket_id,
+                            attempt=attempt,
+                            result=result,
+                        )
                         logger.info(f"resolve_ticket: found ticket={ticket_id} via fallback search")
                         store_conversation_ticket_mapping(conversation_id, ticket_id)
                         return ticket_id
 
             if time.time() >= deadline:
+                trace_runtime(
+                    "python.resolve_ticket_id_for_conversation.timeout",
+                    conversation_id=conversation_id,
+                    attempts=attempt,
+                )
                 logger.warning(
                     f"resolve_ticket: timed out after {attempt} attempts "
                     f"for conversation={conversation_id}"
@@ -1242,6 +1504,7 @@ def resolve_ticket_id_for_conversation(
 
         return None
     except Exception as e:
+        trace_runtime("python.resolve_ticket_id_for_conversation.exception", conversation_id=conversation_id, error=str(e))
         logger.exception(f"resolve_ticket_id_for_conversation error: {e}")
         return None
 
@@ -1261,8 +1524,22 @@ def apply_ticket_routing_after_handoff(
     Resolve the Zendesk ticket created by Sunshine handoff and apply the
     mapped form/custom fields immediately, instead of waiting only on webhooks.
     """
+    trace_runtime(
+        "python.apply_ticket_routing_after_handoff.start",
+        conversation_id=conversation_id,
+        app_user_id=app_user_id,
+        reason=reason,
+        issue_context=issue_context,
+        app_related_category=app_related_category,
+        ride_related_category=ride_related_category,
+        ride_related_subcategory=ride_related_subcategory,
+        ride_related_detail=ride_related_detail,
+        title=title,
+        transcript=transcript,
+    )
     ticket_id = resolve_ticket_id_for_conversation(conversation_id)
     if not ticket_id:
+        trace_runtime("python.apply_ticket_routing_after_handoff.no_ticket", conversation_id=conversation_id)
         logger.warning(
             f"apply_ticket_routing_after_handoff: could not resolve ticket for "
             f"conversation={conversation_id}"
@@ -1291,7 +1568,9 @@ def apply_ticket_routing_after_handoff(
     )
     if routing_updated:
         cache.set(f'ticket_status_{ticket_id}', 'active', timeout=86400)
-    return {"ticket_id": ticket_id, "routing_updated": routing_updated}
+    result = {"ticket_id": ticket_id, "routing_updated": routing_updated}
+    trace_runtime("python.apply_ticket_routing_after_handoff.result", conversation_id=conversation_id, result=result)
+    return result
 
 def set_ticket_conversation_field(ticket_id: str, conversation_id: str) -> bool:
     """
@@ -1462,6 +1741,40 @@ def index(request: HttpRequest) -> HttpResponse:
     context = {'SUNSHINE_APP_ID': SUNSHINE_APP_ID, 'debug': settings.DEBUG}
     return render(request, 'index.html', context)
 
+@csrf_exempt
+def runtime_log(request: HttpRequest) -> JsonResponse:
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+
+    try:
+        data = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    events = data.get("events")
+    shared = {
+        "session_id": data.get("sessionId"),
+        "page": data.get("page"),
+        "href": data.get("href"),
+        "user_agent": request.headers.get("User-Agent"),
+        "remote_addr": request.META.get("REMOTE_ADDR"),
+    }
+
+    if isinstance(events, list) and events:
+        for event in events:
+            trace_runtime(
+                "frontend.runtime.event",
+                shared=shared,
+                event_name=event.get("event"),
+                sequence=event.get("seq"),
+                event_ts=event.get("ts"),
+                details=event.get("details"),
+            )
+        return JsonResponse({"status": "logged", "events": len(events)})
+
+    trace_runtime("frontend.runtime.event", shared=shared, payload=data)
+    return JsonResponse({"status": "logged", "events": 1})
+
 def verify_signature(payload: bytes, signature: str) -> bool:
     """
     Verify webhook authenticity using HMAC SHA256 signature.
@@ -1624,12 +1937,25 @@ def init_conversation(request: HttpRequest) -> JsonResponse:
                 force_new = data.get("forceNew", False)
         except Exception:
             pass
+        trace_runtime(
+            "python.init_conversation.request",
+            request_body=(data if 'data' in locals() else None),
+            user_id=user_id,
+            force_new=force_new,
+        )
 
         if not user_id:
             user_id = str(uuid.uuid4())
 
         user_payload = {"externalId": user_id, "profile": {"givenName": "Guest"}}
         response = requests.post(url, json=user_payload, auth=auth)
+        trace_runtime(
+            "python.init_conversation.user_response",
+            url=url,
+            user_payload=user_payload,
+            status_code=response.status_code,
+            response_text=response.text,
+        )
         
         if response.status_code not in [200, 201, 409]:
             return JsonResponse({"error": "Failed to create user", "details": response.text}, status=500)
@@ -1653,6 +1979,13 @@ def init_conversation(request: HttpRequest) -> JsonResponse:
                 try:
                     l_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations"
                     l_resp = requests.get(l_url, auth=auth, params={"filter[userId]": target_id})
+                    trace_runtime(
+                        "python.init_conversation.fetch_conversation",
+                        target_id=target_id,
+                        list_url=l_url,
+                        status_code=l_resp.status_code,
+                        response_text=l_resp.text,
+                    )
                     if l_resp.status_code == 200:
                         convs = l_resp.json().get("conversations", [])
                         if convs:
@@ -1670,14 +2003,24 @@ def init_conversation(request: HttpRequest) -> JsonResponse:
             conv_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations"
             conv_payload = {"type": "personal", "participants": [{"userId": app_user_id}]}
             conv_response = requests.post(conv_url, json=conv_payload, auth=auth)
+            trace_runtime(
+                "python.init_conversation.create_conversation_response",
+                conv_url=conv_url,
+                conv_payload=conv_payload,
+                status_code=conv_response.status_code,
+                response_text=conv_response.text,
+            )
             
             if conv_response.status_code in [200, 201]:
                 conversation_id = conv_response.json().get("conversation", {}).get("id")
             else:
                 return JsonResponse({"error": "Failed to create conversation", "details": conv_response.text}, status=500)
 
-        return JsonResponse({"appUserId": app_user_id, "conversationId": conversation_id, "externalId": user_id})
+        response_payload = {"appUserId": app_user_id, "conversationId": conversation_id, "externalId": user_id}
+        trace_runtime("python.init_conversation.response", response_payload=response_payload)
+        return JsonResponse(response_payload)
     except Exception as e:
+        trace_runtime("python.init_conversation.exception", error=str(e))
         logger.exception(f"init_conversation error: {e}")
         return JsonResponse({"error": "Internal Server Error", "details": str(e)}, status=500)
 
@@ -1760,6 +2103,7 @@ def send_message_to_sunshine(request: HttpRequest) -> JsonResponse:
         app_user_id = data.get("appUserId")
         conversation_id = data.get("conversationId")
         text = data.get("text")
+        trace_runtime("python.send_message_to_sunshine.request", request_data=data)
         
         if not all([app_user_id, conversation_id, text]):
             return JsonResponse({"error": "Missing required fields"}, status=400)
@@ -1768,15 +2112,25 @@ def send_message_to_sunshine(request: HttpRequest) -> JsonResponse:
         payload = {"author": {"type": "user", "userId": app_user_id}, "content": {"type": "text", "text": text}}
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
         response = requests.post(url, json=payload, auth=auth)
+        trace_runtime(
+            "python.send_message_to_sunshine.response",
+            url=url,
+            payload=payload,
+            status_code=response.status_code,
+            response_text=response.text,
+        )
         
         if response.status_code == 201:
             save_conversation_to_cache(conversation_id, text, app_user_id)
-            return JsonResponse({"status": "sent", "data": response.json()})
+            response_payload = {"status": "sent", "data": response.json()}
+            trace_runtime("python.send_message_to_sunshine.success", response_payload=response_payload)
+            return JsonResponse(response_payload)
         else:
             return JsonResponse({"error": "Failed to send message", "details": response.text}, status=500)
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
     except Exception as e:
+        trace_runtime("python.send_message_to_sunshine.exception", error=str(e))
         logger.exception(f"send_message_to_sunshine error: {e}")
         return JsonResponse({"error": "Internal Server Error", "details": str(e)}, status=500)
 
@@ -1819,6 +2173,7 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
 
     try:
         data = json.loads(request.body)
+        trace_runtime("python.escalate_to_agent.request", request_data=data)
         conversation_id = data.get("conversationId")
         app_user_id = data.get("appUserId")
         reason = data.get("reason", "User requested agent support")
@@ -1841,6 +2196,17 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             ride_related_category=ride_related_category,
             ride_related_subcategory=ride_related_subcategory,
             ride_related_detail=ride_related_detail
+        )
+        trace_runtime(
+            "python.escalate_to_agent.context",
+            conversation_id=conversation_id,
+            app_user_id=app_user_id,
+            reason=reason,
+            app_related_category=app_related_category,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail,
+            context=context,
         )
         
         if not conversation_id:
@@ -1895,6 +2261,14 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             
             msg_payload = {"author": {"type": "user", "userId": app_user_id}, "content": {"type": "text", "text": escalation_message}}
             msg_response = requests.post(msg_url, json=msg_payload, auth=auth)
+            trace_runtime(
+                "python.escalate_to_agent.escalation_message",
+                conversation_id=conversation_id,
+                msg_url=msg_url,
+                msg_payload=msg_payload,
+                status_code=msg_response.status_code,
+                response_text=msg_response.text,
+            )
             
             if msg_response.status_code in [200, 201]:
                 time.sleep(0.5)
@@ -1915,6 +2289,14 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
         pass_control_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{app_id}/conversations/{conversation_id}/passControl"
         pass_control_payload = {"switchboardIntegration": "next", "metadata": metadata}
         pc_response = requests.post(pass_control_url, json=pass_control_payload, auth=auth)
+        trace_runtime(
+            "python.escalate_to_agent.pass_control_response",
+            conversation_id=conversation_id,
+            pass_control_url=pass_control_url,
+            pass_control_payload=pass_control_payload,
+            status_code=pc_response.status_code,
+            response_text=pc_response.text,
+        )
         
         if pc_response.status_code != 200:
             return JsonResponse({"error": "Failed to escalate", "details": pc_response.text}, status=pc_response.status_code)
@@ -1931,14 +2313,17 @@ def escalate_to_agent(request: HttpRequest) -> JsonResponse:
             title=reason,
         )
 
-        return JsonResponse({
+        response_payload = {
             "status": "escalated",
             "conversation_id": conversation_id,
             "category": app_related_category,
             "ticket_id": routing_result.get("ticket_id"),
             "routing_updated": routing_result.get("routing_updated", False),
-        })
+        }
+        trace_runtime("python.escalate_to_agent.response", response_payload=response_payload)
+        return JsonResponse(response_payload)
     except Exception as e:
+        trace_runtime("python.escalate_to_agent.exception", error=str(e))
         logger.exception("escalate_to_agent error")
         return JsonResponse({"error": str(e)}, status=500)
 
@@ -1964,6 +2349,7 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
 
     try:
         data = json.loads(request.body)
+        trace_runtime("python.create_conversation_ticket.request", request_data=data)
         source_conversation_id = str(data.get("conversationId", "")).strip()
         title = strip_html_tags(str(data.get("title", "Support Request"))).strip() or "Support Request"
         transcript = str(data.get("transcript", "")).strip()
@@ -1991,7 +2377,9 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
         ride_related_detail = routing_parts.get("ride_related_detail")
 
         main_key = normalize_issue_key((issue_context or {}).get("mainCategory"))
-        ride_category_key = normalize_issue_key(ride_related_category or (issue_context or {}).get("category"))
+        ride_category_key = normalize_issue_key(
+            ride_related_category or (issue_context or {}).get("category")
+        )
         is_vehicle_related_flow = (
             main_key.startswith("ride related")
             and (
@@ -1999,7 +2387,40 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
                 or ride_category_key.startswith("vehicle related")
             )
         )
-        should_seed_transcript = seed_transcript or is_vehicle_related_flow
+        should_seed_transcript = bool(transcript_entries) and (
+            seed_transcript or is_vehicle_related_flow
+        )
+
+        transcript_seed_cache_key: Optional[str] = None
+        if should_seed_transcript and source_conversation_id:
+            transcript_signature = "||".join(
+                f"{normalize_issue_key(entry.get('speaker'))}::{str(entry.get('text', '')).strip()}"
+                for entry in transcript_entries
+                if str(entry.get("text", "")).strip()
+            )
+            if transcript_signature:
+                transcript_hash = hashlib.sha256(
+                    transcript_signature.encode("utf-8")
+                ).hexdigest()[:24]
+                transcript_seed_cache_key = (
+                    f"transcript_seeded_{source_conversation_id}_{transcript_hash}"
+                )
+        trace_runtime(
+            "python.create_conversation_ticket.routing",
+            source_conversation_id=source_conversation_id,
+            title=title,
+            transcript=transcript,
+            transcript_entries=transcript_entries,
+            seed_transcript=seed_transcript,
+            should_seed_transcript=should_seed_transcript,
+            is_vehicle_related_flow=is_vehicle_related_flow,
+            transcript_seed_cache_key=transcript_seed_cache_key,
+            issue_context=issue_context,
+            app_related_category=app_related_category,
+            ride_related_category=ride_related_category,
+            ride_related_subcategory=ride_related_subcategory,
+            ride_related_detail=ride_related_detail,
+        )
 
         if not source_conversation_id:
             return JsonResponse({"error": "Missing conversationId"}, status=400)
@@ -2035,8 +2456,47 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             "timestamp": time.time(),
         })
 
+        if should_seed_transcript:
+            transcript_already_seeded = bool(
+                transcript_seed_cache_key and cache.get(transcript_seed_cache_key)
+            )
+            trace_runtime(
+                "python.create_conversation_ticket.seed_transcript.check",
+                source_conversation_id=source_conversation_id,
+                should_seed_transcript=should_seed_transcript,
+                transcript_seed_cache_key=transcript_seed_cache_key,
+                transcript_already_seeded=transcript_already_seeded,
+                transcript_entries_count=len(transcript_entries),
+            )
+            if not transcript_already_seeded:
+                seeded_ok = sync_transcript_entries_to_sunshine(
+                    source_conversation_id,
+                    app_user_id,
+                    transcript_entries,
+                )
+                trace_runtime(
+                    "python.create_conversation_ticket.seed_transcript.result",
+                    source_conversation_id=source_conversation_id,
+                    seeded_ok=seeded_ok,
+                    transcript_seed_cache_key=transcript_seed_cache_key,
+                )
+                if seeded_ok and transcript_seed_cache_key:
+                    cache.set(transcript_seed_cache_key, True, timeout=604800)
+            else:
+                trace_runtime(
+                    "python.create_conversation_ticket.seed_transcript.skip",
+                    source_conversation_id=source_conversation_id,
+                    reason="already_seeded",
+                    transcript_seed_cache_key=transcript_seed_cache_key,
+                )
+
         existing_handoff_conversation_id = cache.get(f'csat_handoff_{source_conversation_id}')
         if existing_handoff_conversation_id:
+            trace_runtime(
+                "python.create_conversation_ticket.existing_handoff",
+                source_conversation_id=source_conversation_id,
+                existing_handoff_conversation_id=existing_handoff_conversation_id,
+            )
             routing_result = apply_ticket_routing_after_handoff(
                 conversation_id=source_conversation_id,
                 app_user_id=app_user_id,
@@ -2049,23 +2509,26 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
                 title=title,
                 transcript=transcript,
             )
-            return JsonResponse({
+            response_payload = {
                 "status": "existing",
                 "conversation_id": existing_handoff_conversation_id,
                 "source_conversation_id": source_conversation_id,
                 "appUserId": app_user_id,
                 "ticket_id": routing_result.get("ticket_id"),
                 "routing_updated": routing_result.get("routing_updated", False),
-            })
+            }
+            trace_runtime("python.create_conversation_ticket.response", response_payload=response_payload)
+            return JsonResponse(response_payload)
 
         existing_ticket_id = resolve_ticket_id_for_conversation(source_conversation_id)
         if not existing_ticket_id:
-            if should_seed_transcript and transcript_entries:
-                sync_transcript_entries_to_sunshine(
-                    source_conversation_id,
-                    app_user_id,
-                    transcript_entries
-                )
+            trace_runtime(
+                "python.create_conversation_ticket.no_existing_ticket",
+                source_conversation_id=source_conversation_id,
+                seed_transcript=seed_transcript,
+                should_seed_transcript=should_seed_transcript,
+                transcript_entries=transcript_entries,
+            )
             passed = silently_pass_conversation_to_agent(
                 conversation_id=source_conversation_id,
                 app_user_id=app_user_id,
@@ -2075,6 +2538,12 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             )
             if not passed:
                 return JsonResponse({"error": "Failed to hand off Sunshine conversation"}, status=500)
+        else:
+            trace_runtime(
+                "python.create_conversation_ticket.existing_ticket",
+                source_conversation_id=source_conversation_id,
+                existing_ticket_id=existing_ticket_id,
+            )
 
         cache.set(f'csat_handoff_{source_conversation_id}', source_conversation_id, timeout=604800)
 
@@ -2091,17 +2560,20 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             transcript=transcript,
         )
 
-        return JsonResponse({
+        response_payload = {
             "status": "created",
             "conversation_id": source_conversation_id,
             "source_conversation_id": source_conversation_id,
             "appUserId": app_user_id,
             "ticket_id": routing_result.get("ticket_id"),
             "routing_updated": routing_result.get("routing_updated", False),
-        })
+        }
+        trace_runtime("python.create_conversation_ticket.response", response_payload=response_payload)
+        return JsonResponse(response_payload)
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
     except Exception as e:
+        trace_runtime("python.create_conversation_ticket.exception", error=str(e))
         logger.exception("create_conversation_ticket error")
         return JsonResponse({"error": str(e)}, status=500)
 
@@ -2457,6 +2929,7 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
         payload = event_data.get("payload", {})
         conversation = payload.get("conversation", {})
         conversation_id = conversation.get("id")
+        trace_runtime("python.process_message_event.start", conversation_id=conversation_id, event_data=event_data)
         if not conversation_id:
             logger.error("No conversation ID")
             return
@@ -2478,16 +2951,31 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
             if content and content.get("type") == "text":
                 text = content.get("text")
         if not text:
+            trace_runtime("python.process_message_event.no_text", conversation_id=conversation_id, message=message)
             return
         if is_seeded_transcript_message(message, text):
+            trace_runtime("python.process_message_event.skip_seeded_transcript", conversation_id=conversation_id, message=message)
             return
         text = strip_seeded_transcript_prefix(text)
         
         content = message.get("content", {})
         choices = content.get("choices") or message.get("choices") or []
         actions = content.get("actions") or message.get("actions") or []
+        trace_runtime(
+            "python.process_message_event.message_details",
+            conversation_id=conversation_id,
+            author=author,
+            author_type=author_type,
+            author_display_name=author_display_name,
+            source=source,
+            source_type=source_type,
+            text=text,
+            choices=choices,
+            actions=actions,
+        )
         
         if author_display_name == "System" or "Connecting to agent" in text:
+            trace_runtime("python.process_message_event.skip_system_message", conversation_id=conversation_id, text=text)
             return
         
         is_agent_message = False
@@ -2501,6 +2989,7 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
             agent_name = author_display_name or "Support Agent"
         
         if is_agent_message:
+            trace_runtime("python.process_message_event.agent_branch", conversation_id=conversation_id, agent_name=agent_name, text=text)
             is_user_viewing = cache.get(f'user_viewing_{conversation_id}', False)
             
             if not is_user_viewing:
@@ -2518,6 +3007,7 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
                 })
             
             if is_conversation_log_entry(text):
+                trace_runtime("python.process_message_event.skip_conversation_log_entry", conversation_id=conversation_id, text=text)
                 return
             # Pass the Zendesk received timestamp from the message
             received_ts = message.get('received')
@@ -2525,11 +3015,13 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
             return
         
         if author_type == "user":
+            trace_runtime("python.process_message_event.user_branch", conversation_id=conversation_id, text=text)
             return
         
         integration_name = conversation.get("activeSwitchboardIntegration", {}).get("name", "")
         if integration_name and "answerBot" in integration_name:
             try:
+                trace_runtime("python.process_message_event.answerbot_branch", conversation_id=conversation_id, integration_name=integration_name, text=text)
                 app_user = payload.get("user", {})
                 app_user_id = app_user.get("id")
                 
@@ -2570,8 +3062,10 @@ def process_message_event(event_data: Dict[str, Any]) -> None:
                         app_user_id=app_user_id,
                     )
             except Exception as e:
+                trace_runtime("python.process_message_event.answerbot_exception", conversation_id=conversation_id, error=str(e))
                 logger.error(f"Failed to create ticket: {e}")
     except Exception as e:
+        trace_runtime("python.process_message_event.exception", error=str(e), event_data=event_data)
         logger.exception(f"process_message_event error: {e}")
 
 @csrf_exempt
@@ -2678,6 +3172,13 @@ def send_to_zendesk(request: HttpRequest) -> JsonResponse:
         message = request.POST.get('message', '')
         conversation_id = request.POST.get('conversationId')
         app_user_id = request.POST.get('appUserId')
+        trace_runtime(
+            "python.send_to_zendesk.request",
+            file=file,
+            message=message,
+            conversation_id=conversation_id,
+            app_user_id=app_user_id,
+        )
 
         if not all([file, conversation_id, app_user_id]):
             return JsonResponse({"error": "Missing required fields: file, conversationId, appUserId", "status": "fail"}, status=400)
@@ -2685,6 +3186,13 @@ def send_to_zendesk(request: HttpRequest) -> JsonResponse:
         upload_url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/attachments"
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
         upload_response = requests.post(upload_url, files={'source': file}, params={'access': 'public'}, auth=auth)
+        trace_runtime(
+            "python.send_to_zendesk.upload_response",
+            conversation_id=conversation_id,
+            upload_url=upload_url,
+            status_code=upload_response.status_code,
+            response_text=upload_response.text,
+        )
 
         if upload_response.status_code not in [200, 201]:
             return JsonResponse({"error": "Failed to upload file", "status": "fail"}, status=500)
@@ -2699,6 +3207,14 @@ def send_to_zendesk(request: HttpRequest) -> JsonResponse:
 
         if file_response.status_code >= 500:
             file_response = requests.post(msg_url, json=file_payload, auth=auth)
+        trace_runtime(
+            "python.send_to_zendesk.file_message_response",
+            conversation_id=conversation_id,
+            msg_url=msg_url,
+            file_payload=file_payload,
+            status_code=file_response.status_code,
+            response_text=file_response.text,
+        )
         if file_response.status_code not in [200, 201]:
             return JsonResponse({"error": "Failed to send file message", "status": "fail"}, status=500)
 
@@ -2707,11 +3223,20 @@ def send_to_zendesk(request: HttpRequest) -> JsonResponse:
             text_response = requests.post(msg_url, json=text_payload, auth=auth)
             if text_response.status_code >= 500:
                 text_response = requests.post(msg_url, json=text_payload, auth=auth)
+            trace_runtime(
+                "python.send_to_zendesk.text_message_response",
+                conversation_id=conversation_id,
+                text_payload=text_payload,
+                status_code=text_response.status_code,
+                response_text=text_response.text,
+            )
             if text_response.status_code not in [200, 201]:
                 return JsonResponse({"error": "Failed to send text message", "status": "fail"}, status=500)
 
+        trace_runtime("python.send_to_zendesk.success", conversation_id=conversation_id)
         return JsonResponse({"status": "ok"})
     except Exception as e:
+        trace_runtime("python.send_to_zendesk.exception", error=str(e))
         logger.exception(f"send_to_zendesk error: {e}")
         return JsonResponse({"error": "Internal Server Error", "status": "fail", "details": str(e)}, status=500)
 
@@ -3666,13 +4191,26 @@ def get_sunshine_messages_list(conversation_id: str) -> List[Dict[str, Any]]:
     """
     messages = []
     try:
+        trace_runtime("python.get_sunshine_messages_list.start", conversation_id=conversation_id)
         auth = HTTPBasicAuth(SUNSHINE_API_KEY_ID, SUNSHINE_API_KEY_SECRET)
         url = f"{SUNSHINE_API_BASE_URL}/v2/apps/{SUNSHINE_APP_ID}/conversations/{conversation_id}/messages"
         response = requests.get(url, auth=auth, timeout=15)
         if response.status_code != 200:
+            trace_runtime(
+                "python.get_sunshine_messages_list.http_failure",
+                conversation_id=conversation_id,
+                status_code=response.status_code,
+                response_text=response.text,
+            )
             return messages
 
         sunshine_messages = response.json().get("messages", [])
+        trace_runtime(
+            "python.get_sunshine_messages_list.raw_messages",
+            conversation_id=conversation_id,
+            raw_message_count=len(sunshine_messages),
+            raw_messages=sunshine_messages,
+        )
         for msg in sunshine_messages:
             author = msg.get("author", {})
             author_type = author.get("type", "user")
@@ -3680,10 +4218,12 @@ def get_sunshine_messages_list(conversation_id: str) -> List[Dict[str, Any]]:
             content = msg.get("content", {})
             text = msg.get("text") or content.get("text", "")
             if is_seeded_transcript_message(msg, text):
+                trace_runtime("python.get_sunshine_messages_list.skip_seeded_transcript", conversation_id=conversation_id, message=msg)
                 continue
             text = strip_seeded_transcript_prefix(text)
             
             if text and is_conversation_log_entry(text):
+                trace_runtime("python.get_sunshine_messages_list.skip_conversation_log_entry", conversation_id=conversation_id, text=text, message=msg)
                 continue
             
             if author_type == "user":
@@ -3728,9 +4268,17 @@ def get_sunshine_messages_list(conversation_id: str) -> List[Dict[str, Any]]:
                     image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.heic', '.heif']
                     is_actually_image = any(ext in file_name.lower() for ext in image_extensions) or any(ext in decoded_url for ext in image_extensions) or 'image' in decoded_url or 'whatsapp' in decoded_url
                     message["attachments"] = [{"url": get_proxied_image_url(media_url), "fileName": file_name or ("image" if is_actually_image else "file"), "type": "image" if is_actually_image else "file", "size": content.get("size", 0)}]
+            trace_runtime(
+                "python.get_sunshine_messages_list.message_classified",
+                conversation_id=conversation_id,
+                raw_message=msg,
+                classified_message=message,
+            )
             messages.append(message)
     except Exception as e:
+        trace_runtime("python.get_sunshine_messages_list.exception", conversation_id=conversation_id, error=str(e))
         logger.exception(f"get_sunshine_messages_list error: {e}")
+    trace_runtime("python.get_sunshine_messages_list.result", conversation_id=conversation_id, message_count=len(messages), messages=messages)
     return messages
 
 def get_sunshine_messages_fallback(conversation_id: str) -> JsonResponse:

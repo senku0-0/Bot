@@ -56,6 +56,172 @@ document.addEventListener('DOMContentLoaded', function () {
     let flowState = createEmptyFlowState();
     let unreadCounts = new Map(); // conversationId -> count
     let totalUnread = 0;
+    const TRACE_RUNTIME_ENABLED = true;
+    const TRACE_RUNTIME_ENDPOINT = '/api/chat/runtime-log';
+    const TRACE_RUNTIME_SESSION_KEY = 'chat_trace_session_id';
+    let traceSequence = 0;
+    let traceQueue = [];
+    let traceFlushTimer = null;
+    let traceFlushInFlight = false;
+    const traceSessionId = (() => {
+        try {
+            const existing = localStorage.getItem(TRACE_RUNTIME_SESSION_KEY);
+            if (existing) {
+                return existing;
+            }
+            const created = `trace_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+            localStorage.setItem(TRACE_RUNTIME_SESSION_KEY, created);
+            return created;
+        } catch (e) {
+            return `trace_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        }
+    })();
+
+    function sanitizeTraceValue(value, depth = 0, maxDepth = 6) {
+        if (depth >= maxDepth) {
+            return `<max_depth:${typeof value}>`;
+        }
+        if (value == null || typeof value === 'boolean' || typeof value === 'number') {
+            return value;
+        }
+        if (typeof value === 'string') {
+            return value.length <= 2000 ? value : `${value.slice(0, 2000)}...(truncated ${value.length - 2000} chars)`;
+        }
+        if (value instanceof Set) {
+            return sanitizeTraceValue(Array.from(value), depth + 1, maxDepth);
+        }
+        if (value instanceof Map) {
+            return sanitizeTraceValue(Object.fromEntries(value.entries()), depth + 1, maxDepth);
+        }
+        if (Array.isArray(value)) {
+            const sliced = value.slice(0, 100).map(item => sanitizeTraceValue(item, depth + 1, maxDepth));
+            if (value.length > 100) {
+                sliced.push(`... truncated ${value.length - 100} items`);
+            }
+            return sliced;
+        }
+        if (value instanceof File) {
+            return {
+                name: value.name,
+                size: value.size,
+                type: value.type
+            };
+        }
+        if (value instanceof Element) {
+            return {
+                tagName: value.tagName,
+                id: value.id,
+                className: value.className
+            };
+        }
+        if (typeof value === 'object') {
+            const entries = Object.entries(value).slice(0, 100);
+            const sanitized = {};
+            entries.forEach(([key, innerValue]) => {
+                sanitized[key] = sanitizeTraceValue(innerValue, depth + 1, maxDepth);
+            });
+            if (Object.keys(value).length > 100) {
+                sanitized.__truncated_items__ = Object.keys(value).length - 100;
+            }
+            return sanitized;
+        }
+        return String(value);
+    }
+
+    function getTraceStateSnapshot() {
+        return sanitizeTraceValue({
+            conversationId,
+            appUserId,
+            lastContext,
+            currentView,
+            isChatOpen,
+            sessionEnded,
+            isAgentConnected,
+            agentJoinAnnounced,
+            shouldForceNewConversation,
+            flowState,
+            unreadCounts,
+            totalUnread,
+            displayedMessageIds,
+            displayedImageFileNames,
+            issueReportRequestedFlowKeys,
+            csatTicketRequestedConversations
+        });
+    }
+
+    function flushTraceQueue({ useBeacon = false } = {}) {
+        if (!TRACE_RUNTIME_ENABLED || traceQueue.length === 0 || traceFlushInFlight) {
+            return;
+        }
+
+        const batch = traceQueue.slice(0, 20);
+        const payload = JSON.stringify({
+            sessionId: traceSessionId,
+            page: 'chat-widget',
+            href: window.location.href,
+            events: batch
+        });
+
+        if (useBeacon && navigator.sendBeacon) {
+            const ok = navigator.sendBeacon(TRACE_RUNTIME_ENDPOINT, new Blob([payload], { type: 'application/json' }));
+            if (ok) {
+                traceQueue = traceQueue.slice(batch.length);
+            }
+            return;
+        }
+
+        traceFlushInFlight = true;
+        fetch(TRACE_RUNTIME_ENDPOINT, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload,
+            keepalive: useBeacon
+        })
+            .then(() => {
+                traceQueue = traceQueue.slice(batch.length);
+            })
+            .catch(() => {})
+            .finally(() => {
+                traceFlushInFlight = false;
+                if (traceQueue.length > 0) {
+                    clearTimeout(traceFlushTimer);
+                    traceFlushTimer = setTimeout(() => flushTraceQueue(), 250);
+                }
+            });
+    }
+
+    function scheduleTraceFlush() {
+        if (!TRACE_RUNTIME_ENABLED) {
+            return;
+        }
+        clearTimeout(traceFlushTimer);
+        traceFlushTimer = setTimeout(() => flushTraceQueue(), 500);
+    }
+
+    function traceRuntime(event, details = {}) {
+        if (!TRACE_RUNTIME_ENABLED) {
+            return;
+        }
+        const entry = {
+            seq: ++traceSequence,
+            ts: new Date().toISOString(),
+            event,
+            details: sanitizeTraceValue(details)
+        };
+        try {
+            console.log('[CHAT_RUNTIME_TRACE]', entry);
+        } catch (e) {}
+        traceQueue.push(entry);
+        if (traceQueue.length >= 10) {
+            flushTraceQueue();
+        } else {
+            scheduleTraceFlush();
+        }
+    }
+
+    window.addEventListener('beforeunload', function () {
+        flushTraceQueue({ useBeacon: true });
+    });
 
     function createEmptyFlowState() {
         return {
@@ -432,6 +598,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     
     function startNewConversation() {
+        traceRuntime('js.startNewConversation.before', { state: getTraceStateSnapshot() });
         closeActiveModals();
         conversationId = null;
         appUserId = null;
@@ -461,6 +628,7 @@ document.addEventListener('DOMContentLoaded', function () {
         chatHeaderTitle.textContent = 'Yatri Bandhu';
         appendMessage("Hello! 👋 How can I help you today?", 'bot-message');
         showMainOptions();
+        traceRuntime('js.startNewConversation.after', { state: getTraceStateSnapshot() });
     }
     
     function createConversationAndEscalate(reason, category) {
@@ -925,6 +1093,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function updateFlowState(updates = {}) {
+        const previousState = sanitizeTraceValue(flowState);
         flowState = { ...flowState, ...updates };
         const currentPath = getCurrentFlowPath();
         if (currentPath) {
@@ -933,6 +1102,14 @@ document.addEventListener('DOMContentLoaded', function () {
         if (flowState.mainCategory !== "App Related Issues") {
             window.lastAppRelatedCategory = null;
         }
+        traceRuntime('js.updateFlowState', {
+            updates,
+            previousState,
+            nextState: flowState,
+            currentPath,
+            lastContext,
+            lastAppRelatedCategory: window.lastAppRelatedCategory
+        });
     }
 
     function getCurrentFlowPath(extraDetail = null) {
@@ -1104,18 +1281,32 @@ document.addEventListener('DOMContentLoaded', function () {
     function createConversationTicketSilently({ title = null } = {}) {
         const ticketTitle = title || getCurrentFlowPath() || lastContext || 'Support Request';
         const hadExistingConversation = Boolean(conversationId);
+        traceRuntime('js.createConversationTicketSilently.start', {
+            title,
+            ticketTitle,
+            hadExistingConversation,
+            state: getTraceStateSnapshot()
+        });
 
         return ensureConversationInitialized({ title: ticketTitle })
             .then(({ conversationId: activeConversationId, appUserId: activeAppUserId }) => {
                 if (!activeConversationId) {
+                    traceRuntime('js.createConversationTicketSilently.noConversation', { ticketTitle });
                     return null;
                 }
                 if (csatTicketRequestedConversations.has(activeConversationId)) {
+                    traceRuntime('js.createConversationTicketSilently.alreadyRequested', {
+                        activeConversationId,
+                        ticketTitle
+                    });
                     return { status: 'already_requested', conversation_id: activeConversationId };
                 }
 
                 const transcript = getConversationTranscript();
                 const transcriptEntries = getConversationTranscriptEntries();
+                const isVehicleRelatedIssueFlow =
+                    flowState.mainCategory === "Ride Related Issues" &&
+                    String(flowState.category || '').trim().toLowerCase().startsWith('vehicle related');
                 const payload = {
                     conversationId: activeConversationId,
                     appUserId: activeAppUserId,
@@ -1126,8 +1317,15 @@ document.addEventListener('DOMContentLoaded', function () {
                         ? (flowState.category || window.lastAppRelatedCategory)
                         : null,
                     issueContext: getIssueContextPayload(),
-                    seedTranscript: !hadExistingConversation
+                    seedTranscript: !hadExistingConversation || isVehicleRelatedIssueFlow
                 };
+                traceRuntime('js.createConversationTicketSilently.payload', {
+                    payload,
+                    transcript,
+                    transcriptEntries,
+                    isVehicleRelatedIssueFlow,
+                    state: getTraceStateSnapshot()
+                });
 
                 return fetch('/api/chat/create-ticket', {
                     method: 'POST',
@@ -1141,6 +1339,10 @@ document.addEventListener('DOMContentLoaded', function () {
                         return response.json();
                     })
                     .then(data => {
+                        traceRuntime('js.createConversationTicketSilently.response', {
+                            requestPayload: payload,
+                            response: data
+                        });
                         if (data && ['created', 'existing', 'updated'].includes(data.status)) {
                             csatTicketRequestedConversations.add(activeConversationId);
                             if (data.conversation_id) {
@@ -1154,6 +1356,10 @@ document.addEventListener('DOMContentLoaded', function () {
                     });
             })
             .catch(error => {
+                traceRuntime('js.createConversationTicketSilently.exception', {
+                    ticketTitle,
+                    error: error && error.message ? error.message : String(error)
+                });
                 console.error('Silent CSAT ticket creation failed', error);
                 return null;
             });
@@ -1173,8 +1379,15 @@ document.addEventListener('DOMContentLoaded', function () {
     function createIssueReport(options = {}) {
         const ticketTitle = options.title || getCurrentFlowPath() || lastContext || 'Support Request';
         const flowKey = options.flowKey || getIssueReportFlowKey(ticketTitle);
+        traceRuntime('js.createIssueReport.start', {
+            options,
+            ticketTitle,
+            flowKey,
+            state: getTraceStateSnapshot()
+        });
 
         if (flowKey && issueReportRequestedFlowKeys.has(flowKey)) {
+            traceRuntime('js.createIssueReport.deduped', { flowKey, ticketTitle });
             return Promise.resolve(null);
         }
 
@@ -1188,22 +1401,43 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (!isCreated && flowKey) {
                     issueReportRequestedFlowKeys.delete(flowKey);
                 }
+                traceRuntime('js.createIssueReport.result', {
+                    flowKey,
+                    ticketTitle,
+                    isCreated,
+                    response: data,
+                    issueReportRequestedFlowKeys: Array.from(issueReportRequestedFlowKeys)
+                });
                 return data;
             })
             .catch(error => {
                 if (flowKey) {
                     issueReportRequestedFlowKeys.delete(flowKey);
                 }
+                traceRuntime('js.createIssueReport.exception', {
+                    flowKey,
+                    ticketTitle,
+                    error: error && error.message ? error.message : String(error)
+                });
                 throw error;
             });
     }
 
     function createIssueReportAndEndFlow(options = {}) {
         chatInputArea.style.display = 'none';
+        traceRuntime('js.createIssueReportAndEndFlow', {
+            options,
+            state: getTraceStateSnapshot()
+        });
         void createIssueReport(options);
     }
 
     function ensureConversationInitialized({ forceNew = false, title = 'Support Request' } = {}) {
+        traceRuntime('js.ensureConversationInitialized.start', {
+            forceNew,
+            title,
+            state: getTraceStateSnapshot()
+        });
         return new Promise((resolve, reject) => {
             const effectiveForceNew = forceNew || shouldForceNewConversation;
 
@@ -1216,6 +1450,12 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                 }
                 if (appUserId) {
+                    traceRuntime('js.ensureConversationInitialized.reuseExisting', {
+                        effectiveForceNew,
+                        conversationId,
+                        appUserId,
+                        title
+                    });
                     resolve({ appUserId, conversationId });
                     return;
                 }
@@ -1244,6 +1484,11 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (!data.appUserId || !data.conversationId) {
                         throw new Error('Chat initialization failed');
                     }
+                    traceRuntime('js.ensureConversationInitialized.response', {
+                        effectiveForceNew,
+                        requestPayload: payload,
+                        response: data
+                    });
 
                     appUserId = data.appUserId;
                     conversationId = data.conversationId;
@@ -1265,7 +1510,14 @@ document.addEventListener('DOMContentLoaded', function () {
 
                     resolve({ appUserId, conversationId });
                 })
-                .catch(reject);
+                .catch(error => {
+                    traceRuntime('js.ensureConversationInitialized.exception', {
+                        effectiveForceNew,
+                        requestPayload: payload,
+                        error: error && error.message ? error.message : String(error)
+                    });
+                    reject(error);
+                });
         });
     }
 
@@ -1318,8 +1570,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function sendToSunshine(text) {
         if (!appUserId || !conversationId) {
+            traceRuntime('js.sendToSunshine.skippedMissingIds', { text, state: getTraceStateSnapshot() });
             return;
         }
+        traceRuntime('js.sendToSunshine.start', { text, conversationId, appUserId });
 
         fetch('/api/chat/send', {
             method: 'POST',
@@ -1337,6 +1591,12 @@ document.addEventListener('DOMContentLoaded', function () {
                 return response.json();
             })
             .then(data => {
+                traceRuntime('js.sendToSunshine.response', {
+                    text,
+                    conversationId,
+                    appUserId,
+                    response: data
+                });
                 saveConversation(conversationId, null, text, new Date().toISOString());
                 renderConversationList();
                 
@@ -1388,6 +1648,11 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function selectRideRelatedCategory(option, { showUserMessage = true } = {}) {
+        traceRuntime('js.selectRideRelatedCategory.start', {
+            option,
+            showUserMessage,
+            state: getTraceStateSnapshot()
+        });
         if (showUserMessage) {
             appendMessage(option, 'user-message');
         }
@@ -1400,6 +1665,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         if (option === "Fare and Payment") {
+            traceRuntime('js.selectRideRelatedCategory.branch', { option, branch: 'fare_and_payment' });
             setTimeout(() => {
                 appendMessage(getFlowCopy('farePaymentPrompt', "Choose one from the below options."), 'bot-message');
                 showFarePaymentOptions();
@@ -1408,11 +1674,13 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         if (option === "Find a lost item") {
+            traceRuntime('js.selectRideRelatedCategory.branch', { option, branch: 'find_a_lost_item' });
             handleLostItemFlow();
             return;
         }
 
         if (option === "Vehicle related issue") {
+            traceRuntime('js.selectRideRelatedCategory.branch', { option, branch: 'vehicle_related_issue' });
             setTimeout(() => {
                 appendMessage("Choose one from the below options.", 'bot-message');
                 showVehicleRelatedOptions();
@@ -1421,6 +1689,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         if (option === "Safety related") {
+            traceRuntime('js.selectRideRelatedCategory.branch', { option, branch: 'safety_related' });
             setTimeout(() => {
                 appendMessage(getFlowCopy('safetyIssuePrompt', "Choose one from the below options."), 'bot-message');
                 showSafetyRelatedOptions();
@@ -1428,6 +1697,7 @@ document.addEventListener('DOMContentLoaded', function () {
             return;
         }
 
+        traceRuntime('js.selectRideRelatedCategory.branch', { option, branch: 'fallback_feedback' });
         askForFeedback();
     }
 
@@ -1647,6 +1917,10 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function handleFarePaymentOptionClick(option) {
+        traceRuntime('js.handleFarePaymentOptionClick.start', {
+            option,
+            state: getTraceStateSnapshot()
+        });
         appendMessage(option, 'user-message');
         updateFlowState({
             subcategory: option,
@@ -1654,6 +1928,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         if (option === "Multiple Debits occurred") {
+            traceRuntime('js.handleFarePaymentOptionClick.branch', { option, branch: 'multiple_debits_occurred' });
             setTimeout(() => {
                 showSupportFormModal({
                     title: "Multiple Debits occurred",
@@ -1691,6 +1966,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         if (option === "Driver charged extra fare") {
+            traceRuntime('js.handleFarePaymentOptionClick.branch', { option, branch: 'driver_charged_extra_fare' });
             setTimeout(() => {
                 appendMessage("Select the mode of payment.", 'bot-message');
                 showPaymentModes();
@@ -1699,6 +1975,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         if (option === "Charged higher than estimated fare") {
+            traceRuntime('js.handleFarePaymentOptionClick.branch', { option, branch: 'charged_higher_than_estimated_fare' });
             setTimeout(() => {
                 appendMessage(getFlowCopy('fareBreakdownPrompt', "Please find the fare breakdown."), 'bot-message');
                 setTimeout(() => {
@@ -1716,6 +1993,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         if (option === "Cancellation Charges") {
+            traceRuntime('js.handleFarePaymentOptionClick.branch', { option, branch: 'cancellation_charges' });
             setTimeout(() => {
                 appendMessage("Choose one from the below options.", 'bot-message');
                 showCancellationChargeOptions();
@@ -1729,15 +2007,21 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function handlePaymentModeClick(option) {
+        traceRuntime('js.handlePaymentModeClick.start', {
+            option,
+            state: getTraceStateSnapshot()
+        });
         appendMessage(option, 'user-message');
         updateFlowState({ detail: option });
 
         const isCash = option === "Cash";
         setTimeout(() => {
             if (isCash) {
+                traceRuntime('js.handlePaymentModeClick.branch', { option, branch: 'cash' });
                 appendMessage(getFlowCopy('extraFareCashPrompt', "Our executive will be verifying your claim with the driver. Would you like to proceed?"), 'bot-message');
                 appendOptions(["Yes", "No"], cashOption => {
                     appendMessage(cashOption, 'user-message');
+                    traceRuntime('js.handlePaymentModeClick.cashDecision', { option, cashOption, state: getTraceStateSnapshot() });
                     if (cashOption === "Yes") {
                         handleAgentConnect();
                         return;
@@ -1747,6 +2031,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             }
 
+            traceRuntime('js.handlePaymentModeClick.branch', { option, branch: 'upi' });
             showSupportFormModal({
                 title: "UPI Issue",
                 description: getFlowCopy('extraFareUpiPrompt', "Please upload screenshot(s) of the UPI payment and add comments."),
@@ -1884,6 +2169,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function handleLostItemFlow() {
+        traceRuntime('js.handleLostItemFlow.start', { state: getTraceStateSnapshot() });
         let lostItemCallOptionsDiv = null;
 
         setTimeout(() => {
@@ -1901,6 +2187,10 @@ document.addEventListener('DOMContentLoaded', function () {
                         }
 
                         appendMessage(lostItemHelpChoice, 'user-message');
+                        traceRuntime('js.handleLostItemFlow.furtherHelpChoice', {
+                            lostItemHelpChoice,
+                            state: getTraceStateSnapshot()
+                        });
                         if (lostItemHelpChoice === "Yes") {
                             promptAgentTransfer();
                             return;
@@ -1937,6 +2227,10 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function handleVehicleRelatedOptionClick(option) {
+        traceRuntime('js.handleVehicleRelatedOptionClick.start', {
+            option,
+            state: getTraceStateSnapshot()
+        });
         appendMessage(option, 'user-message');
         const normalizedOption = option === "Unclean / unhygienic vehicle"
             ? "Unclean/unhygienic vehicle"
@@ -1948,6 +2242,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         if (normalizedOption === "Vehicle unsafe") {
+            traceRuntime('js.handleVehicleRelatedOptionClick.branch', { option: normalizedOption, branch: 'vehicle_unsafe' });
             setTimeout(() => {
                 appendMessage(getFlowCopy('vehicleUnsafePrompt', "Select all that apply."), 'bot-message');
                 showVehicleUnsafeOptions();
@@ -1962,6 +2257,7 @@ document.addEventListener('DOMContentLoaded', function () {
         };
 
         if (normalizedOption === "Unclean/unhygienic vehicle") {
+            traceRuntime('js.handleVehicleRelatedOptionClick.branch', { option: normalizedOption, branch: 'unclean_vehicle' });
             logSupportIssueSilently({
                 summary: buildIssueSummary(),
                 title: normalizedOption
@@ -1977,6 +2273,7 @@ document.addEventListener('DOMContentLoaded', function () {
             normalizedOption === "AC not turned on / AC stopped working midway" ||
             normalizedOption === "Vehicle was different"
         ) {
+            traceRuntime('js.handleVehicleRelatedOptionClick.branch', { option: normalizedOption, branch: 'ac_or_vehicle_different' });
             logSupportIssueSilently({
                 summary: buildIssueSummary(),
                 title: normalizedOption
@@ -1993,6 +2290,7 @@ document.addEventListener('DOMContentLoaded', function () {
             return;
         }
 
+        traceRuntime('js.handleVehicleRelatedOptionClick.branch', { option: normalizedOption, branch: 'default_logged_message' });
         setTimeout(() => {
             appendMessage(
                 getFlowCopy('issueLoggedMessage', "Thanks for sharing the details. We have logged your issue."),
@@ -2042,6 +2340,10 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function handleSafetyRelatedOptionClick(option) {
+        traceRuntime('js.handleSafetyRelatedOptionClick.start', {
+            option,
+            state: getTraceStateSnapshot()
+        });
         appendMessage(option, 'user-message');
         updateFlowState({
             subcategory: option,
@@ -2049,6 +2351,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         if (option === "Other") {
+            traceRuntime('js.handleSafetyRelatedOptionClick.branch', { option, branch: 'other' });
             setTimeout(() => {
                 showSupportFormModal({
                     title: "Safety issue",
@@ -2096,20 +2399,24 @@ document.addEventListener('DOMContentLoaded', function () {
             "Rash Driving",
             "Vehicle Broke down"
         ].includes(option)) {
+            traceRuntime('js.handleSafetyRelatedOptionClick.branch', { option, branch: 'sos_flow' });
             promptSafetySosFlow(`${option} SOS`);
             return;
         }
 
         if (option === "Drunk and drive") {
+            traceRuntime('js.handleSafetyRelatedOptionClick.branch', { option, branch: 'drunk_and_drive' });
             handleDrunkAndDriveFlow();
             return;
         }
 
         if (option === "Driver was rude or misbehaved") {
+            traceRuntime('js.handleSafetyRelatedOptionClick.branch', { option, branch: 'driver_misbehaved' });
             handleDriverMisbehavedFlow();
             return;
         }
 
+        traceRuntime('js.handleSafetyRelatedOptionClick.branch', { option, branch: 'generic_submit_support_issue' });
         const successMessage = option === "Drunk and drive"
             ? getFlowCopy('safetyImmediateResponse', "We sincerely apologise for your experience. Your safety is our top priority, and we take such incidents very seriously. This has been escalated to the safety team for immediate action against the driver.")
             : getFlowCopy('safetyFeedbackResponse', "We apologise for the poor experience. This is not something we wish for our customers. We have taken your feedback and we will work towards improving your experience.");
@@ -2359,12 +2666,27 @@ document.addEventListener('DOMContentLoaded', function () {
         forceNewConversation = false
     }) {
         const supportSummary = summary || buildIssueSummary();
+        traceRuntime('js.submitSupportIssue.start', {
+            summary,
+            supportSummary,
+            files,
+            showUserSummary,
+            successMessage,
+            title,
+            forceNewConversation,
+            state: getTraceStateSnapshot()
+        });
 
         ensureConversationInitialized({
             forceNew: forceNewConversation,
             title: title || flowState.category || lastContext || 'Support Request'
         })
             .then(() => {
+                traceRuntime('js.submitSupportIssue.afterEnsureConversation', {
+                    supportSummary,
+                    files,
+                    state: getTraceStateSnapshot()
+                });
                 if (showUserSummary && supportSummary) {
                     appendMessage(supportSummary, 'user-message');
                 }
@@ -2385,9 +2707,20 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (typeof afterSubmit === 'function') {
                         afterSubmit();
                     }
+                    traceRuntime('js.submitSupportIssue.completed', {
+                        supportSummary,
+                        files,
+                        successMessage,
+                        state: getTraceStateSnapshot()
+                    });
                 }, 500);
             })
             .catch(() => {
+                traceRuntime('js.submitSupportIssue.exception', {
+                    supportSummary,
+                    files,
+                    state: getTraceStateSnapshot()
+                });
                 appendMessage("Connection error. Please try again.", 'system-message');
             });
     }
@@ -2398,11 +2731,24 @@ document.addEventListener('DOMContentLoaded', function () {
         title = null
     } = {}) {
         const supportSummary = summary || buildIssueSummary();
+        traceRuntime('js.logSupportIssueSilently.start', {
+            summary,
+            supportSummary,
+            files,
+            title,
+            state: getTraceStateSnapshot()
+        });
 
         ensureConversationInitialized({
             title: title || flowState.category || lastContext || 'Support Request'
         })
             .then(() => {
+                traceRuntime('js.logSupportIssueSilently.afterEnsureConversation', {
+                    supportSummary,
+                    files,
+                    title,
+                    state: getTraceStateSnapshot()
+                });
                 if (supportSummary) {
                     saveConversation(conversationId, null, supportSummary, new Date().toISOString());
                     sendToSunshine(supportSummary);
@@ -2412,7 +2758,14 @@ document.addEventListener('DOMContentLoaded', function () {
                     files.forEach(file => sendDocument(file, ''));
                 }
             })
-            .catch(() => {});
+            .catch(() => {
+                traceRuntime('js.logSupportIssueSilently.exception', {
+                    supportSummary,
+                    files,
+                    title,
+                    state: getTraceStateSnapshot()
+                });
+            });
     }
 
     function showEndFlowCsat(prompt = null) {
@@ -2456,10 +2809,22 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function askForFurtherHelp({ prompt = null, onYes = null, onNo = null, layout = null } = {}) {
+        traceRuntime('js.askForFurtherHelp.start', {
+            prompt,
+            hasOnYes: typeof onYes === 'function',
+            hasOnNo: typeof onNo === 'function',
+            layout,
+            state: getTraceStateSnapshot()
+        });
         setTimeout(() => {
             appendMessage(prompt || getFlowCopy('furtherHelpPrompt', "Do you need further help?"), 'bot-message');
             appendOptions(["Yes", "No"], option => {
                 appendMessage(option, 'user-message');
+                traceRuntime('js.askForFurtherHelp.choice', {
+                    option,
+                    prompt,
+                    state: getTraceStateSnapshot()
+                });
                 if (option === "Yes") {
                     if (typeof onYes === 'function') {
                         onYes();
@@ -2519,8 +2884,17 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function sendMessage() {
         const messageText = chatInput.value.trim();
+        traceRuntime('js.sendMessage.start', {
+            messageText,
+            hasPendingImage: Boolean(pendingImage),
+            state: getTraceStateSnapshot()
+        });
         if (pendingImage) {
             const caption = messageText;
+            traceRuntime('js.sendMessage.pendingImageBranch', {
+                caption,
+                pendingImage
+            });
             sendDocument(pendingImage, caption);
             clearImagePreview();
             pendingImage = null;
@@ -2532,11 +2906,19 @@ document.addEventListener('DOMContentLoaded', function () {
         
         // If no conversation yet, initialize one before sending
         if (!conversationId) {
+            traceRuntime('js.sendMessage.noConversationBranch', {
+                messageText,
+                lastContext
+            });
             showLoadingIndicator();
             ensureConversationInitialized({
                 title: lastContext || 'Support Request'
             })
                 .then(() => {
+                    traceRuntime('js.sendMessage.noConversationBranch.ready', {
+                        messageText,
+                        state: getTraceStateSnapshot()
+                    });
                     removeLoadingIndicator();
                     appendMessage(messageText, 'user-message');
                     saveConversation(conversationId, null, messageText, new Date().toISOString());
@@ -2551,6 +2933,10 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                 })
                 .catch(() => {
+                    traceRuntime('js.sendMessage.noConversationBranch.exception', {
+                        messageText,
+                        state: getTraceStateSnapshot()
+                    });
                     removeLoadingIndicator();
                     appendMessage("Connection error. Please try again.", 'system-message');
                 });
@@ -2563,6 +2949,10 @@ document.addEventListener('DOMContentLoaded', function () {
             if (storedUserId) {
                 appUserId = storedUserId;
             } else {
+                traceRuntime('js.sendMessage.missingAppUserId', {
+                    conversationId,
+                    state: getTraceStateSnapshot()
+                });
                 appendMessage("Error: Chat not initialized. Please refresh and try again.", 'system-message');
                 return;
             }
@@ -2573,6 +2963,10 @@ document.addEventListener('DOMContentLoaded', function () {
         saveConversation(conversationId, null, messageText, new Date().toISOString());
         sendToSunshine(messageText);
         chatInput.value = '';
+        traceRuntime('js.sendMessage.sent', {
+            messageText,
+            state: getTraceStateSnapshot()
+        });
 
         if (!isAgentConnected) {
             chatInputArea.style.display = 'none';
@@ -2757,6 +3151,11 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function appendOptions(options, callback, config = {}) {
+        traceRuntime('js.appendOptions.render', {
+            options,
+            config,
+            state: getTraceStateSnapshot()
+        });
         const optionsDiv = document.createElement('div');
         optionsDiv.classList.add('options-container');
         if (config.layout === 'row') {
@@ -2768,6 +3167,12 @@ document.addEventListener('DOMContentLoaded', function () {
             btn.classList.add('option-btn');
             btn.textContent = option;
             btn.addEventListener('click', function () {
+                traceRuntime('js.appendOptions.click', {
+                    option,
+                    options,
+                    config,
+                    state: getTraceStateSnapshot()
+                });
                 optionsDiv.remove();
                 callback(option);
             });
@@ -3187,6 +3592,11 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function sendDocument(file, message) {
+        traceRuntime('js.sendDocument.start', {
+            file,
+            message,
+            state: getTraceStateSnapshot()
+        });
         if (!appUserId || !conversationId) {
             if (conversationId && !appUserId) {
                 const storedUserId = localStorage.getItem(`chat_appUserId_${conversationId}`) 
@@ -3194,10 +3604,20 @@ document.addEventListener('DOMContentLoaded', function () {
                 if (storedUserId) {
                     appUserId = storedUserId;
                 } else {
+                    traceRuntime('js.sendDocument.missingAppUserId', {
+                        conversationId,
+                        file,
+                        message
+                    });
                     appendMessage("Error: Chat not initialized. Please refresh and try again.", 'system-message');
                     return;
                 }
             } else {
+                traceRuntime('js.sendDocument.missingConversation', {
+                    file,
+                    message,
+                    state: getTraceStateSnapshot()
+                });
                 appendMessage("Error: Chat not initialized. Please refresh and try again.", 'system-message');
                 return;
             }
@@ -3245,6 +3665,12 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         xhr.addEventListener('load', function () {
+            traceRuntime('js.sendDocument.load', {
+                status: xhr.status,
+                responseText: xhr.responseText,
+                file,
+                message
+            });
             if (xhr.status === 200) {
                 try {
                     const data = JSON.parse(xhr.responseText);
@@ -3263,6 +3689,10 @@ document.addEventListener('DOMContentLoaded', function () {
                         }, 2000);
                     }
                 } catch (e) {
+                    traceRuntime('js.sendDocument.parseError', {
+                        error: e && e.message ? e.message : String(e),
+                        responseText: xhr.responseText
+                    });
                     if (progressContainer) {
                         statusText.textContent = 'Error processing response';
                         progressFill.style.backgroundColor = '#dc3545';
@@ -3278,6 +3708,11 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         xhr.addEventListener('error', function () {
+            traceRuntime('js.sendDocument.networkError', {
+                file,
+                message,
+                state: getTraceStateSnapshot()
+            });
             if (progressContainer) {
                 statusText.textContent = 'Network error - please try again';
                 progressFill.style.backgroundColor = '#dc3545';
@@ -3286,6 +3721,11 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         xhr.addEventListener('abort', function () {
+            traceRuntime('js.sendDocument.aborted', {
+                file,
+                message,
+                state: getTraceStateSnapshot()
+            });
             if (progressContainer) {
                 statusText.textContent = 'Upload cancelled';
                 progressFill.style.backgroundColor = '#ffc107';
@@ -3394,14 +3834,42 @@ document.addEventListener('DOMContentLoaded', function () {
         safetyRelatedOptions = data.safetyRelatedOptions || [];
         deleteAccountReasons = [];
         flowCopy = data.copy || {};
+        traceRuntime('js.applyFlowConfig', {
+            rawConfig: data,
+            derivedConfig: {
+                troubleshootingSteps,
+                mainOptions,
+                appRelatedOptions,
+                rideRelatedOptions,
+                farePaymentOptions,
+                paymentModes,
+                cancellationChargeOptions,
+                cancellationWaiverOptions,
+                cancellationWaiverApprovedReasons,
+                vehicleRelatedOptions,
+                vehicleUnsafeCategories,
+                safetyRelatedOptions,
+                deleteAccountReasons,
+                flowCopy
+            }
+        });
     }
 
     function loadFlowConfig(index = 0) {
         if (index >= issuesUrlCandidates.length) {
+            traceRuntime('js.loadFlowConfig.fallbackToDefaults', {
+                index,
+                issuesUrlCandidates
+            });
             applyFlowConfig({});
             return;
         }
 
+        traceRuntime('js.loadFlowConfig.attempt', {
+            index,
+            candidate: issuesUrlCandidates[index],
+            issuesUrlCandidates
+        });
         fetch(issuesUrlCandidates[index])
             .then(response => {
                 if (!response.ok) {
@@ -3410,14 +3878,30 @@ document.addEventListener('DOMContentLoaded', function () {
                 return response.json();
             })
             .then(data => {
+                traceRuntime('js.loadFlowConfig.success', {
+                    index,
+                    candidate: issuesUrlCandidates[index],
+                    data
+                });
                 applyFlowConfig(data);
             })
             .catch(() => {
+                traceRuntime('js.loadFlowConfig.failure', {
+                    index,
+                    candidate: issuesUrlCandidates[index]
+                });
                 loadFlowConfig(index + 1);
             });
     }
 
     loadFlowConfig();
+    traceRuntime('js.widget.bootstrap', {
+        traceSessionId,
+        configuredIssuesUrl,
+        issuesUrlCandidates,
+        initialState: getTraceStateSnapshot(),
+        defaultTroubleshootingSteps: DEFAULT_TROUBLESHOOTING_STEPS
+    });
     const lastConversationId = localStorage.getItem('chat_current_conversation');
 
     if (lastConversationId) {
@@ -3441,4 +3925,8 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     showConversationList();
     initNotificationSystem();
+    traceRuntime('js.widget.ready', {
+        lastConversationId,
+        state: getTraceStateSnapshot()
+    });
 });
