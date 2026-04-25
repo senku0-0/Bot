@@ -718,10 +718,10 @@ def build_issue_context(
     if ride_related_category and not context.get("category"):
         context["mainCategory"] = context.get("mainCategory") or "Ride Related Issues"
         context["category"] = ride_related_category
-        if ride_related_subcategory and not context.get("subcategory"):
-            context["subcategory"] = ride_related_subcategory
-        if ride_related_detail and not context.get("detail"):
-            context["detail"] = ride_related_detail
+    if ride_related_subcategory and not context.get("subcategory"):
+        context["subcategory"] = ride_related_subcategory
+    if ride_related_detail and not context.get("detail"):
+        context["detail"] = ride_related_detail
     trace_runtime("python.build_issue_context.result", context=context)
     return context
 
@@ -1096,6 +1096,8 @@ def update_ticket_routing(
                     f"Ticket custom field update failed for {ticket_id}: "
                     f"{fields_response.status_code} - {fields_response.text}"
                 )
+                if form_id:
+                    time.sleep(1.0)
                 # Retry one field at a time so one invalid dropdown value doesn't block all fields.
                 for field in custom_fields:
                     field_id = safe_int(field.get("id"))
@@ -1329,10 +1331,16 @@ def silently_pass_conversation_to_agent(
             issue_context=issue_context,
             app_related_category=app_related_category,
         )
+        existing_pending_data = cache.get(f'pending_escalation_{conversation_id}') or {}
         context = build_issue_context(
-            issue_context=issue_context,
-            reason=reason,
-            app_related_category=app_related_category,
+            issue_context=issue_context or existing_pending_data.get("issue_context"),
+            reason=reason or existing_pending_data.get("reason"),
+            title=existing_pending_data.get("title"),
+            transcript=existing_pending_data.get("transcript"),
+            app_related_category=app_related_category or existing_pending_data.get("app_related_category"),
+            ride_related_category=existing_pending_data.get("ride_related_category"),
+            ride_related_subcategory=existing_pending_data.get("ride_related_subcategory"),
+            ride_related_detail=existing_pending_data.get("ride_related_detail"),
         )
 
         main_key = normalize_issue_key(context.get("mainCategory"))
@@ -1344,17 +1352,18 @@ def silently_pass_conversation_to_agent(
             ride_related_subcategory = context.get("subcategory")
             ride_related_detail = context.get("detail")
 
-        pending_data = {
+        pending_data = dict(existing_pending_data) if isinstance(existing_pending_data, dict) else {}
+        pending_data.update({
             "conversation_id": conversation_id,
-            "app_user_id": app_user_id,
-            "reason": reason,
-            "app_related_category": app_related_category,
-            "ride_related_category": ride_related_category,
-            "ride_related_subcategory": ride_related_subcategory,
-            "ride_related_detail": ride_related_detail,
+            "app_user_id": app_user_id or pending_data.get("app_user_id"),
+            "reason": reason or pending_data.get("reason"),
+            "app_related_category": app_related_category or pending_data.get("app_related_category"),
+            "ride_related_category": ride_related_category or pending_data.get("ride_related_category"),
+            "ride_related_subcategory": ride_related_subcategory or pending_data.get("ride_related_subcategory"),
+            "ride_related_detail": ride_related_detail or pending_data.get("ride_related_detail"),
             "issue_context": context,
             "timestamp": datetime.now().isoformat(),
-        }
+        })
         cache.set(f'pending_escalation_{conversation_id}', pending_data, timeout=900)
         cache_routing_context(conversation_id, pending_data)
         if app_related_category:
@@ -1362,19 +1371,9 @@ def silently_pass_conversation_to_agent(
         if ride_related_category:
             cache.set(f'ride_category_{conversation_id}', ride_related_category, timeout=3600)
 
-        enqueue_recent_escalation(
-            {
-                "conversation_id": conversation_id,
-                "app_user_id": app_user_id,
-                "reason": reason,
-                "app_related_category": app_related_category,
-                "ride_related_category": ride_related_category,
-                "ride_related_subcategory": ride_related_subcategory,
-                "ride_related_detail": ride_related_detail,
-                "issue_context": context,
-                "timestamp": time.time(),
-            }
-        )
+        queue_payload = dict(pending_data)
+        queue_payload["timestamp"] = time.time()
+        enqueue_recent_escalation(queue_payload)
 
         metadata = build_pass_control_metadata(
             conversation_id=conversation_id,
@@ -2499,6 +2498,8 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             "conversation_id": source_conversation_id,
             "app_user_id": app_user_id,
             "reason": title,
+            "title": title,
+            "transcript": transcript,
             "app_related_category": app_related_category,
             "ride_related_category": ride_related_category,
             "ride_related_subcategory": ride_related_subcategory,
@@ -2516,6 +2517,8 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             "conversation_id": source_conversation_id,
             "app_user_id": app_user_id,
             "reason": title,
+            "title": title,
+            "transcript": transcript,
             "app_related_category": app_related_category,
             "ride_related_category": ride_related_category,
             "ride_related_subcategory": ride_related_subcategory,
@@ -3959,6 +3962,8 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
     ride_related_detail = None
     issue_context = None
     app_user_id = None
+    title = None
+    transcript = None
 
     if pending_data:
         app_related_category = pending_data.get('app_related_category')
@@ -3967,6 +3972,8 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
         ride_related_detail = pending_data.get('ride_related_detail')
         issue_context = pending_data.get('issue_context')
         app_user_id = pending_data.get('app_user_id')
+        title = pending_data.get('title')
+        transcript = pending_data.get('transcript')
     else:
         app_related_category = cache.get(f'category_{conversation_id}')
         ride_related_category = cache.get(f'ride_category_{conversation_id}')
@@ -3978,6 +3985,8 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
         ride_related_detail = ride_related_detail or cached_routing_context.get('ride_related_detail')
         issue_context = issue_context or cached_routing_context.get('issue_context')
         app_user_id = app_user_id or cached_routing_context.get('app_user_id')
+        title = title or cached_routing_context.get('title')
+        transcript = transcript or cached_routing_context.get('transcript')
 
     if not issue_context:
         issue_context = build_issue_context(
@@ -3994,6 +4003,8 @@ def update_ticket_routing_from_conversation_mapping(ticket_id: str) -> Dict[str,
         conversation_id=conversation_id,
         app_user_id=app_user_id,
         reason=pending_data.get('reason') if pending_data else None,
+        title=title,
+        transcript=transcript,
         app_related_sub_category=APP_RELATED_CATEGORY_TAGS.get(normalize_issue_key(app_related_category)) if app_related_category else None,
         ride_related_category=ride_related_category,
         ride_related_subcategory=ride_related_subcategory,
