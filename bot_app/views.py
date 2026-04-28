@@ -12,14 +12,16 @@ from asgiref.sync import async_to_sync
 from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler(sys.stdout)
-handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-logger.addHandler(handler)
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(handler)
+logger.setLevel(getattr(logging, os.getenv("BOT_LOG_LEVEL", "INFO").upper(), logging.INFO))
+logger.propagate = False
 
 load_dotenv()
 
-TRACE_RUNTIME_ENABLED = str(os.getenv("BOT_RUNTIME_TRACE", "1")).strip().lower() not in ("0", "false", "no", "off")
+TRACE_RUNTIME_ENABLED = str(os.getenv("BOT_RUNTIME_TRACE", "0")).strip().lower() not in ("0", "false", "no", "off")
 TRACE_RUNTIME_PREFIX = "[BOT_RUNTIME_TRACE]"
 
 def trace_sanitize(value: Any, depth: int = 0, max_depth: int = 6) -> Any:
@@ -632,6 +634,33 @@ def resolve_dropdown_value(
     )
     return desired_value
 
+def ticket_custom_field_value_matches(actual_value: Any, desired_value: Any) -> bool:
+    if isinstance(desired_value, bool) or isinstance(actual_value, bool):
+        return bool(actual_value) == bool(desired_value)
+    return str(actual_value or "").strip() == str(desired_value or "").strip()
+
+def fetch_ticket_custom_field_values(ticket_id: str, auth: HTTPBasicAuth) -> Dict[int, Any]:
+    try:
+        url = f"https://{ZENDESK_SUBDOMAIN}.zendesk.com/api/v2/tickets/{ticket_id}.json"
+        response = requests.get(url, auth=auth, timeout=15)
+        if response.status_code != 200:
+            logger.warning(
+                f"Ticket verification fetch failed for {ticket_id}: "
+                f"{response.status_code} - {response.text}"
+            )
+            return {}
+
+        ticket = response.json().get("ticket", {}) or {}
+        field_map: Dict[int, Any] = {}
+        for field in ticket.get("custom_fields", []) or []:
+            field_id = safe_int(field.get("id"))
+            if field_id:
+                field_map[field_id] = field.get("value")
+        return field_map
+    except Exception as e:
+        logger.warning(f"fetch_ticket_custom_field_values error for {ticket_id}: {e}")
+        return {}
+
 def first_non_empty(*values: Any) -> Optional[Any]:
     for value in values:
         if value is None:
@@ -642,6 +671,24 @@ def first_non_empty(*values: Any) -> Optional[Any]:
         else:
             return value
     return None
+
+def normalize_ticket_tags(raw_tags: Any) -> List[str]:
+    if isinstance(raw_tags, str):
+        candidates = [raw_tags]
+    elif isinstance(raw_tags, (list, tuple, set)):
+        candidates = list(raw_tags)
+    else:
+        return []
+
+    normalized: List[str] = []
+    seen: Set[str] = set()
+    for candidate in candidates:
+        tag = normalize_issue_key(candidate).replace(" ", "_")
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        normalized.append(tag)
+    return normalized
 
 def extract_issue_path_from_text(*candidates: Any) -> str:
     for candidate in candidates:
@@ -789,6 +836,9 @@ def build_ticket_routing_payload(
     )
     custom_fields: List[Dict[str, Any]] = []
     ticket_payload: Dict[str, Any] = {}
+    extra_tags = normalize_ticket_tags(
+        context.get("ticketTags") or context.get("ticket_tags") or context.get("tags")
+    )
 
     append_custom_field(custom_fields, ZENDESK_CHAT_CONVERSATION_FIELD_ID, conversation_id)
     append_custom_field(custom_fields, NAME_FIELD_ID, context.get("name") or "Guest User")
@@ -973,10 +1023,13 @@ def build_ticket_routing_payload(
 
     if custom_fields:
         ticket_payload["custom_fields"] = custom_fields
+    if extra_tags:
+        ticket_payload["tags"] = extra_tags
     trace_runtime(
         "python.build_ticket_routing_payload.result",
         context=context,
         custom_fields=custom_fields,
+        extra_tags=extra_tags,
         ticket_payload=ticket_payload,
     )
     return ticket_payload
@@ -1085,21 +1138,50 @@ def update_ticket_routing(
                 succeeded = False
 
         if custom_fields:
-            fields_response = requests.put(
-                url,
-                json={"ticket": {"custom_fields": custom_fields}},
-                auth=auth,
-                timeout=15
-            )
-            if fields_response.status_code != 200:
-                logger.error(
-                    f"Ticket custom field update failed for {ticket_id}: "
-                    f"{fields_response.status_code} - {fields_response.text}"
+            if form_id:
+                time.sleep(1.0)
+
+            remaining_fields = [
+                {"id": safe_int(field.get("id")), "value": field.get("value")}
+                for field in custom_fields
+                if safe_int(field.get("id"))
+            ]
+            max_attempts = 3 if form_id else 2
+
+            for attempt in range(1, max_attempts + 1):
+                if not remaining_fields:
+                    break
+
+                fields_response = requests.put(
+                    url,
+                    json={"ticket": {"custom_fields": remaining_fields}},
+                    auth=auth,
+                    timeout=15
                 )
-                if form_id:
-                    time.sleep(1.0)
-                # Retry one field at a time so one invalid dropdown value doesn't block all fields.
-                for field in custom_fields:
+                if fields_response.status_code != 200:
+                    logger.error(
+                        f"Ticket custom field update failed for {ticket_id}: "
+                        f"{fields_response.status_code} - {fields_response.text}"
+                    )
+
+                current_field_values = fetch_ticket_custom_field_values(ticket_id, auth)
+                unresolved_fields = []
+                for field in remaining_fields:
+                    field_id = safe_int(field.get("id"))
+                    if not field_id:
+                        continue
+                    desired_value = field.get("value")
+                    actual_value = current_field_values.get(field_id)
+                    if ticket_custom_field_value_matches(actual_value, desired_value):
+                        continue
+                    unresolved_fields.append(field)
+
+                if not unresolved_fields:
+                    remaining_fields = []
+                    break
+
+                next_round_fields = []
+                for field in unresolved_fields:
                     field_id = safe_int(field.get("id"))
                     if not field_id:
                         continue
@@ -1122,15 +1204,27 @@ def update_ticket_routing(
                             timeout=15
                         )
                         if single_response.status_code == 200:
-                            field_updated = True
-                            break
+                            verified_values = fetch_ticket_custom_field_values(ticket_id, auth)
+                            if ticket_custom_field_value_matches(
+                                verified_values.get(field_id),
+                                candidate_value
+                            ):
+                                field_updated = True
+                                break
                         logger.error(
                             f"Ticket custom field partial update failed for {ticket_id}, field {field_id}, "
                             f"value '{candidate_value}': {single_response.status_code} - {single_response.text}"
                         )
 
                     if not field_updated:
-                        succeeded = False
+                        next_round_fields.append(field)
+
+                remaining_fields = next_round_fields
+                if remaining_fields and attempt < max_attempts:
+                    time.sleep(float(attempt))
+
+            if remaining_fields:
+                succeeded = False
 
         if payload:
             extra_response = requests.put(
@@ -1806,6 +1900,8 @@ def index(request: HttpRequest) -> HttpResponse:
 def runtime_log(request: HttpRequest) -> JsonResponse:
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
+    if not TRACE_RUNTIME_ENABLED:
+        return JsonResponse({"status": "disabled", "events": 0})
 
     try:
         data = json.loads(request.body or "{}")
@@ -2447,15 +2543,9 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
         ride_category_key = normalize_issue_key(
             ride_related_category or (issue_context or {}).get("category")
         )
-        is_vehicle_related_flow = (
-            main_key.startswith("ride related")
-            and (
-                ride_category_key in ("vehicle related issue", "vehicle related")
-                or ride_category_key.startswith("vehicle related")
-            )
-        )
+        is_ride_related_flow = main_key.startswith("ride related")
         should_seed_transcript = bool(transcript_entries) and (
-            seed_transcript or is_vehicle_related_flow
+            seed_transcript or is_ride_related_flow
         )
 
         transcript_seed_cache_key: Optional[str] = None
@@ -2480,7 +2570,7 @@ def create_conversation_ticket(request: HttpRequest) -> JsonResponse:
             transcript_entries=transcript_entries,
             seed_transcript=seed_transcript,
             should_seed_transcript=should_seed_transcript,
-            is_vehicle_related_flow=is_vehicle_related_flow,
+            is_ride_related_flow=is_ride_related_flow,
             transcript_seed_cache_key=transcript_seed_cache_key,
             issue_context=issue_context,
             app_related_category=app_related_category,

@@ -59,13 +59,14 @@ document.addEventListener('DOMContentLoaded', function () {
     let conversationInitPromise = null;
     let unreadCounts = new Map(); // conversationId -> count
     let totalUnread = 0;
-    const TRACE_RUNTIME_ENABLED = true;
+    const TRACE_RUNTIME_ENABLED = String(window.chatRuntimeTraceEnabled || '').toLowerCase() === 'true';
     const TRACE_RUNTIME_ENDPOINT = '/api/chat/runtime-log';
     const TRACE_RUNTIME_SESSION_KEY = 'chat_trace_session_id';
     let traceSequence = 0;
     let traceQueue = [];
     let traceFlushTimer = null;
     let traceFlushInFlight = false;
+    const CASH_EXTRA_FARE_DECLINED_TAG = 'cash_extra_fare_declined';
     const traceSessionId = (() => {
         try {
             const existing = localStorage.getItem(TRACE_RUNTIME_SESSION_KEY);
@@ -310,6 +311,9 @@ document.addEventListener('DOMContentLoaded', function () {
         if (!convId && !isGlobal) {
             return;
         }
+        if (!isChatOpen) {
+            return;
+        }
         if (sseConnection && sseConnection.url === url && sseConnection.eventSource) {
             return;
         }
@@ -463,7 +467,11 @@ document.addEventListener('DOMContentLoaded', function () {
         chatView.style.display = 'none';
         backBtn.style.display = 'none';
         chatHeaderTitle.textContent = 'Yatri Bandhu';
-        connectSSE(null, true);
+        if (isChatOpen) {
+            connectSSE(null, true);
+        } else {
+            disconnectSSE();
+        }
         if (conversationId) {
             const agentName = localStorage.getItem('chat_agentName') || 'Agent';
             const convState = {
@@ -1150,13 +1158,14 @@ document.addEventListener('DOMContentLoaded', function () {
         return lines.join('\n');
     }
 
-    function getIssueContextPayload() {
+    function getIssueContextPayload(overrides = {}) {
         return {
             mainCategory: flowState.mainCategory,
             category: flowState.category,
             subcategory: flowState.subcategory,
             detail: flowState.detail,
-            currentPath: getCurrentFlowPath() || lastContext
+            currentPath: getCurrentFlowPath() || lastContext,
+            ...overrides
         };
     }
 
@@ -1328,10 +1337,11 @@ document.addEventListener('DOMContentLoaded', function () {
         saveConversation(newConversationId, title || getCurrentFlowPath() || lastContext || 'Support Request', '', new Date().toISOString());
     }
 
-    function createConversationTicketSilently({ title = null } = {}) {
+    function createConversationTicketSilently({ title = null, issueContextOverrides = {} } = {}) {
         const ticketTitle = title || getCurrentFlowPath() || lastContext || 'Support Request';
         traceRuntime('js.createConversationTicketSilently.start', {
             title,
+            issueContextOverrides,
             ticketTitle,
             state: getTraceStateSnapshot()
         });
@@ -1370,7 +1380,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     rideRelatedDetail: flowState.mainCategory === "Ride Related Issues"
                         ? (flowState.detail || null)
                         : null,
-                    issueContext: getIssueContextPayload(),
+                    issueContext: getIssueContextPayload(issueContextOverrides),
                     // Always seed the visible transcript for auto-created issue tickets
                     // so Zendesk shows separate message boxes instead of a single blob.
                     seedTranscript: true
@@ -1450,7 +1460,10 @@ document.addEventListener('DOMContentLoaded', function () {
             issueReportRequestedFlowKeys.add(flowKey);
         }
 
-        return createConversationTicketSilently({ title: ticketTitle })
+        return createConversationTicketSilently({
+            title: ticketTitle,
+            issueContextOverrides: options.issueContextOverrides || {}
+        })
             .then(data => {
                 const isCreated = data && ['created', 'existing', 'updated', 'already_requested'].includes(data.status);
                 if (!isCreated && flowKey) {
@@ -1685,7 +1698,7 @@ document.addEventListener('DOMContentLoaded', function () {
             
             if (activeConvId && wasInChat && messagesContainer.children.length > 0) {
                 showChatView();
-                if (!sunshineSocket || !sunshineSocket.socket?.readyState === WebSocket.OPEN) {
+                if (!sunshineSocket || sunshineSocket.socket?.readyState !== WebSocket.OPEN) {
                     sunshineSocket = new SunshineWebSocketManager(conversationId);
                     sunshineSocket.connect();
                 }
@@ -2093,7 +2106,11 @@ document.addEventListener('DOMContentLoaded', function () {
                         handleAgentConnect();
                         return;
                     }
-                    createIssueReportAndEndFlow();
+                    createIssueReportAndEndFlow({
+                        issueContextOverrides: {
+                            ticketTags: [CASH_EXTRA_FARE_DECLINED_TAG]
+                        }
+                    });
                 });
                 return;
             }
